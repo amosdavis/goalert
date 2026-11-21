@@ -15,7 +15,11 @@ func TestSimpleNotifications(t *testing.T) {
 	insert into users (id, name, email) 
 	values 
 		({{uuid "user"}}, 'bob', 'joe');
-	insert into user_contact_methods (id, user_id, name, type, value) 
+
+	-- This user has more contact methods than the default limit allows. Limits
+	-- only apply to new data, so lift it while loading, then restore it.
+	update config_limits set max = -1 where id = 'contact_methods_per_user';
+	insert into user_contact_methods (id, user_id, name, type, value)
 	values
 		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "1"}}),
 		({{uuid "cm2"}}, {{uuid "user"}}, 'personal', 'VOICE', {{phone "1"}}),
@@ -32,7 +36,9 @@ func TestSimpleNotifications(t *testing.T) {
 		({{uuid "cm13"}}, {{uuid "user"}}, 'personal6', 'SMS', {{phoneCC "+502" "1"}}),
 		({{uuid "cm14"}}, {{uuid "user"}}, 'personal6', 'VOICE', {{phoneCC "+502" "1"}});
 
-	insert into user_notification_rules (user_id, contact_method_id, delay_minutes) 
+	update config_limits set max = 10 where id = 'contact_methods_per_user';
+
+	insert into user_notification_rules (user_id, contact_method_id, delay_minutes)
 	values
 		({{uuid "user"}}, {{uuid "cm1"}}, 0),
 		({{uuid "user"}}, {{uuid "cm2"}}, 0),
@@ -63,9 +69,9 @@ func TestSimpleNotifications(t *testing.T) {
 	values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (service_id, description) 
+	insert into alerts (service_id, summary, dedup_key) 
 	values
-		({{uuid "sid"}}, 'testing');
+		({{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
 
 `
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

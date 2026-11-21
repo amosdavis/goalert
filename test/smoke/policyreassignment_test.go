@@ -49,9 +49,9 @@ insert into services (id, escalation_policy_id, name)
 values
     ({{uuid "sid"}}, {{uuid "ep1"}}, 'service');
 
-insert into alerts (service_id, description)
+insert into alerts (service_id, summary, dedup_key)
 values
-    ({{uuid "sid"}}, 'testing');
+    ({{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
 
 `
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

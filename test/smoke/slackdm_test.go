@@ -14,9 +14,9 @@ func TestSlackDM(t *testing.T) {
 	insert into users (id, name, email, role) 
 	values 
 		({{uuid "user"}}, 'bob', 'joe', 'user');
-	insert into user_contact_methods (id, user_id, name, type, value)
+	insert into user_contact_methods (id, user_id, name, type, value, enable_status_updates)
 	values
-		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SLACK_DM', {{slackUserID "bob"}});
+		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SLACK_DM', {{slackUserID "bob"}}, true);
 
 	insert into user_notification_rules (user_id, contact_method_id, delay_minutes) 
 	values

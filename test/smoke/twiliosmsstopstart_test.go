@@ -38,9 +38,9 @@ func TestTwilioSMSStopStart(t *testing.T) {
 		values
 			({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-		insert into alerts (id, service_id, description) 
+		insert into alerts (id, service_id, summary, dedup_key) 
 		values
-			(1234, {{uuid "sid"}}, 'testing');
+			(1234, {{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
 	`
 
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

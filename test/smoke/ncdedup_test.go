@@ -34,7 +34,7 @@ func TestNCDedup(t *testing.T) {
 		({{uuid "sched2"}}, '{"V1": {"OnCallNotificationRules": [{  "ChannelID": {{uuidJSON "nc2"}} }] } }');
 	`
 
-	h := harness.NewHarness(t, sql, "uik-tokens")
+	h := harness.NewMigrationHarness(t, sql, "uik-tokens")
 	defer h.Close()
 
 	h.Slack().Channel("chan1").ExpectMessage("on-call")

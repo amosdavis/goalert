@@ -36,9 +36,9 @@ func TestTwilioVoiceEmptyMessage(t *testing.T) {
 	values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (service_id, source, summary, details) 
+	insert into alerts (service_id, source, summary, details, dedup_key)
 	values
-		({{uuid "sid"}}, 'manual', '', '');
+		({{uuid "sid"}}, 'manual', '', '', {{autoDedupKey "" ""}});
 
 `
 	h := harness.NewHarness(t, sql, "alerts-split-summary-details")

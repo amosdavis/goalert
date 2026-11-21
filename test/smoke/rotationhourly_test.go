@@ -37,9 +37,13 @@ func TestRotation_Hourly(t *testing.T) {
 	values
 		({{uuid "sched1"}}, 'default', 'America/Chicago');
 
-	insert into rotations (id, schedule_id, name, type, start_time, shift_length)
+	insert into rotations (id, name, type, start_time, shift_length, time_zone)
 	values
-		({{uuid "rot1"}}, {{uuid "sched1"}}, 'default rotation', 'hourly', now(), 1);
+		({{uuid "rot1"}}, 'default Rotation', 'hourly', now(), 1, 'America/Chicago');
+
+	insert into schedule_rules (schedule_id, tgt_rotation_id, start_time, end_time)
+	values
+		({{uuid "sched1"}}, {{uuid "rot1"}}, '00:00', '00:00');
 
 	insert into rotation_participants (rotation_id, user_id, position)
 	values
@@ -53,8 +57,8 @@ func TestRotation_Hourly(t *testing.T) {
 	insert into services (id, escalation_policy_id, name) values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (service_id, description) values
-		({{uuid "sid"}}, 'testing');
+	insert into alerts (service_id, summary, dedup_key) values
+		({{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
 
 	`
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

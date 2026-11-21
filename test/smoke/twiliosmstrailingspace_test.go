@@ -36,9 +36,9 @@ func TestTwilioSMSTrailingSpace(t *testing.T) {
 	values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (id, service_id, description) 
+	insert into alerts (id, service_id, summary, dedup_key) 
 	values
-		(198, {{uuid "sid"}}, 'testing');
+		(198, {{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
 
 `
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

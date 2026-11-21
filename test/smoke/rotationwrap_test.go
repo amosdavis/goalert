@@ -38,14 +38,18 @@ func TestRotation_Wrap(t *testing.T) {
 	values
 		({{uuid "sched1"}}, 'default', 'America/Chicago');
 
-	insert into rotations (id, schedule_id, name, type, start_time, shift_length)
+	insert into rotations (id, name, type, start_time, shift_length, time_zone)
 	values
-		({{uuid "rot1"}}, {{uuid "sched1"}}, 'default rotation', 'hourly', now() - '4 hours'::interval + '10 minute'::interval, 2);
+		({{uuid "rot1"}}, 'default Rotation', 'hourly', now() - '4 hours'::interval + '10 minute'::interval, 2, 'America/Chicago');
 
-	insert into rotation_participants (rotation_id, user_id, position)
+	insert into schedule_rules (schedule_id, tgt_rotation_id, start_time, end_time)
 	values
-		({{uuid "rot1"}}, {{uuid "uid1"}}, 0),
-		({{uuid "rot1"}}, {{uuid "uid2"}}, 1);
+		({{uuid "sched1"}}, {{uuid "rot1"}}, '00:00', '00:00');
+
+	insert into rotation_participants (id, rotation_id, user_id, position)
+	values
+		({{uuid "part1"}}, {{uuid "rot1"}}, {{uuid "uid1"}}, 0),
+		({{uuid "part2"}}, {{uuid "rot1"}}, {{uuid "uid2"}}, 1);
 
 	insert into escalation_policy_actions (escalation_policy_step_id, schedule_id)
 	values
@@ -54,8 +58,18 @@ func TestRotation_Wrap(t *testing.T) {
 	insert into services (id, escalation_policy_id, name) values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (service_id, description) values
-		({{uuid "sid"}}, 'testing');
+	insert into alerts (service_id, summary, dedup_key) values
+		({{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
+
+	-- The rotation began 3h50m ago with 2-hour shifts, so it starts out on
+	-- its second shift. The alert starts out escalated to its first step,
+	-- before anyone was on call for the schedule.
+	update rotation_state
+	set position = 1, rotation_participant_id = {{uuid "part2"}}, shift_start = now() - '1 hour 50 minutes'::interval
+	where rotation_id = {{uuid "rot1"}};
+	update escalation_policy_state
+	set escalation_policy_step_id = {{uuid "esid"}}, last_escalation = now(), next_escalation = now() + '1 minute'::interval
+	where alert_id = 1;
 
 	`
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

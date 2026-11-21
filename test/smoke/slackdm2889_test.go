@@ -14,10 +14,10 @@ func TestSlackDM2889(t *testing.T) {
 	insert into users (id, name, email, role) 
 	values 
 		({{uuid "user"}}, 'bob', 'joe', 'user');
-	insert into user_contact_methods (id, user_id, name, type, value)
+	insert into user_contact_methods (id, user_id, name, type, value, enable_status_updates)
 	values
-		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SLACK_DM', {{slackUserID "bob"}}),
-		({{uuid "cm2"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "bob"}});
+		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SLACK_DM', {{slackUserID "bob"}}, true),
+		({{uuid "cm2"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "bob"}}, true);
 	
 	update users set alert_status_log_contact_method_id = {{uuid "cm2"}} where id = {{uuid "user"}};
 

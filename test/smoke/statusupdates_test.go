@@ -21,9 +21,9 @@ func TestStatusUpdates(t *testing.T) {
 	insert into users (id, name, email, role) 
 	values 
 		({{uuid "user"}}, 'bob', 'joe@test.com', 'admin');
-	insert into user_contact_methods (id, user_id, name, type, value) 
+	insert into user_contact_methods (id, user_id, name, type, value, enable_status_updates) 
 	values
-		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "1"}});
+		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "1"}}, true);
 
 	update users set alert_status_log_contact_method_id = {{uuid "cm1"}}
 	where id = {{uuid "user"}};
@@ -50,10 +50,10 @@ func TestStatusUpdates(t *testing.T) {
 	values
 		({{uuid "int1"}}, {{uuid "sid"}}, 'generic', 'test');
 
-	insert into alerts (service_id, source, description) 
+	insert into alerts (service_id, source, summary, dedup_key) 
 	values
-		({{uuid "sid"}}, 'manual', 'first alert'),
-		({{uuid "sid"}}, 'manual', 'second alert');
+		({{uuid "sid"}}, 'manual', 'first alert', {{autoDedupKey "first alert"}}),
+		({{uuid "sid"}}, 'manual', 'second alert', {{autoDedupKey "second alert"}});
 
 `
 	h := harness.NewHarness(t, sql, "alert-status-updates")

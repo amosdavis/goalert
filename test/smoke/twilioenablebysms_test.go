@@ -19,9 +19,9 @@ func TestTwilioEnableBySMS(t *testing.T) {
 		values
 			({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "1"}}, true),
 			({{uuid "cm2"}}, {{uuid "user"}}, 'personal', 'VOICE', {{phone "1"}}, true);
-		insert into user_verification_codes (id, user_id, contact_method_value, code, expires_at)
+		insert into user_verification_codes (id, contact_method_id, code, expires_at, sent)
 		values 
-			({{uuid "id"}}, {{uuid "user"}}, {{phone "1"}}, 123456, now() + '15 minutes'::interval);
+			({{uuid "id"}}, {{uuid "cm1"}}, 123456, now() + '15 minutes'::interval, true);
 		insert into outgoing_messages (message_type, contact_method_id, last_status, sent_at, user_id, user_verification_code_id)
 		values
 			('verification_message', {{uuid "cm1"}}, 'delivered', now(), {{uuid "user"}}, {{uuid "id"}});

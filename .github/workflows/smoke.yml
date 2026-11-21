@@ -1,0 +1,33 @@
+name: Smoke
+
+# Runs the smoke test suite against Postgres. The suite is the acceptance
+# check for every phase of the filestore work: the same tests must keep
+# passing (docs/filestore-failure-modes.md, F22).
+on:
+  push:
+    branches: ['filestore-backend']
+
+jobs:
+  smoke:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start Postgres
+        # Run as a container step rather than a service so it can be given
+        # the same settings as `make postgres` (500 connections).
+        run: |
+          docker run -d --name goalert-postgres \
+            -e POSTGRES_USER=goalert -e POSTGRES_HOST_AUTH_METHOD=trust \
+            --shm-size 1g -p 5432:5432 \
+            postgres:17-alpine postgres -N 500
+          go tool waitfor "postgres://goalert@localhost:5432/goalert?sslmode=disable"
+      - name: Install mailpit
+        run: go tool gettool -t mailpit -v "$(cat mailpit.version)" -o bin/tools/mailpit
+      - name: Smoke tests
+        working-directory: test/smoke
+        run: go test -count=1 -parallel 10 -timeout 40m .

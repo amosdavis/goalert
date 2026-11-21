@@ -44,17 +44,21 @@ func TestPrioritization(t *testing.T) {
 		({{uuid "s2"}}, {{uuid "eid"}}, 'service2');
 `
 
+	// The service has more open alerts than the default limit allows. Limits
+	// only apply to new data, so lift it while loading, then restore it.
 	buf := bytes.NewBufferString(`
-		insert into alerts (service_id, description)
+		update config_limits set max = -1 where id = 'unacked_alerts_per_service';
+		insert into alerts (service_id, summary, dedup_key)
 		values
 	`)
 	for i := 0; i < 300; i++ {
 		if i > 0 {
 			buf.WriteString(",\n")
 		}
-		buf.WriteString(`({{uuid "s1"}}, 'service-1-alert-` + strconv.Itoa(i) + `')`)
+		summary := "service-1-alert-" + strconv.Itoa(i)
+		buf.WriteString(`({{uuid "s1"}}, '` + summary + `', {{autoDedupKey "` + summary + `"}})`)
 	}
-	buf.WriteString(";")
+	buf.WriteString(";\nupdate config_limits set max = 200 where id = 'unacked_alerts_per_service';")
 	sql += buf.String()
 
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

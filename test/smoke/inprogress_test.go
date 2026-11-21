@@ -71,7 +71,7 @@ func TestInProgress(t *testing.T) {
         (1, {{uuid "u2"}}, now() + '35 minutes'::interval),
         (1, {{uuid "u3"}}, now() + '1 second'::interval);
 `
-	h := harness.NewHarness(t, sql, "UserFavorites")
+	h := harness.NewMigrationHarness(t, sql, "UserFavorites")
 	defer h.Close()
 
 	tw := h.Twilio(t)

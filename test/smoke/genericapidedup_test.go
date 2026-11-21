@@ -53,9 +53,9 @@ func TestGenericAPIDedup(t *testing.T) {
 		({{uuid "i1"}}, 'generic', 'my key', {{uuid "s1"}}),
 		({{uuid "i2"}}, 'generic', 'my key', {{uuid "s2"}});
 
-	insert into alerts (source, service_id, description)
+	insert into alerts (source, service_id, summary, dedup_key)
 	values
-		('generic', {{uuid "s1"}}, 'pre-existing');
+		('generic', {{uuid "s1"}}, 'pre-existing', {{autoDedupKey "pre-existing"}});
 `
 	h := harness.NewHarness(t, sql, "add-generic-integration-key")
 	defer h.Close()

@@ -44,9 +44,21 @@ func TestManualEscalation(t *testing.T) {
 	values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (service_id, description, status) 
+	insert into alerts (service_id, summary, dedup_key, status)
 	values
-		({{uuid "sid"}}, 'testing', 'active');
+		({{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}}, 'active');
+
+	-- The alert starts out logged as created and already at its first step.
+	insert into alert_logs (alert_id, event, message)
+	values
+		(1, 'created', 'Created via: manual');
+	update escalation_policy_state
+	set escalation_policy_step_id = {{uuid "esid1"}}, last_escalation = now(), next_escalation = now() + '60 minutes'::interval
+	where alert_id = 1;
+	insert into ep_step_on_call_users (ep_step_id, user_id)
+	values
+		({{uuid "esid1"}}, {{uuid "uid"}}),
+		({{uuid "esid2"}}, {{uuid "uid2"}});
 `
 
 	h := harness.NewHarness(t, sql, "ids-to-uuids")

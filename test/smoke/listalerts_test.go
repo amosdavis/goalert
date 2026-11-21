@@ -20,7 +20,7 @@ func TestListAlerts(t *testing.T) {
 		name := "s" + strconv.Itoa(i)
 		sql += `
 			insert into services (id, name, escalation_policy_id) values ({{uuid "` + name + `"}}, '` + name + `', {{uuid "eid"}});
-			insert into alerts (service_id, description) values ({{uuid "` + name + `"}}, 'hi');
+			insert into alerts (service_id, summary, dedup_key) values ({{uuid "` + name + `"}}, 'hi', {{autoDedupKey "hi"}});
 		`
 	}
 

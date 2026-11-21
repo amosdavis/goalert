@@ -212,6 +212,23 @@ func NewStoppedHarness(t *testing.T, initSQL string, sqlData interface{}, migrat
 // passing in a set of experimental flags to be used for the test.
 func NewStoppedHarnessWithFlags(t *testing.T, initSQL string, sqlData interface{}, migrationName string, expFlags expflag.FlagSet) *Harness {
 	t.Helper()
+	return newStoppedHarness(t, initSQL, sqlData, migrationName, expFlags, false)
+}
+
+// NewMigrationHarness is like NewHarness, but loads initSQL at the schema of
+// migrationName and then applies the remaining migrations. It is for tests
+// of what migrations do to existing data. Those tests need Postgres, and are
+// removed along with the migrations.
+func NewMigrationHarness(t *testing.T, initSQL, migrationName string) *Harness {
+	stdlog.SetOutput(io.Discard)
+	t.Helper()
+	h := newStoppedHarness(t, initSQL, nil, migrationName, nil, true)
+	h.Start()
+	return h
+}
+
+func newStoppedHarness(t *testing.T, initSQL string, sqlData interface{}, migrationName string, expFlags expflag.FlagSet, pinMigration bool) *Harness {
+	t.Helper()
 
 	if testing.Short() {
 		t.Skip("skipping Harness tests for short mode")
@@ -291,7 +308,15 @@ func NewStoppedHarnessWithFlags(t *testing.T, initSQL string, sqlData interface{
 		t.Fatal(err)
 	}
 
-	h.Migrate(migrationName)
+	// Fixtures load at the latest schema, so they don't depend on the
+	// migration framework (the file backend has none). migrationName only
+	// records the schema a fixture was first written for, except for
+	// migration tests (NewMigrationHarness).
+	target := ""
+	if pinMigration {
+		target = migrationName
+	}
+	h.Migrate(target)
 	h.initSlack()
 	h.execQuery(initSQL, sqlData)
 
@@ -528,6 +553,21 @@ func (h *Harness) execQuery(sql string, data interface{}) {
 		"slackChannelID":   func(name string) string { return fmt.Sprintf("'%s'", h.Slack().Channel(name).ID()) },
 		"slackUserID":      func(name string) string { return fmt.Sprintf("'%s'", h.Slack().User(name).ID()) },
 		"slackUserGroupID": func(name string) string { return fmt.Sprintf("'%s'", h.Slack().UserGroup(name).ID()) },
+
+		// autoDedupKey returns the dedup key GoAlert gives an open alert
+		// with no explicit dedup ID. Fixtures that insert open alerts need
+		// it: the database no longer fills it in.
+		"autoDedupKey": func(summary string, details ...string) (string, error) {
+			a := alert.Alert{Summary: summary}
+			if len(details) > 0 {
+				a.Details = details[0]
+			}
+			v, err := a.DedupKey().Value()
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("'%s'", v), nil
+		},
 	})
 	_, err := t.Parse(sql)
 	if err != nil {

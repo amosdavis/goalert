@@ -36,14 +36,30 @@ Work:
 1. Record a baseline of which tests pass on this machine before any change.
 2. Move every fixture to the latest schema. Load fixtures after all
    migrations, and change fixture SQL only where a test then fails. No
-   assertion changes. `TestMigrations` keeps its pinned versions until
-   migrations are removed in Phase 5.
+   assertion changes. Tests of what a migration does to existing data keep
+   their pinned version through `harness.NewMigrationHarness` until the
+   migrations are removed in Phase 5. Those are `TestMigrations`,
+   `TestInProgress`, `TestStatusInProgress` and `TestNCDedup`.
+
+   Each translated fixture reproduces the state the old fixture had after
+   migrating. This was checked by loading both versions and diffing the
+   data. What had to be reproduced:
+   - renamed columns (`alerts.description`, `rotations.schedule_id`,
+     `user_verification_codes.user_id`)
+   - values the database no longer fills in: alert dedup keys, through the
+     `autoDedupKey` fixture function
+   - backfills: `enable_status_updates`, 24-hour schedule rules, and a
+     rotation already on a later shift
+   - alerts already escalated, with their notification cycles and
+     `created` log
+   - data that predates a limit, loaded by lifting the limit and then
+     restoring it
 3. Put fixtures, the clock, job checks and failure dumps behind interfaces.
    The Postgres implementation does exactly what the harness does today.
 
 Exit: the same tests pass as in the baseline, with no assertion changed.
 
-## Phase 1: Storage core (`store/`)
+## Phase 1: Storage core (`filestore/`)
 
 - Log records are length-prefixed, checksummed and carry a format version. A
   torn tail is detected and refused, never guessed at (F6, F19).
@@ -102,9 +118,11 @@ Two pieces of work go with the port:
 
 - A test-only fixture loader parses the fixture SQL and applies it through the
   file backend's normal write paths, so the fixtures also exercise the ported
-  trigger logic. Fixtures use a small subset of SQL: `INSERT ... VALUES`, a
-  few `UPDATE`s, `now()` plus or minus an interval, and casts. The loader
-  supports that subset and rejects anything else.
+  trigger logic. Fixtures use a small subset of SQL: `INSERT ... VALUES`,
+  `UPDATE ... SET ... WHERE column = value`, `now()` plus or minus an
+  interval, and casts. Values such as dedup keys come from fixture
+  template functions, never from SQL functions. The loader supports that
+  subset and rejects anything else.
 - Search becomes in-memory matching. Postgres full-text search (`textSearch`)
   has no exact equivalent, so the difference is documented (F24).
 
@@ -145,3 +163,11 @@ This phase must satisfy F26 through F30.
 ## Status
 
 - 2026-11-20: Plan written. Phase 0 started on branch `filestore-backend`.
+- 2026-11-20: Phase 0 baseline: all 149 top-level smoke tests pass on
+  Windows against Postgres 17.12.
+- 2026-11-20: Phase 1 done. `filestore/` passes its crash, process-kill,
+  replay, locking and permission tests on Linux, Windows and macOS
+  (Filestore workflow).
+- 2026-11-20: Phase 0 step 2: fixtures load at the latest schema. 36 fixtures
+  were translated and 3 migration tests stay pinned. The Smoke workflow runs
+  the full suite on every push to the branch.

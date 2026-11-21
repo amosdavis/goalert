@@ -41,9 +41,9 @@ func TestMultiStepNotifications(t *testing.T) {
 	values
     	({{uuid "s1"}}, {{uuid "e1"}}, 'service');
 
-	insert into alerts (service_id, description) 
+	insert into alerts (service_id, summary, dedup_key) 
 	values
-    	({{uuid "s1"}}, 'testing');
+    	({{uuid "s1"}}, 'testing', {{autoDedupKey "testing"}});
 `
 	h := harness.NewHarness(t, sql, "ids-to-uuids")
 	defer h.Close()

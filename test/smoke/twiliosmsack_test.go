@@ -41,10 +41,24 @@ func TestTwilioSMSAck(t *testing.T) {
 	values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 
-	insert into alerts (id, service_id, description) 
+	insert into alerts (id, service_id, summary, dedup_key) 
 	values
-		(198, {{uuid "sid"}}, 'testing');
+		(198, {{uuid "sid"}}, 'testing', {{autoDedupKey "testing"}});
 
+	-- The alert starts out logged as created and already escalated to its
+	-- first step, with its notification cycle started.
+	insert into alert_logs (alert_id, event, message)
+	values
+		(198, 'created', 'Created via: manual');
+	update escalation_policy_state
+	set escalation_policy_step_id = {{uuid "esid"}}, last_escalation = now(), next_escalation = now() + '1 minute'::interval
+	where alert_id = 198;
+	insert into ep_step_on_call_users (ep_step_id, user_id)
+	values
+		({{uuid "esid"}}, {{uuid "user"}});
+	insert into notification_policy_cycles (alert_id, user_id, checked)
+	values
+		(198, {{uuid "user"}}, true);
 `
 	h := harness.NewHarness(t, sql, "ids-to-uuids")
 	defer h.Close()

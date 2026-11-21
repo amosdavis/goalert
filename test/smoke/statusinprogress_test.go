@@ -53,7 +53,7 @@ func TestStatusInProgress(t *testing.T) {
 			('alert_notification', {{uuid "u1"}}, {{uuid "c1"}}, 1, {{uuid "sid"}}, {{uuid "eid"}}, 'sent', now());
 	`
 
-	h := harness.NewHarness(t, sql, "sched-module-v3")
+	h := harness.NewMigrationHarness(t, sql, "sched-module-v3")
 	defer h.Close()
 
 	tw := h.Twilio(t)
