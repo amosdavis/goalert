@@ -33,7 +33,7 @@ func TestConformance(t *testing.T) {
 		// The emulator starts empty.
 		err := client.Bucket(bucket).Create(ctx, "goalert-test", nil)
 		var gerr *googleapi.Error
-		if err != nil && !(errors.As(err, &gerr) && gerr.Code == http.StatusConflict) {
+		if err != nil && (!errors.As(err, &gerr) || gerr.Code != http.StatusConflict) {
 			require.NoError(t, err, "create bucket")
 		}
 	}

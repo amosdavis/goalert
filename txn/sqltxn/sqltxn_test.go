@@ -16,11 +16,13 @@ func (otherTx) Rollback() error { return nil }
 func TestUnwrap(t *testing.T) {
 	assert.Nil(t, Unwrap(nil), "a nil interface")
 
+	// Passing a nil *sql.Tx where a txn.Tx is expected, as callers do, makes a
+	// non-nil interface. (assert.NotNil would call it nil: it looks through
+	// the interface.)
 	var typedNil *sql.Tx
-	var tx txn.Tx = typedNil
-	// assert.NotNil would say nil here: it looks through the interface.
-	assert.True(t, tx != nil, "a nil *sql.Tx is not a nil txn.Tx")
-	assert.Nil(t, Unwrap(tx), "but it unwraps to nil")
+	isNil := func(tx txn.Tx) bool { return tx == nil }
+	assert.False(t, isNil(typedNil), "a nil *sql.Tx is not a nil txn.Tx")
+	assert.Nil(t, Unwrap(typedNil), "but it unwraps to nil")
 
 	real := new(sql.Tx)
 	assert.Same(t, real, Unwrap(real))
