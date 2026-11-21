@@ -1,124 +1,143 @@
-# Filestore Backend: Plan
+# Delta Lake Backend: Plan
 
-This plan replaces PostgreSQL with an in-memory store and an append-only log on
-disk. Every phase must follow [filestore-failure-modes.md](filestore-failure-modes.md).
-A phase is done when its exit checks pass, not when its code is written.
+This plan replaces PostgreSQL with Delta Lake tables in object storage, on GCS
+and on Azure, shared by several GoAlert pods. Every phase must follow
+[filestore-failure-modes.md](filestore-failure-modes.md), and
+[filestore-inventory.md](filestore-inventory.md) lists the database behavior
+that has to move into Go. A phase is done when its exit checks pass, not when
+its code is written.
 
 ## Design
 
-All data lives in memory as Go structs indexed by maps. One writer applies
-every change. It checks the change, stamps IDs and timestamps into a log
-record, appends the record to the log, fsyncs, applies the record to memory and
-only then reports success. Readers get an immutable snapshot, so they never see
-a half-applied change. Startup loads the newest snapshot and replays the log
-after it. Applying a record is deterministic, so the same log always rebuilds
-the same state, whether on restart or (later) on another pod.
+**Table layout.** All of GoAlert's data is one Delta table at a configured
+location (`gs://bucket/prefix`, or a container and prefix in an Azure storage
+account). A Delta commit is atomic only within one table, so this is what
+makes each GoAlert transaction atomic (F2).
 
-A running GoAlert uses one backend for everything (`--backend=postgres|file`),
-never a mix. Until Phase 5, both backends sit behind the same interfaces, and
-progress is measured by how many smoke tests pass on the file backend.
+- Partition columns `tbl` (the GoAlert table) and `bucket` (a hash of the
+  row's key, modulo a per-table bucket count) keep files small (F39).
+- Each row has a `key` and one struct column per GoAlert table, and only that
+  table's column is set. Spark reads a table as
+  `SELECT alerts.* FROM goalert WHERE tbl = 'alerts'`, and GoAlert ships those
+  view definitions.
+- Only Delta protocol reader version 1 and writer version 2 features are used,
+  so any Delta reader can open the table (F19, F35).
 
-## Phase 0: Make the test harness backend-neutral
+**Commits.** A GoAlert transaction becomes one Delta commit:
 
-The 141 smoke tests are the acceptance check (F22), but the harness assumes
-Postgres:
+- For each bucket it changes, a new Parquet file holds the bucket's rows after
+  the change, and the old file is removed.
+- Append-only tables (alert logs, message history) only add files with the
+  new rows, and are compacted later.
+- Data files are uploaded first. Then the commit file `_delta_log/<N>.json` is
+  written create-if-absent, so only one writer can create version N (F6). Its
+  `commitInfo` names the writer, the store ID, GoAlert's format version and a
+  commit ID (F11, F30, F32).
+- Transactions are grouped: a pod waiting on a commit queues the next
+  transactions and commits them together (F15).
 
-- 128 tests seed their data with raw SQL `INSERT`s.
-- 133 tests load their fixtures at an old schema version (44 of them at
-  `ids-to-uuids`) and rely on the migrations to upgrade the data. The file
-  backend has no migrations.
-- Time is moved by changing Postgres's clock (`pgmocktime`).
-- River jobs are counted with SQL.
-- The database is dumped when a test fails.
+**Pods.** Every pod holds the whole current state in memory, in the tables,
+indexes and copy-on-write views from Phase 1. It loads the newest checkpoint
+and the commits after it, then follows the log by checking for the next
+version.
 
-Work:
+- A write is optimistic. The transaction runs against the pod's latest
+  version. If the next version already exists, the pod catches up and runs
+  the transaction again (F4). Transaction functions therefore do no I/O (F3).
+- One pod holds the engine lease, a row in the table, and runs the engine.
+  The lease only avoids wasted work. A message is sent only after the commit
+  claiming it, so a second engine cannot page twice (F3, F28).
+- A write response carries its version, and a read can wait for that version
+  (F29).
+- The lease holder also writes checkpoints, removes old log entries, vacuums
+  and compacts (F16).
 
-1. Record a baseline of which tests pass on this machine before any change.
-2. Move every fixture to the latest schema. Load fixtures after all
-   migrations, and change fixture SQL only where a test then fails. No
-   assertion changes. Tests of what a migration does to existing data keep
-   their pinned version through `harness.NewMigrationHarness` until the
-   migrations are removed in Phase 5. Those are `TestMigrations`,
-   `TestInProgress`, `TestStatusInProgress` and `TestNCDedup`.
+**Object storage.** One interface (`Get`, `List`, `PutIfAbsent`, `Put` for
+`_last_checkpoint` only, and `Delete`) has four implementations: GCS (create
+with `ifGenerationMatch=0`), Azure Blob Storage (create with
+`If-None-Match: *`), a local directory for development, and an in-memory fake
+that injects conflicts, unclear results and throttling for tests.
 
-   Each translated fixture reproduces the state the old fixture had after
-   migrating. This was checked by loading both versions and diffing the
-   data. What had to be reproduced:
-   - renamed columns (`alerts.description`, `rotations.schedule_id`,
-     `user_verification_codes.user_id`)
-   - values the database no longer fills in: alert dedup keys, through the
-     `autoDedupKey` fixture function
-   - backfills: `enable_status_updates`, 24-hour schedule rules, and a
-     rotation already on a later shift
-   - alerts already escalated, with their notification cycles and
-     `created` log
-   - data that predates a limit, loaded by lifting the limit and then
-     restoring it
-3. Put fixtures, the clock, job checks and failure dumps behind interfaces.
-   The Postgres implementation does exactly what the harness does today.
+A running GoAlert uses one backend for everything, never a mix (F23). Until
+Postgres is removed, both backends sit behind the same interfaces, and
+progress is measured by how many smoke tests pass on the new backend.
 
-Exit: the same tests pass as in the baseline, with no assertion changed.
+## Phase 0: Make the test harness backend-neutral (done)
 
-## Phase 1: Storage core (`filestore/`)
+The 141 smoke tests are the acceptance check (F22), but the harness assumed
+Postgres. Fixtures were raw SQL loaded at old schema versions (133 tests), time
+was moved through Postgres's clock (`pgmocktime`), and River jobs were counted
+with SQL.
 
-- Log records are length-prefixed, checksummed and carry a format version. A
-  torn tail is detected and refused, never guessed at (F6, F19).
-- There is one writer. The log file is fsynced before success is returned, and
-  so is its directory when a file is created (F1). Each write carries the
-  version it read, so a stale write fails instead of overwriting newer data
-  (F4).
-- Reads come from immutable snapshots (F10).
-- Snapshots and log compaction, plus a consistent `backup` command (F9, F16).
-- An exclusive OS lock on the data directory. Network filesystems are refused
-  where they can be detected (F11). Files are `0600`, or have restrictive ACLs
-  on Windows (F20). A full disk fails loudly (F21).
-- A `Clock` interface shared by the store, the engine and the harness (F13).
-  Postgres `now()` appears about 125 times in the SQL, and all of those move to
-  it.
+1. A baseline: all 149 top-level tests pass against Postgres 17.12.
+2. Fixtures load at the latest schema. 36 were translated so each produces the
+   data its old version had after migrating, checked by diffing both
+   databases. Tests of what migrations do to existing data (`TestMigrations`,
+   `TestInProgress`, `TestStatusInProgress`, `TestNCDedup`) keep their pinned
+   version through `harness.NewMigrationHarness` until Postgres is removed.
+3. The harness reaches the database only through a `storage` interface
+   (`test/smoke/harness/storage.go`).
+
+Exit, met: the same 149 tests pass on the Smoke workflow, with no assertion
+changed.
+
+## Phase 1: In-memory core (done)
+
+`filestore/` holds typed tables, secondary and unique indexes, copy-on-write
+views (F10), one writer, transaction timestamps from a `Clock` (F13), and
+deterministic apply (F25). Its local log and snapshot files are superseded by
+Phase 1b. The in-memory part becomes each pod's copy of the state.
+
+Exit, met: crash, process-kill, replay and locking tests pass on Linux,
+Windows and macOS (Filestore workflow).
+
+## Phase 1b: Delta log on object storage
+
+- The object-store interface and its four implementations, with one
+  conformance suite that runs against all of them (F14).
+- A Delta writer and reader: the `protocol`, `metaData`, `add`, `remove`,
+  `txn` and `commitInfo` actions, Parquet data files, checkpoints and
+  `_last_checkpoint`.
+- Optimistic, grouped commits. Unclear results are resolved by reading the
+  version back (F32).
+- Following the log, catching up, and refusing commits from unknown writers
+  or format versions (F11, F30).
+- A startup self-test of permissions (F33), and checks of bucket settings
+  (F34).
 
 Exit:
 
-- Crash tests kill the process at every step of a write, restart it, and compare
-  the state.
-- A test replays every log and compares the state (F25).
-- Both pass on Linux and on Windows (F14).
+- The conformance suite passes on the in-memory fake, the local directory,
+  fake-gcs-server and Azurite, in CI.
+- Tests cover crashes at every step of a commit, commit conflicts and unclear
+  commit results. Nothing acknowledged is lost and nothing is applied twice
+  (F1, F4, F32).
+- Several in-process pods writing one table converge on the same state (F25).
+- delta-rs reads the table and its rows match GoAlert's state (F35).
 
 ## Phase 2: Replace the transaction seam (still on Postgres)
 
 122 functions take a `*sql.Tx`, and 37 take a generic query interface, so that
-several stores can write in one transaction. They switch to a backend-neutral
-transaction type. On Postgres it is a normal transaction. On the file backend it
-is a snapshot plus one batch of log records. Direct SQL outside the stores (for
-example in `graphql2/graphqlapp`) moves into the stores.
+several stores can write in one transaction. They switch to `txn.Tx`.
 
-Inventory every trigger (42), function (67), cascade (75), `CHECK` (31) and
-unique constraint. Map each one to the Go code that will replace it and the
-test that proves it (F2, F7, F8).
-
-Design:
-
-- A new package `txn` defines `Tx` (`Commit`, `Rollback`) and `DB`
-  (`BeginTx`). `*sql.Tx` already has `Commit` and `Rollback`, so it satisfies
-  `txn.Tx` unchanged. Store methods change their parameter from `*sql.Tx` to
-  `txn.Tx` and unwrap it in the Postgres implementation, while existing
-  callers keep compiling. That makes the change mechanical and lets it land
-  one package at a time, each step checked by the Smoke workflow.
-- Methods that take a `gadb.DBTX` (a transaction or the database) take a
-  `txn.Tx` instead, where nil means "not in a transaction".
-- Callers then start transactions through `txn.DB` instead of `*sql.DB`.
-  `withContextTx` in `graphql2/graphqlapp` keeps its nesting behavior.
-- The file backend has one writer, so a write transaction held open during
-  slow work, such as a network call, would block every other writer,
-  including the engine (F15). Phase 2 lists every place a transaction can
-  stay open across I/O, and those are fixed before Phase 4.
+- `*sql.Tx` already has `Commit` and `Rollback`, so it satisfies `txn.Tx`.
+  Store methods take a `txn.Tx` and unwrap it in the Postgres implementation,
+  so callers keep compiling and the change lands one package at a time.
+- Methods that take a `gadb.DBTX` take a `txn.Tx` instead, where nil means
+  "not in a transaction".
+- Callers then start transactions through `txn.DB`. `withContextTx` in
+  `graphql2/graphqlapp` keeps its nesting behavior.
+- A transaction function can run more than once on the new backend (F3, F4),
+  and a long write transaction delays every other writer (F15). Phase 2 lists
+  every transaction that does I/O or runs long, and those are fixed before
+  Phase 4.
 
 Exit:
 
 - Only store implementations import `database/sql` or `gadb`.
 - The suite is green on Postgres.
-- Every row in the inventory is mapped.
 
-## Phase 3: File backend for the stores, leaf packages first
+## Phase 3: The stores on the Delta backend, leaf packages first
 
 Port the packages in this order:
 
@@ -134,48 +153,54 @@ Port the packages in this order:
 Two pieces of work go with the port:
 
 - A test-only fixture loader parses the fixture SQL and applies it through the
-  file backend's normal write paths, so the fixtures also exercise the ported
+  new backend's normal write paths, so the fixtures also exercise the ported
   trigger logic. Fixtures use a small subset of SQL: `INSERT ... VALUES`,
-  `UPDATE ... SET ... WHERE column = value`, `now()` plus or minus an
-  interval, and casts. Values such as dedup keys come from fixture
-  template functions, never from SQL functions. The loader supports that
-  subset and rejects anything else.
+  `UPDATE ... SET ... WHERE column = value`, `DELETE`, `now()` plus or minus
+  an interval, and casts. Values such as dedup keys come from fixture
+  template functions, never from SQL functions. The loader rejects anything
+  else.
 - Search becomes in-memory matching. Postgres full-text search (`textSearch`)
   has no exact equivalent, so the difference is documented (F24).
 
-Exit for each package: its inventory tests pass on the file backend, and so does
-every smoke test that needs only the packages ported so far (F5, F23).
+Exit for each package: the inventory items for its tables are implemented and
+tested, and every smoke test that needs only the packages ported so far passes
+on the new backend (F5, F7, F8, F23).
 
-## Phase 4: Engine and jobs on the file backend
+## Phase 4: Engine and jobs on the Delta backend
 
 - Each engine module's SQL becomes Go over the in-memory indexes. A cycle-time
   budget and a large-dataset benchmark guard against slowdowns (F15, F17).
-- The processing lock becomes the single writer, and the advisory locks go away.
-- Outgoing message states keep exactly the semantics they have today (F3).
+- The engine lease replaces the processing locks and advisory locks (F28).
+- Outgoing messages are claimed by a commit before they are sent, and keep
+  today's status semantics otherwise (F3).
 - River (14 job kinds, 2 clients) is replaced by a small job queue whose jobs are
-  records in the same log, so a job commits together with the change that
+  rows in the same table, so a job commits together with the change that
   created it.
 
-Exit: all 141 smoke tests pass on the file backend.
+Exit: all smoke tests pass on the new backend.
 
-## Phase 5: Remove Postgres
+## Phase 5: Several pods
+
+- The smoke suite also runs with three GoAlert pods on one table behind a
+  load balancer, with session affinity.
+- Read-your-writes across pods (F29). Lease handover when the holder dies or
+  is cut off, with no duplicate pages (F28). Rolling upgrades with a format
+  change (F30). Commit-conflict rates under load (F40).
+- Clock skew detection (F13), and the cost and operation-count metrics (F37).
+
+Exit: the suite passes with three pods, including tests that kill the lease
+holder while it is sending.
+
+## Phase 6: Remove Postgres
 
 - Delete `migrate/`, `gadb/`, `sqlc.yaml`, `swo/`, River and its UI, and the
   Postgres devtools.
-- Replace `--db-url` and related flags with `--data-dir`.
-- List every removed or changed feature in the release notes (F24).
-- State the single-instance limit in the docs and in the startup logs (F12).
-
-## Phase 6 (optional): Several pods with a replicated log
-
-Do this phase only if more than one pod is wanted. `hashicorp/raft` uses the
-Phase 1 log as its log store and the in-memory store as its state machine:
-
-- Each pod has its own disk, and pods never share a filesystem.
-- Only the leader runs the engine (`Engine.Pause` and `Resume` already exist).
-- Followers forward writes to the leader.
-
-This phase must satisfy F26 through F30.
+- Replace `--db-url` and related flags with the table location and
+  credentials settings, and add the explicit command that creates a table
+  (F27).
+- List every removed or changed feature in the release notes (F24), and
+  document the object-store dependency and required bucket settings (F31,
+  F34).
 
 ## Status
 
@@ -188,10 +213,14 @@ This phase must satisfy F26 through F30.
 - 2026-11-20: Phase 0 step 2: fixtures load at the latest schema. 36 fixtures
   were translated and 3 migration tests stay pinned. The Smoke workflow runs
   the full suite on every push to the branch.
-- 2026-11-21: Phase 0 step 3: the harness reaches the database only through
+- 2026-11-21: Phase 0 done. The harness reaches the database only through
   a `storage` interface (`test/smoke/harness/storage.go`), whose Postgres
   implementation does what the harness did before.
   `overrideconflict_test.go` still opens transactions itself on purpose;
   it moves with the transaction seam in Phase 2. Fixing a CI hang also
   fixed a pre-existing deadlock: River's smoke-test clock shared the app's
   5-connection pool.
+- 2026-11-21: Phase 2 started: the store packages take `txn.Tx`.
+- 2026-11-21: Direction changed: Delta Lake tables on GCS and Azure, shared
+  by several pods, instead of a local log. The failure modes and this plan
+  were rewritten for it, adding Phase 1b and Phase 5.
