@@ -37,10 +37,12 @@ func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 func configKey(id int64) string { return fmt.Sprintf("%020d", id) }
 
 // NewDeltaStore returns a config store on the Delta backend; cfg.DB is not
-// used.
-func NewDeltaStore(ctx context.Context, cfg StoreConfig, db txn.DB, tables *DeltaTables) (*Store, error) {
+// used. changes, from filestore.DeltaDB.Changes("config"), makes every pod
+// reload a new config version at once, as trg_config_update's NOTIFY does on
+// Postgres; without it, pods pick it up within a minute.
+func NewDeltaStore(ctx context.Context, cfg StoreConfig, db txn.DB, tables *DeltaTables, changes <-chan struct{}) (*Store, error) {
 	s := newStore(cfg, db)
-	s.delta = tables
+	s.delta, s.changes = tables, changes
 	if err := s.start(ctx); err != nil {
 		return nil, err
 	}

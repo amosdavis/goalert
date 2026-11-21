@@ -885,3 +885,36 @@ func TestDeltaGiveUpWhileCommitting(t *testing.T) {
 	_, ok := sch.users.Get(db.View(), "late")
 	assert.True(t, ok, "and here it did")
 }
+
+func TestDeltaChanges(t *testing.T) {
+	ctx := context.Background()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	a := openPod(t, store, sch, dOpts("a"))
+	opts := dOpts("b")
+	opts.PollInterval = 2 * time.Millisecond
+	b := openPod(t, store, sch, opts)
+	users, seqs := b.Changes("users"), b.Changes("_seq")
+
+	_, err := a.Update(ctx, putUser(sch, "u1"))
+	require.NoError(t, err)
+	select {
+	case <-users:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no signal when another pod's commit changes the table")
+	}
+	select {
+	case <-seqs:
+		t.Fatal("a table the commit didn't change was signalled")
+	default:
+	}
+
+	own := a.Changes("users")
+	_, err = a.Update(ctx, putUser(sch, "u2"))
+	require.NoError(t, err)
+	select {
+	case <-own:
+	default:
+		t.Fatal("no signal for the pod's own commit")
+	}
+}

@@ -375,3 +375,8 @@ holder while it is sending.
 - 2026-11-21: Phase 3 started. `txn/deltatxn` puts the Delta backend behind
   the `txn` seam, and the porting pattern is above. The first port is
   `auth/nonce`: two pods racing on one nonce consume it exactly once (F4).
+- 2026-11-21: Phase 3: `config` ported. Two pods updating the config at once
+  lose no update (F4). `DeltaDB.Changes(table)` stands in for NOTIFY
+  triggers: another pod reloads a new config version as soon as it follows
+  the commit. A read outside a transaction sees the pod's current view, which
+  can lag the log until the pod follows it (F29).

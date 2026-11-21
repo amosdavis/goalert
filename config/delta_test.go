@@ -32,16 +32,21 @@ func newDeltaEnv(t *testing.T) *deltaEnv {
 	return e
 }
 
-// pod opens the table as one GoAlert pod and returns its config store.
-func (e *deltaEnv) pod(t *testing.T, name string) (*Store, txn.DB) {
+// pod opens the table as one GoAlert pod and returns its config store. It
+// follows the log only if poll is positive.
+func (e *deltaEnv) pod(t *testing.T, name string, poll ...time.Duration) (*Store, txn.DB) {
 	t.Helper()
 	ctx := permission.SystemContext(context.Background(), "test")
+	interval := time.Duration(-1)
+	if len(poll) > 0 {
+		interval = poll[0]
+	}
 	fdb, err := filestore.OpenDelta(ctx, e.store, e.schema, filestore.DeltaOptions{
-		WriterID: name, PollInterval: -1, Logf: func(string, ...any) {},
+		WriterID: name, PollInterval: interval, Logf: func(string, ...any) {},
 	})
 	require.NoError(t, err)
 	db := deltatxn.DB{DB: fdb}
-	s, err := NewDeltaStore(ctx, StoreConfig{Keys: e.keys}, db, e.tables)
+	s, err := NewDeltaStore(ctx, StoreConfig{Keys: e.keys}, db, e.tables, fdb.Changes("config"))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -144,4 +149,17 @@ func TestDeltaUpdateConfigRace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2*each, id)
 	assert.Contains(t, string(data), `"`+strings.Repeat("x", 2*each)+`"`, "no update is lost (F4)")
+}
+
+func TestDeltaConfigReloadsOnChange(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e := newDeltaEnv(t)
+	a, _ := e.pod(t, "a")
+	b, _ := e.pod(t, "b", 2*time.Millisecond)
+
+	var cfg Config
+	cfg.General.ApplicationName = "changed"
+	require.NoError(t, a.SetConfig(ctx, cfg))
+	require.Eventually(t, func() bool { return b.Config().General.ApplicationName == "changed" }, 10*time.Second, 5*time.Millisecond,
+		"another pod picks up a new config version at once, as it would on Postgres's NOTIFY")
 }

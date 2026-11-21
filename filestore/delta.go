@@ -314,6 +314,9 @@ type DeltaDB struct {
 
 	conflicts, batches, batched atomic.Int64
 
+	watchMu  sync.Mutex
+	watchers map[string][]chan struct{} // for Changes
+
 	queueMu sync.Mutex
 	queue   []*pendingTx // transactions waiting for a writer
 
@@ -522,6 +525,35 @@ func (db *DeltaDB) publish(version int64, changed map[string]tableData) {
 		}
 	}
 	db.view.Store(&View{index: uint64(version), tables: tables})
+	db.notifyChanged(changed)
+}
+
+// Changes returns a channel that gets a value whenever this pod applies a
+// commit that changes table, its own or another pod's: the Delta backend's
+// stand-in for a Postgres NOTIFY trigger. Sends never block the store, so
+// a burst of changes may arrive as one.
+func (db *DeltaDB) Changes(table string) <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	db.watchMu.Lock()
+	defer db.watchMu.Unlock()
+	if db.watchers == nil {
+		db.watchers = make(map[string][]chan struct{})
+	}
+	db.watchers[table] = append(db.watchers[table], ch)
+	return ch
+}
+
+func (db *DeltaDB) notifyChanged(changed map[string]tableData) {
+	db.watchMu.Lock()
+	defer db.watchMu.Unlock()
+	for name := range changed {
+		for _, ch := range db.watchers[name] {
+			select {
+			case ch <- struct{}{}:
+			default: // one is already waiting
+			}
+		}
+	}
 }
 
 // View returns an immutable view of the latest version this pod has

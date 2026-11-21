@@ -34,7 +34,8 @@ type Store struct {
 	mx                 sync.RWMutex
 	db                 *sql.DB
 	txdb               txn.DB
-	delta              *DeltaTables // the Delta backend, if set (delta.go)
+	delta              *DeltaTables    // the Delta backend, if set (delta.go)
+	changes            <-chan struct{} // config changes on the Delta backend
 	keys               keyring.Keys
 	latestConfig       *sql.Stmt
 	setConfig          *sql.Stmt
@@ -121,6 +122,15 @@ func (s *Store) start(ctx context.Context) error {
 					err := s.Reload(ctx)
 					if err != nil {
 						log.Log(ctx, errors.Wrap(err, "config auto-reload"))
+					}
+				})
+			case <-s.changes:
+				// A new version, from this pod or another: reload now, as
+				// the Postgres store does on its NOTIFY.
+				permission.SudoContext(logger.BackgroundContext(), func(ctx context.Context) {
+					err := s.Reload(ctx)
+					if err != nil {
+						log.Log(ctx, errors.Wrap(err, "config reload on change"))
 					}
 				})
 			case s.closeCh <- struct{}{}:

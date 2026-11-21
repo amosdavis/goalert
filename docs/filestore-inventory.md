@@ -205,7 +205,13 @@ Unique:
 
 - config_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `config/delta.go`. The key is the zero-padded id, so the newest
+version sorts last; `id DEFAULT nextval(config_id_seq)` is the store's
+`config_id_seq` sequence and `created_at DEFAULT now()` the transaction's time.
+`lock config in exclusive mode` is unnecessary: an update that loses a race runs
+again (F4). trg_config_update's NOTIFY becomes `DeltaDB.Changes("config")`: a
+pod reloads the config when it applies a new version, its own or another
+pod's.
 
 ### config_limits
 
