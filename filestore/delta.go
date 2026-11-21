@@ -301,9 +301,13 @@ type DeltaDB struct {
 
 	conflicts atomic.Int64
 
-	mu     sync.Mutex // guards failed and closed
+	mu     sync.Mutex // guards the fields below
 	failed error
 	closed bool
+	// denied is the last time storage refused this pod's credentials, until
+	// storage works for it again (F33).
+	denied        error
+	deniedOnWrite bool
 
 	stop chan struct{}
 	wg   sync.WaitGroup // the follower and checkpoints
@@ -319,6 +323,9 @@ func CreateDelta(ctx context.Context, store objstore.Store, schema *Schema, opts
 	}
 	meta, err := schema.deltaMetaData()
 	if err != nil {
+		return err
+	}
+	if err := objstore.SelfTest(ctx, store); err != nil {
 		return err
 	}
 	meta.ID = uuid.NewString()
@@ -343,6 +350,11 @@ func OpenDelta(ctx context.Context, store objstore.Store, schema *Schema, opts D
 	}
 	db.log = deltalog.New(store, opts.WriterID)
 	db.log.Warn = func(err error) { opts.Logf("filestore: %v", err) }
+	// Find broken credentials or a store that can't do what the log needs
+	// now, not at the first page (F33).
+	if err := objstore.SelfTest(ctx, store); err != nil {
+		return nil, err
+	}
 	if err := db.load(ctx); err != nil {
 		return nil, err
 	}
@@ -481,8 +493,33 @@ func (db *DeltaDB) View() *View { return db.view.Load() }
 // Conflicts returns how many commits this pod lost to other pods (F40).
 func (db *DeltaDB) Conflicts() int64 { return db.conflicts.Load() }
 
-// Health returns why the store refuses writes, if it does (F21).
-func (db *DeltaDB) Health() error { return db.writeErr() }
+// Health returns why the store refuses writes (F21), or why storage refuses
+// this pod's credentials (F33), if either is the case.
+func (db *DeltaDB) Health() error {
+	if err := db.writeErr(); err != nil {
+		return err
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.denied
+}
+
+// noteStorage keeps Health red while storage refuses this pod's
+// credentials. A success turns it green again: any write, or a read if a
+// read was refused.
+func (db *DeltaDB) noteStorage(err error, write bool) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	switch {
+	case errors.Is(err, objstore.ErrDenied):
+		if db.denied == nil {
+			db.opts.Logf("filestore: storage refused this pod's credentials: %v", err)
+		}
+		db.denied, db.deniedOnWrite = err, write
+	case err == nil && (write || !db.deniedOnWrite):
+		db.denied = nil
+	}
+}
 
 func (db *DeltaDB) writeErr() error {
 	db.mu.Lock()
@@ -556,6 +593,7 @@ func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, er
 		}
 		actions, files, err := db.prepare(ctx, tx)
 		if err != nil {
+			db.noteStorage(err, true)
 			return 0, err
 		}
 		if len(actions) == 0 {
@@ -564,6 +602,7 @@ func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, er
 
 		version := db.snap.Version + 1
 		info, err := db.log.Commit(ctx, version, db.snap.MetaData.ID, "WRITE", tx.now, actions)
+		db.noteStorage(err, true)
 		if err == nil {
 			db.committed(version, info, actions, files, tx.working)
 			return version, nil
@@ -675,8 +714,10 @@ func (db *DeltaDB) catchUp(ctx context.Context) error {
 		version := db.snap.Version + 1
 		info, actions, err := db.log.Read(ctx, version)
 		if errors.Is(err, objstore.ErrNotFound) {
+			db.noteStorage(nil, false)
 			return nil
 		}
+		db.noteStorage(err, false)
 		if err != nil {
 			if errors.Is(err, deltalog.ErrCorrupt) {
 				db.fail(err)
@@ -684,6 +725,7 @@ func (db *DeltaDB) catchUp(ctx context.Context) error {
 			return err
 		}
 		if err := db.apply(ctx, version, info, actions); err != nil {
+			db.noteStorage(err, false)
 			if errors.Is(err, ErrCorrupt) || errors.Is(err, ErrVersion) || errors.Is(err, deltalog.ErrForeign) ||
 				errors.Is(err, deltalog.ErrCorrupt) || errors.Is(err, deltalog.ErrUnsupported) {
 				db.fail(err)

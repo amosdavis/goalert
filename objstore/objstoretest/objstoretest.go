@@ -140,6 +140,14 @@ func Run(t *testing.T, newStore func(t *testing.T) objstore.Store) {
 		}
 	})
 
+	t.Run("SelfTest", func(t *testing.T) {
+		s := newStore(t)
+		require.NoError(t, objstore.SelfTest(ctx, s))
+		got, err := s.List(ctx, "", "")
+		require.NoError(t, err)
+		assert.Empty(t, got, "the self-test cleans up after itself")
+	})
+
 	t.Run("Isolation", func(t *testing.T) {
 		// Two stores from newStore never see each other's objects.
 		a, b := newStore(t), newStore(t)

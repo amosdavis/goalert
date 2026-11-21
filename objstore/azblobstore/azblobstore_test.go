@@ -2,7 +2,9 @@ package azblobstore_test
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -37,4 +39,28 @@ func TestConformance(t *testing.T) {
 		require.NoError(t, err)
 		return s
 	})
+}
+
+// TestWrongKey checks that refused credentials are reported as such (F33).
+func TestWrongKey(t *testing.T) {
+	connStr := os.Getenv("GOALERT_TEST_AZURE_CONNECTION_STRING")
+	if connStr == "" {
+		t.Skip("set GOALERT_TEST_AZURE_CONNECTION_STRING")
+	}
+	parts := strings.Split(connStr, ";")
+	for i, p := range parts {
+		if strings.HasPrefix(p, "AccountKey=") {
+			parts[i] = "AccountKey=" + base64.StdEncoding.EncodeToString(make([]byte, 64))
+		}
+	}
+	client, err := azblob.NewClientFromConnectionString(strings.Join(parts, ";"), nil)
+	require.NoError(t, err)
+	s, err := azblobstore.New(client.ServiceClient().NewContainerClient("goalert-test"), "wrong-key/")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = s.Get(ctx, "x")
+	require.ErrorIs(t, err, objstore.ErrDenied)
+	require.ErrorIs(t, s.PutIfAbsent(ctx, "x", []byte("1")), objstore.ErrDenied)
+	require.ErrorIs(t, objstore.SelfTest(ctx, s), objstore.ErrDenied)
 }

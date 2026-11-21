@@ -54,7 +54,15 @@ var (
 
 	// ErrUnknown means a write may or may not have happened.
 	ErrUnknown = errors.New("objstore: write outcome unknown")
+
+	// ErrDenied means the store refused the credentials, or they lack a
+	// permission (F33). A write refused this way did not happen.
+	ErrDenied = errors.New("objstore: access denied")
 )
+
+// Denied wraps err so that it matches ErrDenied as well as itself, for
+// implementations in other packages.
+func Denied(err error) error { return fmt.Errorf("%w: %w", ErrDenied, err) }
 
 // unknown wraps err so that it matches ErrUnknown as well as itself.
 func unknown(err error) error { return fmt.Errorf("%w: %w", ErrUnknown, err) }

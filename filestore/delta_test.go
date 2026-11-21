@@ -449,15 +449,27 @@ func TestDeltaRefusesForeignCommits(t *testing.T) {
 type crashStore struct {
 	*objstore.Mem
 	mu         sync.Mutex
+	armed      bool
 	writesLeft int
 	landLast   bool
 	crashed    bool
+}
+
+// arm starts counting writes, so a pod can open first.
+func (c *crashStore) arm(writes int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed, c.writesLeft = true, writes
 }
 
 var errPodCrashed = errors.New("pod crashed")
 
 func (c *crashStore) write(op func() error) error {
 	c.mu.Lock()
+	if !c.armed {
+		c.mu.Unlock()
+		return op()
+	}
 	if c.crashed {
 		c.mu.Unlock()
 		return errPodCrashed
@@ -550,13 +562,14 @@ func TestDeltaCrashAtEveryWrite(t *testing.T) {
 		finished := false
 		for _, landLast := range []bool{false, true} {
 			mem := newDeltaStore(t)
-			store := &crashStore{Mem: mem, writesLeft: writes, landLast: landLast}
+			store := &crashStore{Mem: mem, landLast: landLast}
 			opts := dOpts("crashing")
 			opts.CheckpointEvery = 3
 			pod, err := OpenDelta(ctx, store, sch.s, opts)
 			require.NoError(t, err)
 			pod.log.Backoff = time.Millisecond
 			pod.log.MaxAttempts = 2
+			store.arm(writes)
 
 			acked := 0
 			var failure error
@@ -591,4 +604,93 @@ func TestDeltaCrashAtEveryWrite(t *testing.T) {
 
 func sortUsers(rows []dUser) {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+}
+
+// denyingStore refuses reads or writes on demand, as storage does when
+// credentials expire or a permission is removed.
+type denyingStore struct {
+	*objstore.Mem
+	mu            sync.Mutex
+	reads, writes bool
+}
+
+func (d *denyingStore) set(reads, writes bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reads, d.writes = reads, writes
+}
+
+func (d *denyingStore) deny(write bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if (write && d.writes) || (!write && d.reads) {
+		return objstore.Denied(errors.New("403 forbidden"))
+	}
+	return nil
+}
+
+func (d *denyingStore) Get(ctx context.Context, name string) ([]byte, error) {
+	if err := d.deny(false); err != nil {
+		return nil, err
+	}
+	return d.Mem.Get(ctx, name)
+}
+
+func (d *denyingStore) List(ctx context.Context, prefix, startAfter string) ([]string, error) {
+	if err := d.deny(false); err != nil {
+		return nil, err
+	}
+	return d.Mem.List(ctx, prefix, startAfter)
+}
+
+func (d *denyingStore) PutIfAbsent(ctx context.Context, name string, data []byte) error {
+	if err := d.deny(true); err != nil {
+		return err
+	}
+	return d.Mem.PutIfAbsent(ctx, name, data)
+}
+
+func (d *denyingStore) Put(ctx context.Context, name string, data []byte) error {
+	if err := d.deny(true); err != nil {
+		return err
+	}
+	return d.Mem.Put(ctx, name, data)
+}
+
+func (d *denyingStore) Delete(ctx context.Context, name string) error {
+	if err := d.deny(true); err != nil {
+		return err
+	}
+	return d.Mem.Delete(ctx, name)
+}
+
+func TestDeltaRefusedCredentials(t *testing.T) {
+	ctx := context.Background()
+	store := &denyingStore{Mem: newDeltaStore(t)}
+	sch := newDSchema()
+
+	store.set(false, true)
+	_, err := OpenDelta(ctx, store, sch.s, dOpts("a"))
+	require.ErrorIs(t, err, objstore.ErrDenied, "the startup self-test finds a missing permission (F33)")
+
+	store.set(false, false)
+	db := openPod(t, store, sch, dOpts("a"))
+	require.NoError(t, db.Health())
+
+	store.set(false, true)
+	_, err = db.Update(ctx, putUser(sch, "u1"))
+	require.ErrorIs(t, err, objstore.ErrDenied)
+	require.ErrorIs(t, db.Health(), objstore.ErrDenied, "health goes red on an authorization failure (F33)")
+	store.set(false, false)
+	_, err = db.Update(ctx, putUser(sch, "u1"))
+	require.NoError(t, err)
+	require.NoError(t, db.Health(), "and green again once storage works")
+
+	store.set(true, false)
+	require.ErrorIs(t, db.WaitFor(ctx, 5), objstore.ErrDenied)
+	require.ErrorIs(t, db.Health(), objstore.ErrDenied)
+	store.set(false, false)
+	_, err = db.Update(ctx, putUser(sch, "u2"))
+	require.NoError(t, err)
+	require.NoError(t, db.Health())
 }

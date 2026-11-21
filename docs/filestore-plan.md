@@ -260,3 +260,11 @@ holder while it is sending.
   none applied twice (F4). It found that a commit whose first attempt was
   unclear, and whose retry was rejected, was reported as failed even though
   it might be in the log; it now stays unknown until read back (F32).
+- 2026-11-21: Phase 1b: delta-rs also reads a table written by the store,
+  with bucket rewrites, an emptied bucket, tombstones, the sequences table and
+  a checkpoint, and sees every row as GoAlert wrote it (F35). For F33, every
+  store runs a self-test in a scratch prefix when a table is created or
+  opened: create-if-absent must be enforced, and read, list, replace and
+  delete must work. GCS and Azure report refused credentials (401, 403) as
+  `objstore.ErrDenied`, and the store's health stays red while storage
+  refuses them.

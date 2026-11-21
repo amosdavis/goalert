@@ -43,3 +43,32 @@ func TestMemFaults(t *testing.T) {
 	m.BeforeWrite = nil
 	assert.Equal(t, 2, m.Ops()["putIfAbsent"])
 }
+
+// lax ignores create-if-absent, as a misbehaving store or emulator might.
+type lax struct{ *objstore.Mem }
+
+func (l lax) PutIfAbsent(ctx context.Context, name string, data []byte) error {
+	return l.Mem.Put(ctx, name, data)
+}
+
+// refusing denies every create.
+type refusing struct{ *objstore.Mem }
+
+func (refusing) PutIfAbsent(context.Context, string, []byte) error {
+	return objstore.Denied(errors.New("403 forbidden"))
+}
+
+func TestSelfTest(t *testing.T) {
+	ctx := context.Background()
+	require.NoError(t, objstore.SelfTest(ctx, objstore.NewMem()))
+
+	err := objstore.SelfTest(ctx, lax{objstore.NewMem()})
+	require.ErrorContains(t, err, "does not enforce create-if-absent", "two pods could win one version (F4)")
+
+	m := objstore.NewMem()
+	err = objstore.SelfTest(ctx, refusing{m})
+	require.ErrorIs(t, err, objstore.ErrDenied, "a missing permission is reported as one (F33)")
+	names, err := m.List(ctx, "", "")
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}

@@ -48,10 +48,29 @@ func (s *Store) Get(ctx context.Context, name string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", objstore.ErrNotFound, name)
 	}
 	if err != nil {
-		return nil, err
+		return nil, opErr("read", name, err)
 	}
 	defer func() { _ = r.Close() }()
-	return io.ReadAll(r)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, opErr("read", name, err)
+	}
+	return data, nil
+}
+
+// denied reports whether GCS refused the credentials or a permission (F33).
+func denied(err error) bool {
+	var gerr *googleapi.Error
+	return errors.As(err, &gerr) && (gerr.Code == http.StatusUnauthorized || gerr.Code == http.StatusForbidden)
+}
+
+// opErr wraps an error from an operation other than a write.
+func opErr(op, name string, err error) error {
+	err = fmt.Errorf("gcsstore: %s %s: %w", op, name, err)
+	if denied(err) {
+		return objstore.Denied(err)
+	}
+	return err
 }
 
 // writeErr classifies an upload error. A rejected precondition means the
@@ -66,6 +85,8 @@ func writeErr(name string, err error) error {
 		switch {
 		case gerr.Code == http.StatusPreconditionFailed:
 			return fmt.Errorf("%w: %s", objstore.ErrExists, name)
+		case denied(err):
+			return objstore.Denied(fmt.Errorf("gcsstore: write %s: %w", name, err))
 		case gerr.Code >= 400 && gerr.Code < 500:
 			return fmt.Errorf("gcsstore: write %s: %w", name, err)
 		}
@@ -113,7 +134,7 @@ func (s *Store) List(ctx context.Context, prefix, startAfter string) ([]string, 
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, opErr("list", prefix, err)
 		}
 		name := strings.TrimPrefix(attrs.Name, s.prefix)
 		if name > startAfter {
@@ -128,8 +149,8 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	err := s.obj(name).Delete(ctx)
-	if errors.Is(err, storage.ErrObjectNotExist) {
+	if err == nil || errors.Is(err, storage.ErrObjectNotExist) {
 		return nil
 	}
-	return err
+	return opErr("delete", name, err)
 }

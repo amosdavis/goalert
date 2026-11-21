@@ -51,10 +51,30 @@ func (s *Store) Get(ctx context.Context, name string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", objstore.ErrNotFound, name)
 	}
 	if err != nil {
-		return nil, err
+		return nil, opErr("read", name, err)
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, opErr("read", name, err)
+	}
+	return data, nil
+}
+
+// denied reports whether Azure refused the credentials or a permission
+// (F33), such as an expired SAS token or a missing role assignment.
+func denied(err error) bool {
+	var rerr *azcore.ResponseError
+	return errors.As(err, &rerr) && (rerr.StatusCode == http.StatusUnauthorized || rerr.StatusCode == http.StatusForbidden)
+}
+
+// opErr wraps an error from an operation other than a write.
+func opErr(op, name string, err error) error {
+	err = fmt.Errorf("azblobstore: %s %s: %w", op, name, err)
+	if denied(err) {
+		return objstore.Denied(err)
+	}
+	return err
 }
 
 // writeErr classifies an upload error. A failed condition means the blob
@@ -66,6 +86,9 @@ func writeErr(name string, err error) error {
 	}
 	if bloberror.HasCode(err, bloberror.BlobAlreadyExists, bloberror.ConditionNotMet) {
 		return fmt.Errorf("%w: %s", objstore.ErrExists, name)
+	}
+	if denied(err) {
+		return objstore.Denied(fmt.Errorf("azblobstore: write %s: %w", name, err))
 	}
 	var rerr *azcore.ResponseError
 	if errors.As(err, &rerr) && rerr.StatusCode >= 400 && rerr.StatusCode < 500 && rerr.StatusCode != http.StatusRequestTimeout {
@@ -104,7 +127,7 @@ func (s *Store) List(ctx context.Context, prefix, startAfter string) ([]string, 
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, opErr("list", prefix, err)
 		}
 		for _, item := range page.Segment.BlobItems {
 			name := strings.TrimPrefix(*item.Name, s.prefix)
@@ -121,8 +144,8 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	_, err := s.c.NewBlobClient(s.prefix+name).Delete(ctx, nil)
-	if bloberror.HasCode(err, bloberror.BlobNotFound) {
+	if err == nil || bloberror.HasCode(err, bloberror.BlobNotFound) {
 		return nil
 	}
-	return err
+	return opErr("delete", name, err)
 }
