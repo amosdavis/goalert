@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/target/goalert/deltalog"
+	"github.com/target/goalert/deltatable"
 	"github.com/target/goalert/objstore"
 )
 
@@ -693,4 +694,88 @@ func TestDeltaRefusedCredentials(t *testing.T) {
 	_, err = db.Update(ctx, putUser(sch, "u2"))
 	require.NoError(t, err)
 	require.NoError(t, db.Health())
+}
+
+func dataFiles(t *testing.T, store objstore.Store) []string {
+	t.Helper()
+	names, err := store.List(context.Background(), "tbl=", "")
+	require.NoError(t, err)
+	return names
+}
+
+func TestDeltaVacuum(t *testing.T) {
+	ctx := context.Background()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	clock := frozenClock(dStart)
+	opts := dOpts("a")
+	opts.Clock = clock
+	db := openPod(t, store, sch, opts)
+
+	_, err := db.Update(ctx, putUser(sch, "u1"))
+	require.NoError(t, err)
+	removed := dataFiles(t, store)
+	require.Len(t, removed, 1)
+	_, err = db.Update(ctx, func(tx *Tx) error { return sch.users.Put(tx, dUser{ID: "u1", Name: "changed"}) })
+	require.NoError(t, err, "rewriting the bucket removes its first file")
+	// A file no commit refers to, as a transaction that lost a race leaves.
+	orphan := deltatable.DataFilePath("users", 0, dStart)
+	require.NoError(t, store.Put(ctx, orphan, []byte("orphan")))
+
+	n, err := db.Vacuum(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, n, "nothing is older than the tombstone retention yet (F6)")
+
+	clock.Set(dStart.Add(8 * 24 * time.Hour))
+	recent := deltatable.DataFilePath("users", 1, clock.Now())
+	require.NoError(t, store.Put(ctx, recent, []byte("a transaction may be about to commit this")))
+	n, err = db.Vacuum(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, "the removed file and the old orphan")
+	names := dataFiles(t, store)
+	assert.NotContains(t, names, removed[0])
+	assert.NotContains(t, names, orphan)
+	assert.Contains(t, names, recent, "a new file no commit refers to yet stays")
+
+	fresh := openPod(t, store, sch, opts)
+	u, ok := sch.users.Get(fresh.View(), "u1")
+	require.True(t, ok)
+	assert.Equal(t, "changed", u.Name, "VACUUM leaves the table whole")
+}
+
+func TestDeltaStalePodReloads(t *testing.T) {
+	ctx := context.Background()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	staleClock := frozenClock(dStart)
+	staleOpts := dOpts("stale")
+	staleOpts.Clock = staleClock
+	stale := openPod(t, store, sch, staleOpts)
+
+	writerOpts := dOpts("writer")
+	writerOpts.CheckpointEvery = 2
+	writer, err := OpenDelta(ctx, store, sch.s, writerOpts)
+	require.NoError(t, err)
+	for i := range 4 {
+		_, err := writer.Update(ctx, putUser(sch, fmt.Sprintf("u%d", i)))
+		require.NoError(t, err)
+	}
+	require.NoError(t, writer.Close())
+
+	// Ten days on, log cleanup deletes what checkpoint 4 replaces, while the
+	// stale pod still has version 0.
+	later := dStart.Add(10 * 24 * time.Hour)
+	n, err := deltalog.New(store, "cleaner").Cleanup(ctx, later, 7*24*time.Hour)
+	require.NoError(t, err)
+	require.Positive(t, n)
+	_, err = store.Get(ctx, deltalog.CommitName(1))
+	require.ErrorIs(t, err, objstore.ErrNotFound)
+
+	staleClock.Set(later)
+	v, err := stale.Update(ctx, putUser(sch, "late"))
+	require.NoError(t, err)
+	assert.EqualValues(t, 5, v, "the pod reloads and commits after the latest version, not a second version 1 (F16)")
+	assert.Len(t, dumpUsers(sch, stale.View()), 5)
+	_, err = store.Get(ctx, deltalog.CommitName(1))
+	require.ErrorIs(t, err, objstore.ErrNotFound, "the deleted version was not written again")
 }

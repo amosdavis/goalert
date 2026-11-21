@@ -252,3 +252,46 @@ func TestCheckpointTombstones(t *testing.T) {
 	assert.Equal(t, []string{"b.parquet"}, removed(testTime.Add(8*24*time.Hour)),
 		"expired tombstones go; one without a deletion time stays, so VACUUM can't delete a file in use (F6)")
 }
+
+func TestCleanup(t *testing.T) {
+	ctx := context.Background()
+	store := objstore.NewMem()
+	l := newTestLog(t, store)
+	create(t, l)
+	const day = 24 * time.Hour
+	// Version v is committed on day v, with checkpoints at 3, 6 and 9.
+	for v := int64(1); v <= 9; v++ {
+		at := testTime.Add(time.Duration(v) * day)
+		_, err := l.Commit(ctx, v, testTable, "WRITE", at, []Action{dataFile(fmt.Sprintf("f%d.parquet", v))})
+		require.NoError(t, err)
+		if v%3 == 0 {
+			require.NoError(t, l.WriteCheckpoint(ctx, load(t, l), at, DefaultTombstoneRetention))
+		}
+	}
+	want := load(t, l)
+
+	n, err := l.Cleanup(ctx, testTime.Add(9*day), 7*day)
+	require.NoError(t, err)
+	assert.Zero(t, n, "no checkpoint is older than the retention yet")
+
+	// On day 14 with seven days' retention, version 6 (day 6) is the newest
+	// checkpoint old enough, so everything before it goes.
+	n, err = l.Cleanup(ctx, testTime.Add(14*day), 7*day)
+	require.NoError(t, err)
+	assert.Equal(t, 7, n, "commits 0 to 5 and checkpoint 3")
+	for v := int64(0); v < 6; v++ {
+		_, err := store.Get(ctx, CommitName(v))
+		require.ErrorIs(t, err, objstore.ErrNotFound)
+	}
+	for _, name := range []string{CommitName(6), CheckpointName(6), CommitName(9), CheckpointName(9), lastCheckpointName} {
+		_, err := store.Get(ctx, name)
+		require.NoError(t, err, "%s stays", name)
+	}
+	assert.Equal(t, want, load(t, l), "the log still loads the same state")
+
+	// A boundary that can't be loaded is skipped: nothing older goes.
+	require.NoError(t, store.Put(ctx, CheckpointName(9), []byte("not parquet")))
+	n, err = l.Cleanup(ctx, testTime.Add(30*day), 7*day)
+	require.NoError(t, err)
+	assert.Zero(t, n, "checkpoint 6 is now the newest usable one, and nothing before it is left")
+}

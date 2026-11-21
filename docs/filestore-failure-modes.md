@@ -148,10 +148,17 @@ the switchover system (`swo/`), and River.
   the engine batches its changes per cycle, every query it runs has an
   in-memory index, and a cycle-time budget is measured against a large dataset.
 - **F16 Unbounded growth.** Commit files, removed data files and small files pile
-  up, and startup and listing slow down. *Rule:* a checkpoint every N commits,
-  old log entries removed after the retention window, VACUUM for removed data
-  files, and compaction of small files. The cleanup and retention managers
-  keep working.
+  up, and startup and listing slow down. Cleaning up has its own way to fail:
+  a pod that fell behind (paused, partitioned) reads a commit that cleanup
+  deleted as the end of the log, and its next create-if-absent writes that
+  version again, forking the log; or it reads a data file VACUUM deleted.
+  *Rule:* a checkpoint every N commits, old log entries removed after the
+  retention window but never at or after the newest checkpoint older than it,
+  VACUUM only for files removed or never committed longer ago than the
+  tombstone retention, and compaction of small files. A pod that has not
+  confirmed it is current within half of the shorter retention, by wall or
+  monotonic clock, reloads from a checkpoint instead of catching up commit by
+  commit. The cleanup and retention managers keep working.
 - **F17 Running out of memory.** Every pod holds all of the data in RAM. *Rule:*
   set and test a memory ceiling for a stated dataset size.
 - **F21 Storage unavailable or refusing writes.** An outage, throttling, an

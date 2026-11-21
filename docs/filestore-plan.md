@@ -268,3 +268,11 @@ holder while it is sending.
   delete must work. GCS and Azure report refused credentials (401, 403) as
   `objstore.ErrDenied`, and the store's health stays red while storage
   refuses them.
+- 2026-11-21: Phase 1b: cleanup (F16). `CleanLog` deletes commits and
+  checkpoints before the newest usable checkpoint older than the log
+  retention, and `Vacuum` deletes data files removed, or never committed,
+  longer ago than the tombstone retention; a data file's name carries its
+  upload time for that. A pod that has not confirmed it is current within
+  half the shorter retention reloads from a checkpoint first. Without that, a
+  test shows a paused pod taking a cleaned-up commit for the end of the log
+  and committing that version a second time.

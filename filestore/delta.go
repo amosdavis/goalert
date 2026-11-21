@@ -234,6 +234,12 @@ type DeltaOptions struct {
 	// deltalog.DefaultTombstoneRetention.
 	TombstoneRetention time.Duration
 
+	// LogRetention is how long commits and checkpoints are kept before
+	// CleanLog deletes them. The default is 7 days. A pod that goes half of
+	// the shorter retention without confirming it is current reloads from a
+	// checkpoint (F16).
+	LogRetention time.Duration
+
 	// MaxConflicts is how often Update tries a transaction that loses to
 	// other pods' commits before it returns ErrConflicts. The default is 20.
 	MaxConflicts int
@@ -263,6 +269,9 @@ func (o DeltaOptions) withDefaults() DeltaOptions {
 	}
 	if o.TombstoneRetention == 0 {
 		o.TombstoneRetention = deltalog.DefaultTombstoneRetention
+	}
+	if o.LogRetention == 0 {
+		o.LogRetention = 7 * 24 * time.Hour
 	}
 	if o.MaxConflicts == 0 {
 		o.MaxConflicts = 20
@@ -294,10 +303,13 @@ type DeltaDB struct {
 	want   deltalog.MetaData
 
 	sem     chan struct{}         // held by the one writer, or by catching up
-	snap    *deltalog.Snapshot    // writer-owned, like master and buckets
+	snap    *deltalog.Snapshot    // writer-owned, like the fields up to view
 	master  map[string]tableData  // never seen by readers
 	buckets map[bucketID][]string // active data files by bucket
-	view    atomic.Pointer[View]
+	// When this pod last confirmed it had every commit, by the wall clock
+	// and by the monotonic one.
+	currentWall, currentMono time.Time
+	view                     atomic.Pointer[View]
 
 	conflicts atomic.Int64
 
@@ -398,9 +410,31 @@ func (db *DeltaDB) load(ctx context.Context) error {
 			return err
 		}
 	}
+	if db.snap != nil {
+		// Reloading: it must be the same table, and never an older version.
+		if snap.MetaData.ID != db.snap.MetaData.ID {
+			return corruptf("the table at this location was replaced: its ID is %s, not %s (F27)", snap.MetaData.ID, db.snap.MetaData.ID)
+		}
+		if snap.Version < db.snap.Version {
+			return corruptf("the log went back from version %d to %d", db.snap.Version, snap.Version)
+		}
+	}
 	db.snap, db.master, db.buckets = snap, tables, buckets
-	db.publish(snap.Version, nil)
+	db.publish(snap.Version, tables)
+	db.markCurrent()
 	return nil
+}
+
+func (db *DeltaDB) markCurrent() {
+	db.currentWall, db.currentMono = db.opts.Clock.Now(), time.Now()
+}
+
+// stale reports whether this pod went too long without confirming it had
+// every commit. Both clocks count: a paused VM's monotonic clock stops, and
+// a wall clock can jump back (F13).
+func (db *DeltaDB) stale() bool {
+	limit := min(db.opts.LogRetention, db.opts.TombstoneRetention) / 2
+	return db.opts.Clock.Now().Sub(db.currentWall) > limit || time.Since(db.currentMono) > limit
 }
 
 // fileBucket returns the bucket a data file belongs to.
@@ -710,11 +744,24 @@ func (db *DeltaDB) setFiles(files map[bucketID][]string) {
 // apply, such as one from another writer (F11) or a newer version (F30),
 // stops writes.
 func (db *DeltaDB) catchUp(ctx context.Context) error {
+	if db.stale() {
+		// The commits after this pod's version may have been cleaned up, so
+		// reading on could take a missing one for the end of the log, and
+		// the next commit could write that version again (F16).
+		if err := db.load(ctx); err != nil {
+			if errors.Is(err, ErrCorrupt) || errors.Is(err, ErrVersion) {
+				db.fail(err)
+			}
+			db.noteStorage(err, false)
+			return err
+		}
+	}
 	for {
 		version := db.snap.Version + 1
 		info, actions, err := db.log.Read(ctx, version)
 		if errors.Is(err, objstore.ErrNotFound) {
 			db.noteStorage(nil, false)
+			db.markCurrent()
 			return nil
 		}
 		db.noteStorage(err, false)
@@ -896,6 +943,72 @@ func (db *DeltaDB) maybeCheckpoint() {
 			db.opts.Logf("filestore: checkpoint %d: %v", snap.Version, err)
 		}
 	}()
+}
+
+// Vacuum deletes data files no reader needs any more (F6, F16): those
+// removed longer ago than the tombstone retention, and those no commit
+// refers to that were uploaded longer ago than that, such as the files of a
+// transaction that lost a race. A file whose name has no upload time is
+// kept. It returns how many files it deleted.
+func (db *DeltaDB) Vacuum(ctx context.Context) (int, error) {
+	if err := db.lock(ctx); err != nil {
+		return 0, err
+	}
+	if err := db.catchUp(ctx); err != nil {
+		db.unlock()
+		return 0, err
+	}
+	cutoff := db.opts.Clock.Now().Add(-db.opts.TombstoneRetention)
+	referenced := make(map[string]bool, len(db.snap.Files)+len(db.snap.Removed))
+	for p := range db.snap.Files {
+		referenced[p] = true
+	}
+	expired := make(map[string]bool)
+	for p, r := range db.snap.Removed {
+		if r.DeletionTimestamp != 0 && time.UnixMilli(r.DeletionTimestamp).Before(cutoff) {
+			expired[p] = true
+		} else {
+			referenced[p] = true
+		}
+	}
+	db.unlock()
+
+	// Files other pods add from here on are newer than the cutoff, and files
+	// they remove are tombstoned now, so both are kept.
+	names, err := db.store.List(ctx, deltatable.TableColumn+"=", "")
+	if err != nil {
+		db.noteStorage(err, false)
+		return 0, err
+	}
+	deleted := 0
+	for _, name := range names {
+		if referenced[name] {
+			continue
+		}
+		if !expired[name] {
+			// No commit refers to it. Delete it only once no transaction can
+			// still be about to commit it.
+			if at, ok := deltatable.FileTime(name); !ok || !at.Before(cutoff) {
+				continue
+			}
+		}
+		if err := db.store.Delete(ctx, name); err != nil {
+			db.noteStorage(err, true)
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
+// CleanLog deletes the commits and checkpoints older than the log retention
+// that no reader needs (F16). It returns how many files it deleted.
+func (db *DeltaDB) CleanLog(ctx context.Context) (int, error) {
+	n, err := db.log.Cleanup(ctx, db.opts.Clock.Now(), db.opts.LogRetention)
+	if err != nil {
+		db.noteStorage(err, true)
+	}
+	return n, err
 }
 
 // Close stops following the log and waits for background work. Writes in

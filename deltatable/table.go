@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,9 +72,26 @@ func Bucket(key string, n int) int {
 }
 
 // DataFilePath returns a new, unique data file path in a table's bucket,
-// in the Hive-style layout other Delta readers expect.
-func DataFilePath(table string, bucket int) string {
-	return fmt.Sprintf("%s=%s/%s=%d/part-%s.snappy.parquet", TableColumn, table, BucketColumn, bucket, uuid.NewString())
+// in the Hive-style layout other Delta readers expect. The name carries the
+// upload time, so VACUUM can tell an old file that no commit refers to from
+// one that a transaction is about to commit (F6).
+func DataFilePath(table string, bucket int, at time.Time) string {
+	return fmt.Sprintf("%s=%s/%s=%d/part-%013d-%s.snappy.parquet", TableColumn, table, BucketColumn, bucket, at.UnixMilli(), uuid.NewString())
+}
+
+// FileTime returns the upload time in a data file's name, and false if the
+// name has none.
+func FileTime(path string) (time.Time, bool) {
+	base := path[strings.LastIndexByte(path, '/')+1:]
+	rest, ok := strings.CutPrefix(base, "part-")
+	if !ok || len(rest) < 14 || rest[13] != '-' {
+		return time.Time{}, false
+	}
+	ms, err := strconv.ParseInt(rest[:13], 10, 64)
+	if err != nil || ms < 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(ms).UTC(), true
 }
 
 // WriteFile uploads rows as a new data file in a table's bucket and returns
@@ -94,7 +112,7 @@ func WriteFile[V any](ctx context.Context, store objstore.Store, rt *RowType[V],
 // Upload is WriteFile for a file already encoded: data holds numRecords
 // rows of table. It has the same guarantees.
 func Upload(ctx context.Context, store objstore.Store, table string, bucket int, data []byte, numRecords int, at time.Time) (deltalog.Add, error) {
-	path, err := upload(ctx, store, table, bucket, data)
+	path, err := upload(ctx, store, table, bucket, data, at)
 	if err != nil {
 		return deltalog.Add{}, err
 	}
@@ -124,7 +142,7 @@ var (
 // path. Every attempt uses a new name (F36), and retries back off with
 // jitter (F21). An attempt whose outcome was unclear may have left a file
 // behind; no commit references it, so VACUUM removes it later (F16).
-func upload(ctx context.Context, store objstore.Store, table string, bucket int, data []byte) (string, error) {
+func upload(ctx context.Context, store objstore.Store, table string, bucket int, data []byte, at time.Time) (string, error) {
 	delay := uploadBackoff
 	var err error
 	for attempt := range uploadAttempts {
@@ -136,7 +154,7 @@ func upload(ctx context.Context, store objstore.Store, table string, bucket int,
 			}
 			delay *= 2
 		}
-		path := DataFilePath(table, bucket)
+		path := DataFilePath(table, bucket, at)
 		err = store.PutIfAbsent(ctx, path, data)
 		if err == nil {
 			return path, nil
