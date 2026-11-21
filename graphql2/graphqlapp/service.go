@@ -21,7 +21,8 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/service"
-	"github.com/target/goalert/util/sqlutil"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/timeutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -206,7 +207,7 @@ func (m *Mutation) CreateService(ctx context.Context, input graphql2.CreateServi
 		return nil, validation.NewFieldError("newEscalationPolicy", "cannot be used with `escalationPolicyID`.")
 	}
 
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		svc := &service.Service{
 			Name: input.Name,
 		}
@@ -243,7 +244,7 @@ func (m *Mutation) CreateService(ctx context.Context, input graphql2.CreateServi
 		}
 
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.ServiceTarget(result.ID))
+			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.ServiceTarget(result.ID))
 			if err != nil {
 				return err
 			}
@@ -288,37 +289,28 @@ func (m *Mutation) CreateService(ctx context.Context, input graphql2.CreateServi
 }
 
 func (a *Mutation) UpdateService(ctx context.Context, input graphql2.UpdateServiceInput) (bool, error) {
-	tx, err := a.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer sqlutil.Rollback(ctx, "graphql: update service", tx)
+	err := sqltxn.DB{DB: a.DB}.Run(ctx, nil, func(tx txn.Tx) error {
+		svc, err := a.ServiceStore.FindOneForUpdate(ctx, tx, input.ID)
+		if err != nil {
+			return err
+		}
 
-	svc, err := a.ServiceStore.FindOneForUpdate(ctx, tx, input.ID)
-	if err != nil {
-		return false, err
-	}
+		if input.Name != nil {
+			svc.Name = *input.Name
+		}
+		if input.Description != nil {
+			svc.Description = *input.Description
+		}
+		if input.EscalationPolicyID != nil {
+			svc.EscalationPolicyID = *input.EscalationPolicyID
+		}
 
-	if input.Name != nil {
-		svc.Name = *input.Name
-	}
-	if input.Description != nil {
-		svc.Description = *input.Description
-	}
-	if input.EscalationPolicyID != nil {
-		svc.EscalationPolicyID = *input.EscalationPolicyID
-	}
+		if input.MaintenanceExpiresAt != nil {
+			svc.MaintenanceExpiresAt = *input.MaintenanceExpiresAt
+		}
 
-	if input.MaintenanceExpiresAt != nil {
-		svc.MaintenanceExpiresAt = *input.MaintenanceExpiresAt
-	}
-
-	err = a.ServiceStore.UpdateTx(ctx, tx, svc)
-	if err != nil {
-		return false, err
-	}
-
-	err = tx.Commit()
+		return a.ServiceStore.UpdateTx(ctx, tx, svc)
+	})
 	if err != nil {
 		return false, err
 	}

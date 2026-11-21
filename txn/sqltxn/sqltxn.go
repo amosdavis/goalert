@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/target/goalert/txn"
+	"github.com/target/goalert/util/sqlutil"
 )
 
 // DB starts transactions on a *sql.DB as txn.Tx values (*sql.Tx).
@@ -15,13 +16,16 @@ type DB struct{ *sql.DB }
 
 var _ txn.DB = DB{}
 
+func sqlOptions(opts *txn.Options) *sql.TxOptions {
+	if opts == nil {
+		return nil
+	}
+	return &sql.TxOptions{ReadOnly: opts.ReadOnly}
+}
+
 // BeginTx starts a transaction.
 func (db DB) BeginTx(ctx context.Context, opts *txn.Options) (txn.Tx, error) {
-	var sqlOpts *sql.TxOptions
-	if opts != nil {
-		sqlOpts = &sql.TxOptions{ReadOnly: opts.ReadOnly}
-	}
-	tx, err := db.DB.BeginTx(ctx, sqlOpts)
+	tx, err := db.DB.BeginTx(ctx, sqlOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -32,12 +36,12 @@ func (db DB) BeginTx(ctx context.Context, opts *txn.Options) (txn.Tx, error) {
 // fails or panics, the transaction is rolled back. Postgres never needs to
 // run fn twice.
 func (db DB) Run(ctx context.Context, opts *txn.Options, fn func(tx txn.Tx) error) error {
-	tx, err := db.BeginTx(ctx, opts)
+	tx, err := db.DB.BeginTx(ctx, sqlOptions(opts))
 	if err != nil {
 		return err
 	}
-	// After a commit, this returns sql.ErrTxDone and changes nothing.
-	defer func() { _ = tx.Rollback() }()
+	// After a commit this does nothing; a rollback that fails is logged.
+	defer sqlutil.Rollback(ctx, "txn: run", tx)
 	if err := fn(tx); err != nil {
 		return err
 	}

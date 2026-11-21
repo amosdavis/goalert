@@ -2,10 +2,10 @@ package graphqlapp
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/limit"
+	"github.com/target/goalert/txn"
 )
 
 func (q *Query) SystemLimits(ctx context.Context) ([]graphql2.SystemLimit, error) {
@@ -16,7 +16,7 @@ func (q *Query) SystemLimits(ctx context.Context) ([]graphql2.SystemLimit, error
 	return graphql2.MapLimitValues(limits), nil
 }
 func (m *Mutation) SetSystemLimits(ctx context.Context, input []graphql2.SystemLimitInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		l := limit.Limits{}
 		l, err := graphql2.ApplyLimitValues(l, input)
 		if err != nil {

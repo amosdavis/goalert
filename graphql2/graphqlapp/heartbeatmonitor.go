@@ -2,13 +2,13 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 	"net/url"
 	"time"
 
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/heartbeat"
+	"github.com/target/goalert/txn"
 )
 
 type HeartbeatMonitor App
@@ -35,7 +35,7 @@ func (m *Mutation) CreateHeartbeatMonitor(ctx context.Context, input graphql2.Cr
 	if input.ServiceID != nil {
 		serviceID = *input.ServiceID
 	}
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var details string
 		if input.AdditionalDetails != nil {
 			details = *input.AdditionalDetails
@@ -53,7 +53,7 @@ func (m *Mutation) CreateHeartbeatMonitor(ctx context.Context, input graphql2.Cr
 }
 
 func (m *Mutation) UpdateHeartbeatMonitor(ctx context.Context, input graphql2.UpdateHeartbeatMonitorInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		hb, err := m.HeartbeatStore.FindOneTx(ctx, tx, input.ID)
 		if err != nil {
 			return err

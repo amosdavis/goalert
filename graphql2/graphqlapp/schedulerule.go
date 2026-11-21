@@ -8,6 +8,7 @@ import (
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule/rule"
+	"github.com/target/goalert/txn"
 	"github.com/target/goalert/validation"
 
 	"github.com/pkg/errors"
@@ -37,7 +38,7 @@ func (m *Mutation) UpdateScheduleTarget(ctx context.Context, input graphql2.Sche
 	if input.Target.Type == assignment.TargetTypeUser && input.Target.ID == "__current_user" {
 		input.Target.ID = permission.UserID(ctx)
 	}
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		_, err := m.ScheduleStore.FindOneForUpdate(ctx, tx, schedID) // lock schedule
 		if errors.Is(err, sql.ErrNoRows) {
 			return validation.NewFieldError("scheduleID", "schedule not found")

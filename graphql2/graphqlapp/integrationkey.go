@@ -2,7 +2,6 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 	"net/url"
 
 	"github.com/google/uuid"
@@ -11,6 +10,8 @@ import (
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -99,13 +100,13 @@ func (key *IntegrationKey) TokenInfo(ctx context.Context, raw *integrationkey.In
 }
 
 func (m *Mutation) UpdateKeyConfig(ctx context.Context, input graphql2.UpdateKeyConfigInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		id, err := validate.ParseUUID("IntegrationKey.ID", input.KeyID)
 		if err != nil {
 			return err
 		}
 
-		cfg, err := m.IntKeyStore.Config(ctx, tx, id)
+		cfg, err := m.IntKeyStore.Config(ctx, sqltxn.Unwrap(tx), id)
 		if err != nil {
 			return err
 		}
@@ -173,7 +174,7 @@ func (m *Mutation) UpdateKeyConfig(ctx context.Context, input graphql2.UpdateKey
 			cfg.DefaultActions = input.DefaultActions
 		}
 
-		err = m.IntKeyStore.SetConfig(ctx, tx, id, cfg)
+		err = m.IntKeyStore.SetConfig(ctx, sqltxn.Unwrap(tx), id, cfg)
 		return err
 	})
 	if err != nil {
@@ -188,7 +189,7 @@ func (m *Mutation) CreateIntegrationKey(ctx context.Context, input graphql2.Crea
 	if input.ServiceID != nil {
 		serviceID = *input.ServiceID
 	}
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		key = &integrationkey.IntegrationKey{
 			ServiceID: serviceID,
 			Name:      input.Name,
@@ -197,7 +198,7 @@ func (m *Mutation) CreateIntegrationKey(ctx context.Context, input graphql2.Crea
 		if input.ExternalSystemName != nil {
 			key.ExternalSystemName = *input.ExternalSystemName
 		}
-		key, err = m.IntKeyStore.Create(ctx, tx, key)
+		key, err = m.IntKeyStore.Create(ctx, sqltxn.Unwrap(tx), key)
 		return err
 	})
 	return key, err

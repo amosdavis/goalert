@@ -2,7 +2,6 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -14,8 +13,9 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/retry"
 	"github.com/target/goalert/schedule"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
@@ -102,7 +102,7 @@ func (a *Mutation) SetScheduleOnCallNotificationRules(ctx context.Context, input
 		return false, err
 	}
 
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		rules := make([]schedule.OnCallNotificationRule, 0, len(input.Rules))
 		for _, r := range input.Rules {
 			info, err := a.DestReg.TypeInfo(ctx, r.Dest.Type)
@@ -114,7 +114,7 @@ func (a *Mutation) SetScheduleOnCallNotificationRules(ctx context.Context, input
 			}
 
 			// MapDestToID handles the appropriate validation checks, outside of the IsSchedOnCallNotify check done above.
-			chID, err := a.NCStore.MapDestToID(ctx, tx, r.Dest)
+			chID, err := a.NCStore.MapDestToID(ctx, sqltxn.Unwrap(tx), r.Dest)
 			if err != nil {
 				return err
 			}
@@ -152,7 +152,7 @@ func (a *Mutation) SetTemporarySchedule(ctx context.Context, input graphql2.SetT
 		clearSet = true
 	}
 
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		if clearSet {
 			return a.ScheduleStore.SetClearTemporarySchedule(ctx, tx, schedID, tmp, *input.ClearStart, *input.ClearEnd)
 		}
@@ -169,7 +169,7 @@ func (a *Mutation) ClearTemporarySchedules(ctx context.Context, input graphql2.C
 		return false, err
 	}
 
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		return a.ScheduleStore.ClearTemporarySchedules(ctx, tx, schedID, input.Start, input.End)
 	})
 
@@ -224,74 +224,66 @@ func (a *Mutation) DeleteAll(ctx context.Context, input []assignment.RawTarget) 
 }
 
 func (a *Mutation) tryDeleteAll(ctx context.Context, input []assignment.RawTarget) error {
-	tx, err := a.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer sqlutil.Rollback(ctx, "graphql: delete all", tx)
+	return sqltxn.DB{DB: a.DB}.Run(ctx, nil, func(tx txn.Tx) error {
+		var err error
 
-	m := make(map[assignment.TargetType][]string)
-	for _, tgt := range input {
-		m[tgt.TargetType()] = append(m[tgt.TargetType()], tgt.TargetID())
-	}
-
-	order := []assignment.TargetType{
-		assignment.TargetTypeRotation,
-		assignment.TargetTypeUserOverride,
-		assignment.TargetTypeSchedule,
-		assignment.TargetTypeCalendarSubscription,
-		assignment.TargetTypeUser,
-		assignment.TargetTypeIntegrationKey,
-		assignment.TargetTypeHeartbeatMonitor,
-		assignment.TargetTypeService,
-		assignment.TargetTypeEscalationPolicy,
-		assignment.TargetTypeNotificationRule,
-		assignment.TargetTypeContactMethod,
-		assignment.TargetTypeUserSession,
-	}
-
-	for _, typ := range order {
-		ids := m[typ]
-		if len(ids) == 0 {
-			continue
+		m := make(map[assignment.TargetType][]string)
+		for _, tgt := range input {
+			m[tgt.TargetType()] = append(m[tgt.TargetType()], tgt.TargetID())
 		}
-		switch typ {
-		case assignment.TargetTypeUserOverride:
-			err = errors.Wrap(a.OverrideStore.DeleteUserOverrideTx(ctx, tx, ids...), "delete user overrides")
-		case assignment.TargetTypeUser:
-			err = errors.Wrap(a.UserStore.DeleteManyTx(ctx, tx, ids), "delete users")
-		case assignment.TargetTypeService:
-			err = errors.Wrap(a.ServiceStore.DeleteManyTx(ctx, tx, ids), "delete services")
-		case assignment.TargetTypeEscalationPolicy:
-			err = errors.Wrap(a.PolicyStore.DeleteManyPoliciesTx(ctx, tx, ids), "delete escalation policies")
-		case assignment.TargetTypeIntegrationKey:
-			err = errors.Wrap(a.IntKeyStore.DeleteMany(ctx, tx, ids), "delete integration keys")
-		case assignment.TargetTypeSchedule:
-			err = errors.Wrap(a.ScheduleStore.DeleteManyTx(ctx, tx, ids), "delete schedules")
-		case assignment.TargetTypeCalendarSubscription:
-			err = errors.Wrap(a.CalSubStore.DeleteTx(ctx, tx, permission.UserID(ctx), ids...), "delete calendar subscriptions")
-		case assignment.TargetTypeRotation:
-			err = errors.Wrap(a.RotationStore.DeleteManyTx(ctx, tx, ids), "delete rotations")
-		case assignment.TargetTypeContactMethod:
-			err = errors.Wrap(a.CMStore.Delete(ctx, tx, ids...), "delete contact methods")
-		case assignment.TargetTypeNotificationRule:
-			err = errors.Wrap(a.NRStore.DeleteTx(ctx, tx, ids...), "delete notification rules")
-		case assignment.TargetTypeHeartbeatMonitor:
-			err = errors.Wrap(a.HeartbeatStore.DeleteTx(ctx, tx, ids...), "delete heartbeat monitors")
-		case assignment.TargetTypeUserSession:
-			err = errors.Wrap(a.AuthHandler.EndUserSessionTx(ctx, tx, ids...), "end user sessions")
-		default:
-			return validation.NewFieldError("type", "unsupported type "+typ.String())
-		}
-		if err != nil {
-			return err
-		}
-	}
 
-	err = tx.Commit()
-	if err != nil {
-		return err
-	}
+		order := []assignment.TargetType{
+			assignment.TargetTypeRotation,
+			assignment.TargetTypeUserOverride,
+			assignment.TargetTypeSchedule,
+			assignment.TargetTypeCalendarSubscription,
+			assignment.TargetTypeUser,
+			assignment.TargetTypeIntegrationKey,
+			assignment.TargetTypeHeartbeatMonitor,
+			assignment.TargetTypeService,
+			assignment.TargetTypeEscalationPolicy,
+			assignment.TargetTypeNotificationRule,
+			assignment.TargetTypeContactMethod,
+			assignment.TargetTypeUserSession,
+		}
 
-	return nil
+		for _, typ := range order {
+			ids := m[typ]
+			if len(ids) == 0 {
+				continue
+			}
+			switch typ {
+			case assignment.TargetTypeUserOverride:
+				err = errors.Wrap(a.OverrideStore.DeleteUserOverrideTx(ctx, tx, ids...), "delete user overrides")
+			case assignment.TargetTypeUser:
+				err = errors.Wrap(a.UserStore.DeleteManyTx(ctx, tx, ids), "delete users")
+			case assignment.TargetTypeService:
+				err = errors.Wrap(a.ServiceStore.DeleteManyTx(ctx, tx, ids), "delete services")
+			case assignment.TargetTypeEscalationPolicy:
+				err = errors.Wrap(a.PolicyStore.DeleteManyPoliciesTx(ctx, tx, ids), "delete escalation policies")
+			case assignment.TargetTypeIntegrationKey:
+				err = errors.Wrap(a.IntKeyStore.DeleteMany(ctx, sqltxn.Unwrap(tx), ids), "delete integration keys")
+			case assignment.TargetTypeSchedule:
+				err = errors.Wrap(a.ScheduleStore.DeleteManyTx(ctx, tx, ids), "delete schedules")
+			case assignment.TargetTypeCalendarSubscription:
+				err = errors.Wrap(a.CalSubStore.DeleteTx(ctx, tx, permission.UserID(ctx), ids...), "delete calendar subscriptions")
+			case assignment.TargetTypeRotation:
+				err = errors.Wrap(a.RotationStore.DeleteManyTx(ctx, tx, ids), "delete rotations")
+			case assignment.TargetTypeContactMethod:
+				err = errors.Wrap(a.CMStore.Delete(ctx, sqltxn.Unwrap(tx), ids...), "delete contact methods")
+			case assignment.TargetTypeNotificationRule:
+				err = errors.Wrap(a.NRStore.DeleteTx(ctx, tx, ids...), "delete notification rules")
+			case assignment.TargetTypeHeartbeatMonitor:
+				err = errors.Wrap(a.HeartbeatStore.DeleteTx(ctx, tx, ids...), "delete heartbeat monitors")
+			case assignment.TargetTypeUserSession:
+				err = errors.Wrap(a.AuthHandler.EndUserSessionTx(ctx, tx, ids...), "end user sessions")
+			default:
+				return validation.NewFieldError("type", "unsupported type "+typ.String())
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

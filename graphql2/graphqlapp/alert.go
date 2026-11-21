@@ -21,6 +21,8 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/service"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/timeutil"
 	"github.com/target/goalert/validation"
@@ -430,7 +432,7 @@ func (m *Mutation) CreateAlert(ctx context.Context, input graphql2.CreateAlertIn
 	}
 
 	var newAlert *alert.Alert
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
 		newAlert, err = m.AlertStore.CreateTx(ctx, tx, a)
 		if err != nil {
@@ -438,7 +440,7 @@ func (m *Mutation) CreateAlert(ctx context.Context, input graphql2.CreateAlertIn
 		}
 
 		if meta != nil {
-			err = m.AlertStore.SetMetadataTx(ctx, tx, newAlert.ID, meta)
+			err = m.AlertStore.SetMetadataTx(ctx, sqltxn.Unwrap(tx), newAlert.ID, meta)
 			if err != nil {
 				return err
 			}

@@ -2,7 +2,6 @@ package graphqlapp
 
 import (
 	"context"
-	"database/sql"
 	"net/url"
 
 	"github.com/target/goalert/calsub"
@@ -10,6 +9,7 @@ import (
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule"
+	"github.com/target/goalert/txn"
 )
 
 type UserCalendarSubscription App
@@ -61,7 +61,7 @@ func (m *Mutation) CreateUserCalendarSubscription(ctx context.Context, input gra
 	if input.FullSchedule != nil {
 		cs.Config.FullSchedule = *input.FullSchedule
 	}
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
 		cs, err = m.CalSubStore.CreateTx(ctx, tx, cs)
 		return err
@@ -71,7 +71,7 @@ func (m *Mutation) CreateUserCalendarSubscription(ctx context.Context, input gra
 }
 
 func (m *Mutation) UpdateUserCalendarSubscription(ctx context.Context, input graphql2.UpdateUserCalendarSubscriptionInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		cs, err := m.CalSubStore.FindOneForUpdate(ctx, tx, input.ID)
 		if err != nil {
 			return err

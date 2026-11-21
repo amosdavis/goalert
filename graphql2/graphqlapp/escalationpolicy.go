@@ -2,7 +2,6 @@ package graphqlapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"reflect"
 	"slices"
@@ -19,6 +18,8 @@ import (
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -109,7 +110,7 @@ func (m *Mutation) CreateEscalationPolicyStep(ctx context.Context, input graphql
 		)
 	}
 
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		s := &escalation.Step{
 			DelayMinutes: input.DelayMinutes,
 			MultiAck:     input.MultiAck != nil && *input.MultiAck,
@@ -167,7 +168,7 @@ func (m *Mutation) CreateEscalationPolicyStep(ctx context.Context, input graphql
 }
 
 func (m *Mutation) CreateEscalationPolicy(ctx context.Context, input graphql2.CreateEscalationPolicyInput) (pol *escalation.Policy, err error) {
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		p := &escalation.Policy{
 			Name: input.Name,
 		}
@@ -183,7 +184,7 @@ func (m *Mutation) CreateEscalationPolicy(ctx context.Context, input graphql2.Cr
 			return err
 		}
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.EscalationPolicyTarget(pol.ID))
+			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.EscalationPolicyTarget(pol.ID))
 			if err != nil {
 				return err
 			}
@@ -212,7 +213,7 @@ func (m *Mutation) CreateEscalationPolicy(ctx context.Context, input graphql2.Cr
 }
 
 func (m *Mutation) UpdateEscalationPolicy(ctx context.Context, input graphql2.UpdateEscalationPolicyInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		ep, err := m.PolicyStore.FindOnePolicyForUpdateTx(ctx, tx, input.ID)
 		if err != nil {
 			return err
@@ -283,7 +284,7 @@ func (m *Mutation) UpdateEscalationPolicy(ctx context.Context, input graphql2.Up
 }
 
 func (m *Mutation) UpdateEscalationPolicyStep(ctx context.Context, input graphql2.UpdateEscalationPolicyStepInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		step, err := m.PolicyStore.FindOneStepForUpdateTx(ctx, tx, input.ID) // get delay
 		if err != nil {
 			return err
@@ -312,7 +313,7 @@ func (m *Mutation) UpdateEscalationPolicyStep(ctx context.Context, input graphql
 		// update targets if provided
 		if input.Actions != nil {
 			// get current actions
-			existing, err := m.PolicyStore.FindAllStepActionsTx(ctx, tx, step.ID)
+			existing, err := m.PolicyStore.FindAllStepActionsTx(ctx, sqltxn.Unwrap(tx), step.ID)
 			if err != nil {
 				return err
 			}

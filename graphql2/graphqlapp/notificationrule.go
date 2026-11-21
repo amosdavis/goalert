@@ -2,9 +2,9 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 
 	"github.com/target/goalert/graphql2"
+	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user/contactmethod"
 	"github.com/target/goalert/user/notificationrule"
 	"github.com/target/goalert/validation/validate"
@@ -33,7 +33,7 @@ func (m *Mutation) CreateUserNotificationRule(ctx context.Context, input graphql
 		nr.ContactMethodID = id
 	}
 
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
 		nr, err = m.NRStore.CreateTx(ctx, tx, nr)
 		return err

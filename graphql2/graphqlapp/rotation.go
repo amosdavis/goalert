@@ -12,6 +12,8 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/timeutil"
@@ -34,7 +36,7 @@ func (m *Mutation) CreateRotation(ctx context.Context, input graphql2.CreateRota
 	if err != nil {
 		return nil, validation.NewFieldError("TimeZone", err.Error())
 	}
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		rot := &rotation.Rotation{
 			Name:  input.Name,
 			Type:  input.Type,
@@ -53,7 +55,7 @@ func (m *Mutation) CreateRotation(ctx context.Context, input graphql2.CreateRota
 		}
 
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.RotationTarget(result.ID))
+			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.RotationTarget(result.ID))
 			if err != nil {
 				return err
 			}
@@ -249,7 +251,7 @@ func (q *Query) Rotations(ctx context.Context, opts *graphql2.RotationSearchOpti
 	return conn, err
 }
 
-func (m *Mutation) updateRotationParticipants(ctx context.Context, tx *sql.Tx, rotationID string, userIDs []string, updateActive bool) (err error) {
+func (m *Mutation) updateRotationParticipants(ctx context.Context, tx txn.Tx, rotationID string, userIDs []string, updateActive bool) (err error) {
 	// Get current participants
 	currentParticipants, err := m.RotationStore.FindAllParticipantsTx(ctx, tx, rotationID)
 	if err != nil {
@@ -322,7 +324,7 @@ func (m *Mutation) updateRotationParticipants(ctx context.Context, tx *sql.Tx, r
 }
 
 func (m *Mutation) UpdateRotation(ctx context.Context, input graphql2.UpdateRotationInput) (res bool, err error) {
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		result, err := m.RotationStore.FindRotationForUpdateTx(ctx, tx, input.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return validation.NewFieldError("id", "Rotation not found")

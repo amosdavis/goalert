@@ -20,6 +20,8 @@ import (
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rule"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -204,7 +206,7 @@ func (m *Mutation) UpdateSchedule(ctx context.Context, input graphql2.UpdateSche
 			return false, validation.NewFieldError("timeZone", err.Error())
 		}
 	}
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		sched, err := m.ScheduleStore.FindOneForUpdate(ctx, tx, input.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return validation.NewFieldError("id", "not found")
@@ -267,7 +269,7 @@ func (m *Mutation) CreateSchedule(ctx context.Context, input graphql2.CreateSche
 		return nil, validation.NewFieldError("timeZone", err.Error())
 	}
 
-	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		s := &schedule.Schedule{
 			Name:     input.Name,
 			TimeZone: loc,
@@ -280,7 +282,7 @@ func (m *Mutation) CreateSchedule(ctx context.Context, input graphql2.CreateSche
 			return err
 		}
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.ScheduleTarget(sched.ID))
+			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.ScheduleTarget(sched.ID))
 			if err != nil {
 				return err
 			}

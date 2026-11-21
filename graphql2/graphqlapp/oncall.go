@@ -2,6 +2,7 @@ package graphqlapp
 
 import (
 	context "context"
+
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/oncall"
 	"github.com/target/goalert/user"

@@ -2,12 +2,12 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/override"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/validation"
 )
@@ -20,7 +20,7 @@ func (q *Query) UserOverride(ctx context.Context, id string) (*override.UserOver
 }
 
 func (m *Mutation) UpdateUserOverride(ctx context.Context, input graphql2.UpdateUserOverrideInput) (bool, error) {
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		u, err := m.OverrideStore.FindOneUserOverrideTx(ctx, tx, input.ID, true)
 		if err != nil {
 			return err
@@ -65,7 +65,7 @@ func (m *Mutation) CreateUserOverride(ctx context.Context, input graphql2.Create
 	if input.RemoveUserID != nil {
 		u.RemoveUserID = *input.RemoveUserID
 	}
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
 		u, err = m.OverrideStore.CreateUserOverrideTx(ctx, tx, u)
 		return err

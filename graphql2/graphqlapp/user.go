@@ -11,6 +11,8 @@ import (
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/schedule"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
@@ -135,7 +137,7 @@ func (a *User) OnCallSteps(ctx context.Context, obj *user.User) ([]escalation.St
 }
 
 func (a *User) AssignedSchedules(ctx context.Context, obj *user.User) (schedules []schedule.Schedule, err error) {
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		err = validate.UUID("UserID", obj.ID)
 		if err != nil {
 			return err
@@ -150,7 +152,7 @@ func (a *User) AssignedSchedules(ctx context.Context, obj *user.User) (schedules
 		}
 
 		// get list of schedules user is on as a direct assignment, or indirectly from a rotation
-		schedules, err = (*App)(a).ScheduleStore.FindManyByUserID(ctx, tx, uid)
+		schedules, err = (*App)(a).ScheduleStore.FindManyByUserID(ctx, sqltxn.Unwrap(tx), uid)
 		if err != nil {
 			return err
 		}
@@ -167,7 +169,7 @@ func (a *Mutation) CreateBasicAuth(ctx context.Context, input graphql2.CreateBas
 		return false, err
 	}
 
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		return a.AuthBasicStore.CreateTx(ctx, tx, input.UserID, input.Username, pw)
 	})
 	if err != nil {
@@ -194,7 +196,7 @@ func (a *Mutation) UpdateBasicAuth(ctx context.Context, input graphql2.UpdateBas
 		return false, err
 	}
 
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		return a.AuthBasicStore.UpdateTx(ctx, tx, input.UserID, validatedPW, pw)
 	})
 	if err != nil {
@@ -237,14 +239,14 @@ func (a *Mutation) CreateUser(ctx context.Context, input graphql2.CreateUserInpu
 		usr.Role = permission.Role(*input.Role)
 	}
 
-	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
 		newUser, err = a.UserStore.InsertTx(ctx, tx, usr)
 		if err != nil {
 			return err
 		}
 		if input.Favorite != nil && *input.Favorite {
-			err = a.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.UserTarget(newUser.ID))
+			err = a.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.UserTarget(newUser.ID))
 			if err != nil {
 				return err
 			}
@@ -260,7 +262,7 @@ func (a *Mutation) CreateUser(ctx context.Context, input graphql2.CreateUserInpu
 }
 
 func (a *Mutation) UpdateUser(ctx context.Context, input graphql2.UpdateUserInput) (bool, error) {
-	err := withContextTx(ctx, a.DB, func(ctx context.Context, tx *sql.Tx) error {
+	err := withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		usr, err := a.UserStore.FindOneTx(ctx, tx, input.ID, true)
 		if err != nil {
 			return err
