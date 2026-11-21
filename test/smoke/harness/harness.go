@@ -22,9 +22,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pkg/errors"
 	sloglogrus "github.com/samber/slog-logrus/v2"
 	"github.com/stretchr/testify/assert"
@@ -34,16 +31,12 @@ import (
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/devtools/mockslack"
 	"github.com/target/goalert/devtools/mocktwilio"
-	"github.com/target/goalert/devtools/pgdump-lite"
-	"github.com/target/goalert/devtools/pgmocktime"
 	"github.com/target/goalert/expflag"
-	"github.com/target/goalert/migrate"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/user/notificationrule"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/util/timeutil"
 )
 
@@ -117,7 +110,7 @@ type Harness struct {
 	t                       *testing.T
 	closing                 bool
 
-	appPool *pgxpool.Pool
+	storage storage
 
 	rcsSenderID string
 	rcsMsgSvcID string
@@ -137,17 +130,13 @@ type Harness struct {
 	slackApp  mockslack.AppInfo
 	slackUser mockslack.UserInfo
 
-	pgTime *pgmocktime.Mocker
-
 	ignoreErrors []string
 
 	backend     *app.App
 	backendLogs io.Closer
 	logsDone    chan struct{}
 
-	dbURL  string
-	dbName string
-	mx     sync.Mutex
+	mx sync.Mutex
 
 	userGeneratedIndex int
 
@@ -192,7 +181,7 @@ func NewHarnessDebugDB(t *testing.T, initSQL, migrationName string) *Harness {
 	h := NewStoppedHarness(t, initSQL, nil, migrationName)
 	h.Migrate("")
 
-	t.Fatal("DEBUG DB ::", h.dbURL)
+	t.Fatal("DEBUG DB ::", h.storage)
 	return nil
 }
 
@@ -239,24 +228,13 @@ func newStoppedHarness(t *testing.T, initSQL string, sqlData interface{}, migrat
 		expFlags = mergeExpFlags(expFlags, env)
 	}
 
-	t.Logf("Using DB URL: %s", dbURL)
-	name := strings.ReplaceAll("smoketest_"+time.Now().Format("2006_01_02_15_04_05")+uuid.New().String(), "-", "")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	conn, err := pgx.Connect(ctx, DBURL(""))
+	st, err := newPostgresStorage(ctx, t)
 	if err != nil {
-		t.Fatal("connect to db:", err)
+		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
-	_, err = conn.Exec(ctx, "create database "+sqlutil.QuoteID(name))
-	if err != nil {
-		t.Fatal("create db:", err)
-	}
-	conn.Close(ctx)
-
-	t.Logf("created test database '%s': %s", name, dbURL)
 
 	twCfg := mocktwilio.Config{
 		AuthToken:    twilioAuthToken,
@@ -264,18 +242,11 @@ func newStoppedHarness(t *testing.T, initSQL string, sqlData interface{}, migrat
 		MinQueueTime: 100 * time.Millisecond, // until we have a stateless backend for answering calls
 	}
 
-	pgTime, err := pgmocktime.New(ctx, DBURL(name))
-	if err != nil {
-		t.Fatal("create pgmocktime:", err)
-	}
-
 	h := &Harness{
 		uuidG:    NewDataGen(t, "UUID", DataGenFunc(GenUUID)),
 		phoneCCG: NewDataGen(t, "Phone", DataGenArgFunc(GenPhoneCC)),
 		emailG:   NewDataGen(t, "Email", DataGenFunc(func() string { return GenUUID() + "@example.com" })),
-		dbName:   name,
-		dbURL:    DBURL(name),
-		pgTime:   pgTime,
+		storage:  st,
 
 		gqlSessions: make(map[string]string),
 
@@ -298,15 +269,6 @@ func newStoppedHarness(t *testing.T, initSQL string, sqlData interface{}, migrat
 	}, mocktwilio.NewServer(twCfg), h.phoneCCG.Get("twilio"))
 
 	h.twS = httptest.NewServer(h.tw)
-
-	err = h.pgTime.Inject(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = h.pgTime.SetSpeed(ctx, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// Fixtures load at the latest schema, so they don't depend on the
 	// migration framework (the file backend has none). migrationName only
@@ -355,27 +317,21 @@ func (h *Harness) StartWithAppCfgHook(fn func(*app.Config)) {
 	cfg.Mailgun.EmailDomain = "smoketest.example.com"
 	h.cfg = cfg
 
-	l := log.NewLogger()
-	l.ErrorsOnly()
-	_, err := migrate.ApplyAll(log.WithLogger(context.Background(), l), h.dbURL)
+	err := h.storage.MigrateAll(context.Background())
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			h.t.Fatalf("failed to migrate backend: %#v\n", pgErr)
-		}
 		h.t.Fatalf("failed to migrate backend: %v\n", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err = h.pgTime.SetSpeed(ctx, 1)
+	err = h.storage.SetClockSpeed(ctx, 1)
 	if err != nil {
 		h.t.Fatalf("resume flow of time: %v", err)
 	}
 
 	appCfg := app.Defaults()
-	appCfg.ForceRiverDBTime = true
+	h.storage.ConfigureApp(&appCfg)
 	appCfg.ExpFlags = h.expFlags
 	appCfg.LegacyLogger = log.NewLogger()
 	appCfg.Logger = slog.New(sloglogrus.Option{
@@ -384,9 +340,7 @@ func (h *Harness) StartWithAppCfgHook(fn func(*app.Config)) {
 	appCfg.ListenAddr = "localhost:0"
 	appCfg.Verbose = true
 	appCfg.JSON = true
-	appCfg.DBURL = h.dbURL
 	appCfg.TwilioBaseURL = h.twS.URL
-	appCfg.DBMaxOpen = 5
 	appCfg.SlackBaseURL = h.slackS.URL
 	appCfg.SMTPListenAddr = "localhost:0"
 	appCfg.EmailIntegrationDomain = "smoketest.example.com"
@@ -402,20 +356,11 @@ func (h *Harness) StartWithAppCfgHook(fn func(*app.Config)) {
 
 	go h.watchBackendLogs(r)
 
-	poolCfg, err := pgxpool.ParseConfig(h.dbURL)
-	if err != nil {
-		h.t.Fatalf("failed to parse db url: %v", err)
-	}
-	poolCfg.MaxConns = 5
-
-	h.appPool, err = pgxpool.NewWithConfig(ctx, poolCfg)
-	require.NoError(h.t, err, "create pgx pool")
-
 	if fn != nil {
 		fn(&appCfg)
 	}
 
-	h.backend, err = app.NewApp(appCfg, h.appPool)
+	h.backend, err = h.storage.NewApp(ctx, appCfg)
 	if err != nil {
 		h.t.Fatalf("failed to start backend: %v", err)
 	}
@@ -454,7 +399,7 @@ func (h *Harness) RestartGoAlertWithAppCfgHook(reconfig func(*app.Config)) {
 
 	h.t.Logf("Restarting backend")
 	reconfig(&h.appCfg)
-	h.backend, err = app.NewApp(h.appCfg, h.appPool)
+	h.backend, err = h.storage.NewApp(ctx, h.appCfg)
 	if err != nil {
 		h.t.Fatalf("failed to start backend: %v", err)
 	}
@@ -488,9 +433,7 @@ func (h *Harness) SendMail(from, to, subject, body string) {
 func (h *Harness) Migrate(migrationName string) {
 	h.t.Helper()
 	h.t.Logf("Running migrations (target: %s)", migrationName)
-	l := log.NewLogger()
-	l.ErrorsOnly()
-	_, err := migrate.Up(log.WithLogger(context.Background(), l), h.dbURL, migrationName)
+	err := h.storage.Migrate(context.Background(), migrationName)
 	if err != nil {
 		h.t.Fatalf("failed to run migration: %v", err)
 	}
@@ -507,8 +450,7 @@ func (h *Harness) IgnoreErrorsWith(substr string) {
 func (h *Harness) Now() time.Time {
 	h.t.Helper()
 
-	var now time.Time
-	err := h.appPool.QueryRow(context.Background(), "SELECT NOW()").Scan(&now)
+	now, err := h.storage.Now(context.Background())
 	require.NoError(h.t, err, "get now()")
 
 	return now
@@ -535,7 +477,7 @@ func (h *Harness) FastForwardToTime(t timeutil.Clock, zoneName string) {
 func (h *Harness) FastForward(d time.Duration) {
 	h.t.Helper()
 	h.t.Logf("Fast-forward %s", d.String())
-	err := h.pgTime.AdvanceTime(context.Background(), d)
+	err := h.storage.AdvanceClock(context.Background(), d)
 	if err != nil {
 		h.t.Fatalf("failed to fast-forward time: %v", err)
 	}
@@ -580,10 +522,18 @@ func (h *Harness) execQuery(sql string, data interface{}) {
 		h.t.Fatalf("failed to render query template: %v", err)
 	}
 
-	err = ExecSQLBatch(context.Background(), h.dbURL, b.String())
+	err = h.storage.Exec(context.Background(), b.String())
 	if err != nil {
 		h.t.Fatalf("failed to exec query: %v\n%s", err, b.String())
 	}
+}
+
+// Exec runs SQL against the test's storage, with the same template functions
+// as fixtures (such as {{uuid "name"}}). Use only the statements fixtures
+// use: INSERT ... VALUES, UPDATE ... SET ... WHERE column = value, and DELETE.
+func (h *Harness) Exec(sql string) {
+	h.t.Helper()
+	h.execQuery(sql, nil)
 }
 
 // CreateAlerts will create one or more unacknowledged alerts for a service.
@@ -608,18 +558,12 @@ func (t testAlert) setStatus(stat alert.Status) {
 	t.h.t.Helper()
 	permission.SudoContext(context.Background(), func(ctx context.Context) {
 		t.h.t.Helper()
-		tx, err := t.h.backend.DB().BeginTx(ctx, nil)
-		require.NoError(t.h.t, err, "begin tx")
-		defer SQLRollback(t.h.t, "harness: set alert status", tx)
-
 		t.a.Status = stat
 
-		result, isNew, err := t.h.backend.AlertStore.CreateOrUpdateTx(ctx, tx, &t.a)
+		result, isNew, err := t.h.backend.AlertStore.CreateOrUpdate(ctx, &t.a)
 		require.NoErrorf(t.h.t, err, "set alert to %s", stat)
 		require.False(t.h.t, isNew, "not be new")
 		require.NotNil(t.h.t, result)
-
-		require.NoError(t.h.t, tx.Commit(), "commit tx")
 	})
 }
 
@@ -643,12 +587,6 @@ func (h *Harness) CreateAlertWithDetails(serviceID, summary, details string) Tes
 	var newAlert alert.Alert
 	permission.SudoContext(context.Background(), func(ctx context.Context) {
 		h.t.Helper()
-		tx, err := h.backend.DB().BeginTx(ctx, nil)
-		if err != nil {
-			h.t.Fatalf("failed to start tx: %v", err)
-		}
-		defer SQLRollback(h.t, "harness: create alert", tx)
-
 		a := &alert.Alert{
 			ServiceID: serviceID,
 			Summary:   summary,
@@ -656,7 +594,7 @@ func (h *Harness) CreateAlertWithDetails(serviceID, summary, details string) Tes
 		}
 
 		h.t.Logf("insert alert: %v", a)
-		_newAlert, isNew, err := h.backend.AlertStore.CreateOrUpdateTx(ctx, tx, a)
+		_newAlert, isNew, err := h.backend.AlertStore.CreateOrUpdate(ctx, a)
 		if err != nil {
 			h.t.Fatalf("failed to insert alert: %v", err)
 		}
@@ -664,11 +602,6 @@ func (h *Harness) CreateAlertWithDetails(serviceID, summary, details string) Tes
 			h.t.Fatal("could not create duplicate alert with summary: " + summary)
 		}
 		newAlert = *_newAlert
-
-		err = tx.Commit()
-		if err != nil {
-			h.t.Fatalf("failed to commit tx: %v", err)
-		}
 	})
 
 	return testAlert{h: h, a: newAlert}
@@ -700,22 +633,6 @@ func (h *Harness) AddNotificationRule(userID, cmID string, delayMinutes int) {
 // zero rows in river_job, so listing them early is harmless.
 var engineQueues = []string{"rotation-manager", "schedule-manager"}
 
-// pendingJobsQuery counts jobs in the given queues that are, or are about to
-// be, worked. Rows in 'scheduled' or 'retryable' whose scheduled_at has passed
-// are counted because River only promotes them to 'available' on its scheduler
-// interval (5s), so right after a FastForward they are due but not yet picked
-// up. now() here is the mocked DB clock (see devtools/pgmocktime), so it
-// follows FastForward.
-const pendingJobsQuery = `
-	select count(*)
-	from river_job
-	where queue = any($1)
-	and (
-		state in ('available', 'running', 'pending')
-		or (state in ('scheduled', 'retryable') and scheduled_at <= now())
-	)
-`
-
 // WaitForJobs waits until the given River queues have no jobs that are
 // available, running, pending, or due (scheduled/retryable with scheduled_at in
 // the past, by DB time).
@@ -726,9 +643,7 @@ func (h *Harness) WaitForJobs(queues ...string) bool {
 	h.t.Helper()
 
 	count := func() (int, error) {
-		var n int
-		err := h.appPool.QueryRow(context.Background(), pendingJobsQuery, queues).Scan(&n)
-		return n, err
+		return h.storage.PendingJobs(context.Background(), queues)
 	}
 
 	n, err := count()
@@ -752,46 +667,18 @@ func (h *Harness) WaitForJobs(queues ...string) bool {
 func (h *Harness) CountJobs(queue, kind string, argsContains map[string]any, states ...string) int {
 	h.t.Helper()
 
-	if argsContains == nil {
-		argsContains = map[string]any{}
-	}
-	args, err := json.Marshal(argsContains)
-	require.NoError(h.t, err, "marshal job args")
-
-	if len(states) == 0 {
-		states = nil // encodes as NULL
-	}
-
-	var n int
-	err = h.appPool.QueryRow(context.Background(), `
-		select count(*)
-		from river_job
-		where queue = $1
-		and kind = $2
-		and args @> $3::jsonb
-		and ($4::text[] is null or state::text = any($4::text[]))
-	`, queue, kind, string(args), states).Scan(&n)
+	n, err := h.storage.CountJobs(context.Background(), queue, kind, argsContains, states)
 	require.NoError(h.t, err, "count jobs")
 
 	return n
 }
 
-// EnqueueJob inserts a River job using fn_util_river_job, the same SQL function
-// DB triggers use to enqueue work, and then waits for `queue` to drain.
-//
-// The call is made as a single statement in its own (implicit) transaction:
-// fn_util_river_job dedupes by (queue, id) within a transaction via a
-// transaction-local set_config guard, so each EnqueueJob call always inserts.
+// EnqueueJob adds a job the same way DB triggers enqueue work, and then waits
+// for `queue` to drain. Each call always inserts a job.
 func (h *Harness) EnqueueJob(queue, kind, id string, args map[string]any) {
 	h.t.Helper()
 
-	if args == nil {
-		args = map[string]any{}
-	}
-	data, err := json.Marshal(args)
-	require.NoError(h.t, err, "marshal job args")
-
-	_, err = h.appPool.Exec(context.Background(), `select fn_util_river_job($1, $2, $3, $4::jsonb)`, queue, kind, id, string(data))
+	err := h.storage.EnqueueJob(context.Background(), queue, kind, id, args)
 	require.NoError(h.t, err, "enqueue job")
 
 	h.WaitForJobs(queue)
@@ -880,32 +767,15 @@ func (h *Harness) dumpDB() {
 		h.t.Fatalf("failed to create abs dump path: %v", err)
 	}
 
-	conn, err := pgx.Connect(context.Background(), h.dbURL)
-	if err != nil {
-		h.t.Fatalf("failed to get db connection: %v", err)
-	}
-	defer conn.Close(context.Background())
-
-	var t time.Time
-	err = conn.QueryRow(context.Background(), "select now()").Scan(&t)
-	if err != nil {
-		h.t.Fatalf("failed to get current timestamp: %v", err)
-	}
-
 	fd, err := os.Create(file)
 	if err != nil {
 		h.t.Fatalf("failed to open dump file: %v", err)
 	}
 	defer fd.Close()
 
-	err = pgdump.DumpData(context.Background(), conn, fd, nil)
-	if err != nil {
-		h.t.Errorf("failed to dump database '%s': %v", h.dbName, err)
-	}
-
-	_, err = fmt.Fprintf(fd, "\n-- Last Timestamp: %s\n", t.Format(time.RFC3339Nano))
-	if err != nil {
-		h.t.Fatalf("failed to open DB dump: %v", err)
+	// A failed dump fails the test but doesn't stop the rest of Close.
+	if err := h.storage.Dump(context.Background(), fd); err != nil {
+		h.t.Errorf("dump %s: %v", h.storage, err)
 	}
 }
 
@@ -955,18 +825,8 @@ func (h *Harness) Close() {
 
 	h.tw.Close()
 
-	h.pgTime.Close()
-
-	h.appPool.Close()
-
-	conn, err := pgx.Connect(ctx, DBURL(""))
-	if err != nil {
-		h.t.Error("failed to connect to DB:", err)
-	}
-	defer conn.Close(ctx)
-	_, err = conn.Exec(ctx, "drop database "+sqlutil.QuoteID(h.dbName))
-	if err != nil {
-		h.t.Errorf("failed to drop database '%s': %v", h.dbName, err)
+	if err := h.storage.Close(ctx); err != nil {
+		h.t.Error(err)
 	}
 }
 

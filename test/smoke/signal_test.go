@@ -1,7 +1,6 @@
 package smoke
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/target/goalert/expflag"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/test/smoke/harness"
 )
 
@@ -42,13 +40,23 @@ func TestSignal(t *testing.T) {
 	h := harness.NewHarnessWithFlags(t, sql, "nc-duplicate-table", expflag.FlagSet{expflag.UnivKeys})
 	defer h.Close()
 
-	var dest gadb.DestV1
-	err := h.App().DB().QueryRowContext(context.Background(), `select dest from user_contact_methods where id = $1`, h.UUID("cm1")).Scan(&dest)
+	cmResp := h.GraphQLQuery2(fmt.Sprintf(`{ userContactMethod(id: "%s") { dest { type, args } } }`, h.UUID("cm1")))
+	require.Empty(t, cmResp.Errors)
+	var cm struct {
+		UserContactMethod struct {
+			Dest struct {
+				Type string
+				Args map[string]string
+			}
+		}
+	}
+	err := json.Unmarshal(cmResp.Data, &cm)
 	require.NoError(t, err)
+	dest := cm.UserContactMethod.Dest
 
 	// validate fields
 	assert.Equal(t, "builtin-twilio-sms", dest.Type, "unexpected type")
-	assert.Equal(t, h.Phone("1"), dest.Arg("phone_number"), "unexpected arg")
+	assert.Equal(t, h.Phone("1"), dest.Args["phone_number"], "unexpected arg")
 
 	// create key
 	resp := h.GraphQLQuery2(fmt.Sprintf(`mutation{ createIntegrationKey(input: {name: "key", type: universal, serviceID: "%s"}){ id, href } }`, h.UUID("svc")))

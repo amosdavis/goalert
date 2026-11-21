@@ -45,8 +45,7 @@ func TestStatusUpdatesNoLog(t *testing.T) {
 	require.NoError(t, err)
 	a.Ack()
 
-	_, err = h.App().DB().Exec("delete from alert_logs;")
-	require.NoError(t, err)
+	h.Exec("delete from alert_logs;")
 
 	h.IgnoreErrorsWith("no log entry found for alert #1 status update (acknowledged), skipping")
 

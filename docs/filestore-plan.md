@@ -171,3 +171,10 @@ This phase must satisfy F26 through F30.
 - 2026-11-20: Phase 0 step 2: fixtures load at the latest schema. 36 fixtures
   were translated and 3 migration tests stay pinned. The Smoke workflow runs
   the full suite on every push to the branch.
+- 2026-11-21: Phase 0 step 3: the harness reaches the database only through
+  a `storage` interface (`test/smoke/harness/storage.go`), whose Postgres
+  implementation does what the harness did before.
+  `overrideconflict_test.go` still opens transactions itself on purpose;
+  it moves with the transaction seam in Phase 2. Fixing a CI hang also
+  fixed a pre-existing deadlock: River's smoke-test clock shared the app's
+  5-connection pool.
