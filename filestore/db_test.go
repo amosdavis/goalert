@@ -237,8 +237,7 @@ func TestTxSeesOwnWrites(t *testing.T) {
 func TestTxNowAndUseAfterUpdate(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
-	clock := NewFakeClock(time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.FixedZone("x", 3600)))
-	clock.SetSpeed(0)
+	clock := frozenClock(time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.FixedZone("x", 3600)))
 	opts := memOpts(t, m)
 	opts.Clock = clock
 	db := openMem(t, m, s, opts)
@@ -342,8 +341,7 @@ func TestReplayIsDeterministic(t *testing.T) {
 		opts := memOpts(t, m)
 		opts.SnapshotEvery = snapEvery
 		opts.SegmentSize = 1024
-		clock := NewFakeClock(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
-		clock.SetSpeed(0)
+		clock := frozenClock(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
 		opts.Clock = clock
 		db := openMem(t, m, s, opts)
 		for i := range 300 {
@@ -440,6 +438,15 @@ func TestUnfinishedWriteIsDropped(t *testing.T) {
 			assert.Equal(t, []string{"a", "b", "d"}, ids(db.View(), s.rows))
 		})
 	}
+}
+
+// frozenClock returns a FakeClock stopped at exactly t. (NewFakeClock starts
+// running, so freezing it afterwards would stop it slightly after t.)
+func frozenClock(t time.Time) *FakeClock {
+	c := NewFakeClock(t)
+	c.SetSpeed(0)
+	c.Set(t)
+	return c
 }
 
 func must[T any](v T, err error) T {

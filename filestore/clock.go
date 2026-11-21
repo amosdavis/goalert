@@ -48,7 +48,8 @@ func (c *FakeClock) Now() time.Time {
 }
 
 // SetSpeed changes how fast time runs from now on. 0 freezes it and 1 is
-// normal speed.
+// normal speed. The clock keeps its current reading, so to freeze it at an
+// exact time, call Set after SetSpeed(0).
 func (c *FakeClock) SetSpeed(speed float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
