@@ -159,6 +159,26 @@ several stores can write in one transaction. They switch to `txn.Tx`.
   every transaction that does I/O or runs long, and those are fixed before
   Phase 4.
 
+  Transactions that do I/O, found in Phase 2:
+
+  - `notificationchannel.Store.MapDestToID` validates a destination and reads
+    its display name through the destination registry, which for Slack
+    calls the Slack API. It runs inside the transactions of the schedule
+    on-call notification rules mutation, the escalation store's step
+    actions, and the integration key store's universal key actions.
+  - Creating or updating a contact method validates its destination inside
+    the transaction; a Slack DM looks the user up.
+  - The fix for both: resolve and validate the destination before the
+    transaction starts, and pass the result in, so the transaction only
+    reads and writes the store.
+  - The engine sends messages outside its transactions, after marking each
+    one as sending, but under its Postgres processing lock. Phase 4 replaces
+    the lock with the lease and claims (F3, F28).
+
+  Each engine module updates everything due in one transaction per cycle.
+  On the Delta backend that is one commit per cycle (F15), and Phase 4
+  measures its size against the cycle-time budget.
+
 Exit:
 
 - Only store implementations, the engine (until Phase 4) and the app's
