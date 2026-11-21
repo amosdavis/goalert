@@ -1,0 +1,39 @@
+name: Object stores
+
+# Runs the object-store conformance suite against every implementation,
+# including the GCS and Azure emulators (docs/filestore-failure-modes.md, F14).
+on:
+  push:
+    branches: ['filestore-backend']
+    paths: ['objstore/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+  pull_request:
+    paths: ['objstore/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+
+jobs:
+  conformance:
+    name: Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start emulators
+        # Azurite gets an account with a key generated for this run, so no
+        # key is stored anywhere.
+        run: |
+          key="$(openssl rand -base64 64 | tr -d '\n')"
+          echo "::add-mask::$key"
+          docker run -d --name fake-gcs -p 4443:4443 \
+            fsouza/fake-gcs-server:1.56.1 -scheme http -port 4443 -public-host localhost:4443
+          docker run -d --name azurite -p 10000:10000 -e "AZURITE_ACCOUNTS=goalerttest:$key" \
+            mcr.microsoft.com/azure-storage/azurite:3.37.0 azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+          echo "GOALERT_TEST_AZURE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=goalerttest;AccountKey=$key;BlobEndpoint=http://127.0.0.1:10000/goalerttest;" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do curl -sf http://localhost:4443/storage/v1/b > /dev/null && break; sleep 1; done
+          for i in $(seq 1 30); do nc -z localhost 10000 && break; sleep 1; done
+      - name: Test
+        env:
+          STORAGE_EMULATOR_HOST: localhost:4443
+          GOALERT_TEST_GCS_BUCKET: goalert-test
+        run: go test -race -count=1 -v ./objstore/...
