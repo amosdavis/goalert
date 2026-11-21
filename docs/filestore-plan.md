@@ -113,7 +113,7 @@ Phase 1b. The in-memory part becomes each pod's copy of the state.
 Exit, met: crash, process-kill, replay and locking tests pass on Linux,
 Windows and macOS (Filestore workflow).
 
-## Phase 1b: Delta log on object storage
+## Phase 1b: Delta log on object storage (done)
 
 - The object-store interface and its four implementations, with one
   conformance suite that runs against all of them (F14).
@@ -147,8 +147,13 @@ several stores can write in one transaction. They switch to `txn.Tx`.
   so callers keep compiling and the change lands one package at a time.
 - Methods that take a `gadb.DBTX` take a `txn.Tx` instead, where nil means
   "not in a transaction".
-- Callers then start transactions through `txn.DB`. `withContextTx` in
-  `graphql2/graphqlapp` keeps its nesting behavior.
+- Callers then start transactions through `txn.DB.Run`, which takes the
+  transaction as a function. On the Delta backend, a transaction that loses
+  to another pod's commit runs again on the new state (F4), which a caller
+  holding a `BeginTx` handle could not do; it could only fail the request.
+  `withContextTx` in `graphql2/graphqlapp` keeps its nesting behavior.
+  `BeginTx` stays only for Postgres-only code (switchover, the dump tool),
+  which goes with Postgres (F24).
 - A transaction function can run more than once on the new backend (F3, F4),
   and a long write transaction delays every other writer (F15). Phase 2 lists
   every transaction that does I/O or runs long, and those are fixed before
@@ -309,3 +314,8 @@ holder while it is sending.
   objects, retention policies, holds, public containers) or weaken it
   (versioning, soft delete, public access prevention not enforced), and the
   required settings are documented above.
+- 2026-11-21: Phase 1b done. Every exit criterion is met in CI: the
+  conformance suite on all four object stores, a pod stopped at every
+  storage write, conflicts and unclear commits with nothing acknowledged lost
+  or applied twice, pods converging on one state, and delta-rs reading tables
+  GoAlert wrote. Phase 2 continues with `txn.DB.Run`.

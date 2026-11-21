@@ -28,6 +28,22 @@ func (db DB) BeginTx(ctx context.Context, opts *txn.Options) (txn.Tx, error) {
 	return tx, nil
 }
 
+// Run runs fn in a transaction, and commits it if fn returns nil. If fn
+// fails or panics, the transaction is rolled back. Postgres never needs to
+// run fn twice.
+func (db DB) Run(ctx context.Context, opts *txn.Options, fn func(tx txn.Tx) error) error {
+	tx, err := db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	// After a commit, this returns sql.ErrTxDone and changes nothing.
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // Unwrap returns the *sql.Tx inside tx, or nil if tx is nil.
 //
 // A nil *sql.Tx stored in a txn.Tx is not a nil interface, so code that used

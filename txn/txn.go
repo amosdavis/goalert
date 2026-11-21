@@ -24,5 +24,14 @@ type Options struct {
 
 // DB starts transactions.
 type DB interface {
+	// Run runs fn in a transaction and commits it if fn returns nil; fn
+	// must not commit or roll back tx itself. On the Delta backend, fn runs
+	// again when another pod commits first (F4), so it must do no I/O
+	// beyond the stores it calls (F3).
+	Run(ctx context.Context, opts *Options, fn func(tx Tx) error) error
+
+	// BeginTx starts a transaction that the caller commits or rolls back.
+	// It is for Postgres-only code, and goes away with Postgres; everything
+	// else uses Run.
 	BeginTx(ctx context.Context, opts *Options) (Tx, error)
 }
