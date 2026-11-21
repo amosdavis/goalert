@@ -22,7 +22,6 @@ import (
 	"github.com/target/goalert/util/errutil"
 	"github.com/target/goalert/util/jsonutil"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 )
 
 // Store handles saving and loading configuration from a postgres database.
@@ -34,6 +33,8 @@ type Store struct {
 	ingressEmailDomain string
 	mx                 sync.RWMutex
 	db                 *sql.DB
+	txdb               txn.DB
+	delta              *DeltaTables // the Delta backend, if set (delta.go)
 	keys               keyring.Keys
 	latestConfig       *sql.Stmt
 	setConfig          *sql.Stmt
@@ -61,34 +62,46 @@ type StoreConfig struct {
 func NewStore(ctx context.Context, cfg StoreConfig) (*Store, error) {
 	p := util.Prepare{Ctx: ctx, DB: cfg.DB}
 
-	s := &Store{
-		db:                 cfg.DB,
-		fallbackURL:        cfg.FallbackURL,
-		explicitURL:        cfg.ExplicitURL,
-		ingressEmailDomain: cfg.IngressEmailDomain,
-		latestConfig:       p.P(`select id, data, schema from config where schema <= $1 order by id desc limit 1`),
-		setConfig:          p.P(`insert into config (id, schema, data) values (DEFAULT, $1, $2) returning (id)`),
-		lock:               p.P(`lock config in exclusive mode`),
-		keys:               cfg.Keys,
-		closeCh:            make(chan struct{}),
-	}
-
+	s := newStore(cfg, sqltxn.DB{DB: cfg.DB})
+	s.latestConfig = p.P(`select id, data, schema from config where schema <= $1 order by id desc limit 1`)
+	s.setConfig = p.P(`insert into config (id, schema, data) values (DEFAULT, $1, $2) returning (id)`)
+	s.lock = p.P(`lock config in exclusive mode`)
 	if p.Err != nil {
 		return nil, p.Err
 	}
 
+	if err := s.start(ctx); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func newStore(cfg StoreConfig, db txn.DB) *Store {
+	return &Store{
+		db:                 cfg.DB,
+		txdb:               db,
+		fallbackURL:        cfg.FallbackURL,
+		explicitURL:        cfg.ExplicitURL,
+		ingressEmailDomain: cfg.IngressEmailDomain,
+		keys:               cfg.Keys,
+		closeCh:            make(chan struct{}),
+	}
+}
+
+// start loads the config, and keeps reloading it to pick up changes.
+func (s *Store) start(ctx context.Context) error {
 	var err error
 	permission.SudoContext(ctx, func(ctx context.Context) {
 		err = s.Reload(ctx)
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	var seed int64
 	err = binary.Read(cryptoRand.Reader, binary.BigEndian, &seed)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	src := rand.New(rand.NewSource(
 		seed,
@@ -117,7 +130,7 @@ func NewStore(ctx context.Context, cfg StoreConfig) (*Store, error) {
 		}
 	}()
 
-	return s, nil
+	return nil
 }
 
 // Shutdown stops the config reloader.
@@ -205,18 +218,18 @@ func (s *Store) ServeConfig(w http.ResponseWriter, req *http.Request) {
 
 // ConfigData will return the current raw config data from the DB.
 func (s *Store) ConfigData(ctx context.Context, tx txn.Tx) (id, schemaVersion int, data []byte, err error) {
-	stx := sqltxn.Unwrap(tx)
 	err = permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return 0, 0, nil, err
 	}
 
-	err = wrapTx(ctx, stx, s.latestConfig).QueryRowContext(ctx, SchemaVersion).Scan(&id, &data, &schemaVersion)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, SchemaVersion, []byte("{}"), nil
-	}
+	var found bool
+	id, schemaVersion, data, found, err = s.latestRow(ctx, tx)
 	if err != nil {
 		return 0, 0, nil, err
+	}
+	if !found {
+		return 0, SchemaVersion, []byte("{}"), nil
 	}
 
 	data, _, err = s.keys.Decrypt(data)
@@ -227,9 +240,36 @@ func (s *Store) ConfigData(ctx context.Context, tx txn.Tx) (id, schemaVersion in
 	return id, schemaVersion, data, nil
 }
 
+// latestRow reads the newest config this version can read.
+func (s *Store) latestRow(ctx context.Context, tx txn.Tx) (id, schemaVersion int, data []byte, found bool, err error) {
+	if s.delta != nil {
+		return s.deltaLatest(ctx, tx)
+	}
+	err = wrapTx(ctx, tx, s.latestConfig).QueryRowContext(ctx, SchemaVersion).Scan(&id, &data, &schemaVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil, false, nil
+	}
+	if err != nil {
+		return 0, 0, nil, false, err
+	}
+	return id, schemaVersion, data, true, nil
+}
+
+// insertRow adds a config version and returns its id.
+func (s *Store) insertRow(ctx context.Context, tx txn.Tx, data []byte) (int, error) {
+	if s.delta != nil {
+		return s.deltaInsert(ctx, tx, data)
+	}
+	var id int
+	err := wrapTx(ctx, tx, s.setConfig).QueryRowContext(ctx, SchemaVersion, data).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // SetConfigData will replace the current DB config with data.
 func (s *Store) SetConfigData(ctx context.Context, tx txn.Tx, data []byte) (int, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return 0, err
@@ -246,18 +286,11 @@ func (s *Store) SetConfigData(ctx context.Context, tx txn.Tx, data []byte) (int,
 		return 0, errors.Wrap(err, "encrypt config")
 	}
 
-	var id int
-	err = wrapTx(ctx, stx, s.setConfig).QueryRowContext(ctx, SchemaVersion, data).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-
-	return id, nil
+	return s.insertRow(ctx, tx, data)
 }
 
 func (s *Store) reloadTx(ctx context.Context, tx txn.Tx) (*Config, int, error) {
-	stx := sqltxn.Unwrap(tx)
-	id, schemaVersion, data, err := s.ConfigData(ctx, stx)
+	id, schemaVersion, data, err := s.ConfigData(ctx, tx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -283,17 +316,12 @@ func (s *Store) UpdateConfig(ctx context.Context, fn func(Config) (Config, error
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
+	var id int
+	err = s.txdb.Run(ctx, nil, func(tx txn.Tx) error {
+		var err error
+		id, err = s.updateConfigTx(ctx, tx, fn)
 		return err
-	}
-	defer sqlutil.Rollback(ctx, "config: update", tx)
-
-	id, err := s.updateConfigTx(ctx, tx, fn)
-	if err != nil {
-		return err
-	}
-	err = tx.Commit()
+	})
 	if err != nil {
 		return err
 	}
@@ -309,13 +337,17 @@ func (s *Store) SetConfig(ctx context.Context, cfg Config) error {
 }
 
 func (s *Store) updateConfigTx(ctx context.Context, tx txn.Tx, fn func(Config) (Config, error)) (int, error) {
-	stx := sqltxn.Unwrap(tx)
-	_, err := stx.StmtContext(ctx, s.lock).ExecContext(ctx)
-	if err != nil {
-		return 0, err
+	// On Postgres, the table lock keeps the read-modify-write whole. On the
+	// Delta backend, a transaction that loses a race runs again (F4), so fn
+	// must do no I/O (F3).
+	if s.delta == nil {
+		_, err := sqltxn.Unwrap(tx).StmtContext(ctx, s.lock).ExecContext(ctx)
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	cfg, _, err := s.reloadTx(ctx, stx)
+	cfg, _, err := s.reloadTx(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
@@ -334,7 +366,7 @@ func (s *Store) updateConfigTx(ctx context.Context, tx txn.Tx, fn func(Config) (
 		return 0, errors.Wrap(err, "merge config")
 	}
 
-	return s.SetConfigData(ctx, stx, data)
+	return s.SetConfigData(ctx, tx, data)
 }
 
 // Config will return the current config state.
