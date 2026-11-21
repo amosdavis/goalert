@@ -180,6 +180,25 @@ func TestUnclearResults(t *testing.T) {
 		assert.NotErrorIs(t, err, ErrConflict)
 	})
 
+	t.Run("landed, then the retries rejected", func(t *testing.T) {
+		store := objstore.NewMem()
+		create(t, newTestLog(t, store))
+		writes := 0
+		store.BeforeWrite = func(op, name string) error {
+			writes++
+			if writes == 1 {
+				return objstore.ErrMemAppliedThenFailed
+			}
+			return errors.New("403 forbidden")
+		}
+		// Reading the version back fails too, so nothing can confirm it.
+		l := newTestLog(t, &failingGets{Store: store, fail: CommitName(1), err: errors.New("503 unavailable")})
+		_, err := l.Commit(ctx, 1, testTable, "WRITE", testTime, []Action{add("a.parquet")})
+		require.ErrorIs(t, err, objstore.ErrUnknown, "the first attempt may have landed, so this is not a failure (F32)")
+		_, err = store.Get(ctx, CommitName(1))
+		require.NoError(t, err, "and it did land")
+	})
+
 	t.Run("rejected outright", func(t *testing.T) {
 		store := objstore.NewMem()
 		l := newTestLog(t, store)

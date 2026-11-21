@@ -254,3 +254,9 @@ holder while it is sending.
   clock skew between pods (F13), following and waiting for a version (F29),
   and starting from a checkpoint (F16, F38). Testing it found that parquet-go
   misreads times outside 1677-2262; such times are now refused (F25).
+- 2026-11-21: Phase 1b: a test stops a pod at every storage write of a run
+  of transactions, with the last write landing or not. Another pod always
+  finds the transactions in order, every acknowledged one included (F1) and
+  none applied twice (F4). It found that a commit whose first attempt was
+  unclear, and whose retry was rejected, was reported as failed even though
+  it might be in the log; it now stays unknown until read back (F32).

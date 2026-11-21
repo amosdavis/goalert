@@ -226,6 +226,10 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 	name := CommitName(version)
 	delay := l.Backoff
 	var lastErr error
+	// unsure is set once an attempt may have landed. From then on only
+	// reading the version settles the outcome: a later attempt being
+	// rejected says nothing about the earlier one (F32).
+	unsure := false
 	for attempt := 0; attempt < l.MaxAttempts; attempt++ {
 		if attempt > 0 {
 			select {
@@ -254,7 +258,7 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 			return CommitInfo{}, ErrConflict
 		case errors.Is(err, objstore.ErrUnknown):
 			// The write may have happened. Look before trying again.
-			lastErr = err
+			lastErr, unsure = err, true
 			ours, rerr := l.isOurs(ctx, name, info.GoAlertCommitID)
 			switch {
 			case rerr == nil && ours:
@@ -267,6 +271,9 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 			default:
 				lastErr = rerr
 			}
+		case unsure:
+			// This attempt was rejected, but an earlier one may have landed.
+			return CommitInfo{}, objstore.Unknown(fmt.Errorf("deltalog: commit %d: an earlier attempt may have landed, then: %v", version, err))
 		default:
 			// The store rejected the write outright, so it did not happen.
 			return CommitInfo{}, fmt.Errorf("deltalog: commit %d: %w", version, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -441,4 +442,153 @@ func TestDeltaRefusesForeignCommits(t *testing.T) {
 	require.ErrorIs(t, db.Health(), deltalog.ErrForeign, "writes stay refused (F11, F21)")
 	_, err = db.Update(ctx, putUser(sch, "u1"))
 	require.ErrorIs(t, err, deltalog.ErrForeign)
+}
+
+// crashStore stops reaching storage after a number of writes, as a pod that
+// dies does. The write it dies on lands or not, as chosen.
+type crashStore struct {
+	*objstore.Mem
+	mu         sync.Mutex
+	writesLeft int
+	landLast   bool
+	crashed    bool
+}
+
+var errPodCrashed = errors.New("pod crashed")
+
+func (c *crashStore) write(op func() error) error {
+	c.mu.Lock()
+	if c.crashed {
+		c.mu.Unlock()
+		return errPodCrashed
+	}
+	if c.writesLeft == 0 {
+		c.crashed = true
+		c.mu.Unlock()
+		if c.landLast {
+			_ = op()
+		}
+		return objstore.Unknown(errPodCrashed)
+	}
+	c.writesLeft--
+	c.mu.Unlock()
+	return op()
+}
+
+func (c *crashStore) isCrashed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.crashed
+}
+
+func (c *crashStore) PutIfAbsent(ctx context.Context, name string, data []byte) error {
+	return c.write(func() error { return c.Mem.PutIfAbsent(ctx, name, data) })
+}
+
+func (c *crashStore) Put(ctx context.Context, name string, data []byte) error {
+	return c.write(func() error { return c.Mem.Put(ctx, name, data) })
+}
+
+func (c *crashStore) Delete(ctx context.Context, name string) error {
+	return c.write(func() error { return c.Mem.Delete(ctx, name) })
+}
+
+func (c *crashStore) Get(ctx context.Context, name string) ([]byte, error) {
+	if c.isCrashed() {
+		return nil, errPodCrashed
+	}
+	return c.Mem.Get(ctx, name)
+}
+
+func (c *crashStore) List(ctx context.Context, prefix, startAfter string) ([]string, error) {
+	if c.isCrashed() {
+		return nil, errPodCrashed
+	}
+	return c.Mem.List(ctx, prefix, startAfter)
+}
+
+// TestDeltaCrashAtEveryWrite stops a pod at every storage write of a run of
+// transactions. Another pod then finds the transactions in order, every
+// acknowledged one included (F1), none applied twice (F4), and the table
+// still writable (F32).
+func TestDeltaCrashAtEveryWrite(t *testing.T) {
+	ctx := context.Background()
+	sch := newDSchema()
+	const txns = 6
+	run := func(i int) func(tx *Tx) error {
+		return func(tx *Tx) error {
+			c, _ := sch.users.Get(tx, "counter")
+			c.ID, c.Count = "counter", c.Count+1
+			if err := sch.users.Put(tx, c); err != nil {
+				return err
+			}
+			if i == 4 {
+				if _, err := sch.users.Delete(tx, "t1"); err != nil {
+					return err
+				}
+			}
+			return sch.users.Put(tx, dUser{ID: fmt.Sprintf("t%d", i), Count: int64(i)})
+		}
+	}
+	// The state after the first k transactions.
+	expect := func(k int) []dUser {
+		var rows []dUser
+		if k > 0 {
+			rows = append(rows, dUser{ID: "counter", Count: int64(k)})
+		}
+		for i := range k {
+			if i == 1 && k > 4 {
+				continue
+			}
+			rows = append(rows, dUser{ID: fmt.Sprintf("t%d", i), Count: int64(i)})
+		}
+		sortUsers(rows)
+		return rows
+	}
+
+	for writes := 0; ; writes++ {
+		finished := false
+		for _, landLast := range []bool{false, true} {
+			mem := newDeltaStore(t)
+			store := &crashStore{Mem: mem, writesLeft: writes, landLast: landLast}
+			opts := dOpts("crashing")
+			opts.CheckpointEvery = 3
+			pod, err := OpenDelta(ctx, store, sch.s, opts)
+			require.NoError(t, err)
+			pod.log.Backoff = time.Millisecond
+			pod.log.MaxAttempts = 2
+
+			acked := 0
+			var failure error
+			for i := range txns {
+				if _, err := pod.Update(ctx, run(i)); err != nil {
+					failure = err
+					break
+				}
+				acked++
+			}
+			require.NoError(t, pod.Close())
+			finished = !store.isCrashed()
+
+			fresh := openPod(t, mem, sch, dOpts("survivor"))
+			got := dumpUsers(sch, fresh.View())
+			k := int(fresh.View().Index())
+			require.GreaterOrEqual(t, k, acked, "crash after write %d (lands: %v): an acknowledged transaction is lost (F1)", writes, landLast)
+			require.LessOrEqual(t, k, txns)
+			if k > acked {
+				require.ErrorIs(t, failure, objstore.ErrUnknown,
+					"crash after write %d (lands: %v): a transaction reported as failed was applied (F32)", writes, landLast)
+			}
+			require.Equal(t, expect(k), got, "crash after write %d (lands: %v): the state is not the first %d transactions (F4)", writes, landLast, k)
+			_, err = fresh.Update(ctx, run(k))
+			require.NoError(t, err, "the table is still writable after the crash")
+		}
+		if finished {
+			break
+		}
+	}
+}
+
+func sortUsers(rows []dUser) {
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 }
