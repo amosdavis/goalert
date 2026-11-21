@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/google/uuid"
@@ -38,6 +39,26 @@ func TestConformance(t *testing.T) {
 		s, err := azblobstore.New(c, "conformance/"+uuid.NewString()+"/")
 		require.NoError(t, err)
 		return s
+	})
+
+	t.Run("CheckSettings", func(t *testing.T) {
+		s, err := azblobstore.New(c, "settings/")
+		require.NoError(t, err)
+		problems, err := s.CheckSettings(ctx)
+		require.NoError(t, err)
+		require.Empty(t, problems, "the private test container has no problems")
+
+		const public = "goalert-public"
+		_, err = client.CreateContainer(ctx, public, &azblob.CreateContainerOptions{Access: to.Ptr(azblob.PublicAccessTypeContainer)})
+		if err != nil && !bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+			require.NoError(t, err, "create public container")
+		}
+		s, err = azblobstore.New(client.ServiceClient().NewContainerClient(public), "")
+		require.NoError(t, err)
+		problems, err = s.CheckSettings(ctx)
+		require.NoError(t, err)
+		require.Len(t, problems, 1)
+		require.True(t, problems[0].Breaks, "public access exposes alert data (F20): %s", problems[0])
 	})
 }
 

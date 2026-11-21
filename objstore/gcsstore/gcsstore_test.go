@@ -43,4 +43,14 @@ func TestConformance(t *testing.T) {
 		require.NoError(t, err)
 		return s
 	})
+
+	t.Run("CheckSettings", func(t *testing.T) {
+		s, err := gcsstore.New(client, bucket, "settings/")
+		require.NoError(t, err)
+		problems, err := s.CheckSettings(ctx)
+		require.NoError(t, err)
+		for _, p := range problems {
+			require.False(t, p.Breaks, "the test bucket breaks nothing: %s", p)
+		}
+	})
 }

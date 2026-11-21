@@ -62,6 +62,28 @@ A running GoAlert uses one backend for everything, never a mix (F23). Until
 Postgres is removed, both backends sit behind the same interfaces, and
 progress is measured by how many smoke tests pass on the new backend.
 
+**Storage settings (F34).** The bucket or container holds nothing but
+GoAlert's table, under its prefix. At startup a self-test checks the
+credentials and create-if-absent (F33), and `CheckSettings` refuses the
+settings the API shows to break the table. Required:
+
+- Private, with no public access (F20). On GCS, enforce public access
+  prevention; on Azure, the container's public access level is off.
+- No lifecycle rule that deletes live objects under the prefix, however old:
+  a data file stays in use as long as its rows don't change (F6). Rules for
+  noncurrent versions only are fine.
+- No retention policy, event-based hold, immutability policy or legal hold on
+  the table's objects: `_last_checkpoint` is replaced, and cleanup deletes
+  old files (F16, F36).
+- Recommended: versioning and soft delete off, or a lifecycle rule that
+  deletes noncurrent versions, since every commit replaces bucket files
+  (F37); a dual-region GCS bucket or geo-redundant Azure storage (F31); pods
+  in the bucket's region (F37).
+
+Azure account settings (blob soft delete, versioning, lifecycle management
+policies) can't be read with container credentials, so the deployment
+checks them.
+
 ## Phase 0: Make the test harness backend-neutral (done)
 
 The 141 smoke tests are the acceptance check (F22), but the harness assumed
@@ -282,3 +304,8 @@ holder while it is sending.
   caller that gives up while its transaction is being committed gets an
   unknown outcome, never a failure (F32). `Batches` counts commits and the
   transactions they held.
+- 2026-11-21: Phase 1b: storage settings (F34). GCS and Azure stores report
+  settings that break the table (a Delete lifecycle rule that can reach live
+  objects, retention policies, holds, public containers) or weaken it
+  (versioning, soft delete, public access prevention not enforced), and the
+  required settings are documented above.
