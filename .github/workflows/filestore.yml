@@ -6,9 +6,9 @@ name: Filestore
 on:
   push:
     branches: ['filestore-backend']
-    paths: ['filestore/**', 'go.mod', 'go.sum', '.github/workflows/filestore.yml']
+    paths: ['filestore/**', 'deltalog/**', 'deltatable/**', 'objstore/**', 'go.mod', 'go.sum', '.github/workflows/filestore.yml']
   pull_request:
-    paths: ['filestore/**', 'go.mod', 'go.sum', '.github/workflows/filestore.yml']
+    paths: ['filestore/**', 'deltalog/**', 'deltatable/**', 'objstore/**', 'go.mod', 'go.sum', '.github/workflows/filestore.yml']
 
 jobs:
   test:

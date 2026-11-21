@@ -115,6 +115,9 @@ type DB struct {
 // (F11), restricts dir to its owner (F20), then loads the newest valid
 // snapshot and replays the log after it.
 func Open(dir string, schema *Schema, opts Options) (_ *DB, err error) {
+	if schema.delta {
+		return nil, errors.New("filestore: this schema is in use by a Delta table")
+	}
 	opts = opts.withDefaults()
 	schema.frozen = true
 	db := &DB{
@@ -368,7 +371,7 @@ func (db *DB) Update(ctx context.Context, fn func(tx *Tx) error) error {
 	}
 
 	tx := &Tx{
-		db:      db,
+		schema:  db.schema,
 		base:    db.master,
 		working: make(map[string]tableData),
 		now:     db.opts.Clock.Now().UTC().Truncate(time.Microsecond),

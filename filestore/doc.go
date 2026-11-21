@@ -28,4 +28,10 @@
 // Snapshots bound recovery time and log size (F16). A snapshot is written
 // from an immutable view, so writers keep going while it runs. The newest two
 // snapshots are kept, along with the log needed to replay from the older one.
+//
+// OpenDelta keeps the same tables in a Delta table on object storage instead,
+// shared by several pods (delta.go). Each pod still holds the whole state in
+// memory. A transaction becomes one Delta commit, made on top of the latest
+// version, so a pod that loses a race to another catches up and runs the
+// transaction again (F4). The local log is superseded by it.
 package filestore

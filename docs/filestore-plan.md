@@ -161,6 +161,12 @@ Two pieces of work go with the port:
   else.
 - Search becomes in-memory matching. Postgres full-text search (`textSearch`)
   has no exact equivalent, so the difference is documented (F24).
+- Row normalization gets fast. Every `Put` keeps the row exactly as it will
+  decode (F25), today through a one-row Parquet round trip that costs about
+  0.5 ms and 250 KB (`BenchmarkNormalize`). A reflection-based normalizer
+  replaces it, and randomized tests check that it always gives what the
+  Parquet round trip gives (F15, F17). Row types use pointers for times that
+  can be unset, since parquet-go misreads times outside 1677-2262 (F25).
 
 Exit for each package: the inventory items for its tables are implemented and
 tested, and every smoke test that needs only the packages ported so far passes
@@ -232,3 +238,19 @@ holder while it is sending.
   settles an unclear commit by retrying the same commit and reading the
   version back, and refuses commits from other writers or tables and newer
   protocols or formats.
+- 2026-11-21: Phase 1b: `deltatable/` stores each GoAlert table as a struct
+  column in Parquet data files, partitioned by table and bucket, and
+  `deltalog/` writes checkpoints. In CI, GoAlert writes and checkpoints a
+  table, deletes the commits the checkpoint covers, and delta-rs 1.6.6 reads
+  every row as GoAlert wrote it (F35).
+- 2026-11-21: Smoke flake: `TestGenericAPIClose` failed once on a duplicate
+  SMS, on a commit that changed no app code, and passed when the same commit
+  ran again. F3 now covers a retry while the first send may have gone out.
+- 2026-11-21: Phase 1b: `filestore.DeltaDB` keeps the in-memory tables in a
+  Delta table that several pods share. Its tests cover pods racing on one
+  counter without losing an update and ending with the same state (F4, F25),
+  a unique key won by exactly one pod (F8), unclear commits (F32), failed
+  uploads (F6), foreign commits (F11), schema and bucket changes (F19, F30),
+  clock skew between pods (F13), following and waiting for a version (F29),
+  and starting from a checkpoint (F16, F38). Testing it found that parquet-go
+  misreads times outside 1677-2262; such times are now refused (F25).

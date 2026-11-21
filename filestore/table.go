@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/btree"
+	"github.com/target/goalert/deltatable"
 )
 
 const (
@@ -20,16 +21,18 @@ const (
 // Schema is the set of tables in a store. Define every table, with its
 // indexes, before passing the schema to Open.
 type Schema struct {
-	tables map[string]tableDef
-	names  []string // sorted
-	seq    *Table[seqRow]
-	frozen bool
+	tables   map[string]tableDef
+	names    []string // sorted
+	seq      *Table[seqRow]
+	frozen   bool
+	delta    bool  // set up for a Delta table (delta.go)
+	deltaErr error // why that failed
 }
 
 // seqRow holds the last value handed out by a sequence.
 type seqRow struct {
-	Name  string
-	Value int64
+	Name  string `parquet:"name"`
+	Value int64  `parquet:"value"`
 }
 
 // NewSchema returns an empty schema.
@@ -41,6 +44,7 @@ func NewSchema() *Schema {
 
 type tableDef interface {
 	newData() tableData
+	deltaDef // delta.go
 }
 
 // tableData is one table's rows and indexes. A tableData that has been
@@ -59,8 +63,8 @@ type Reader interface {
 	tableData(name string) tableData
 }
 
-// Table is a typed table of rows of type V, stored as JSON. Each row's key
-// comes from the row itself.
+// Table is a typed table of rows of type V, stored as JSON in the local log
+// or as Parquet in a Delta table. Each row's key comes from the row itself.
 //
 // Rows returned by reads are shared with the store and with other readers.
 // Treat them as read-only: copy a row, change the copy, and Put it.
@@ -70,6 +74,12 @@ type Table[V any] struct {
 	keyFn   func(V) string
 	indexes []*Index[V]
 	uniques []*Unique[V]
+
+	// On a Delta table (delta.go): how many buckets the rows are spread
+	// over, the Parquet row type, and the index of rows by bucket.
+	buckets  int
+	rowType  *deltatable.RowType[V]
+	bucketIx *Index[V]
 }
 
 // Index finds rows by a secondary key. A row can have any number of keys in
@@ -233,16 +243,9 @@ func (t *Table[V]) Put(tx *Tx, v V) error {
 	if err := tx.check(); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(v)
+	v2, raw, err := t.normalize(v)
 	if err != nil {
-		return fmt.Errorf("filestore: %s: encode row: %w", t.name, err)
-	}
-	// Store exactly what a replay of the log will decode, so the live state
-	// and a rebuilt state are always the same (F25). This also keeps the
-	// caller's value from being shared with the store.
-	v2, err := t.decode(raw)
-	if err != nil {
-		return fmt.Errorf("filestore: %s: row does not decode the way it encodes: %w", t.name, err)
+		return err
 	}
 	key := t.keyFn(v2)
 	if err := checkKey(t.name, "primary", key); err != nil {
@@ -254,6 +257,29 @@ func (t *Table[V]) Put(tx *Tx, v V) error {
 	}
 	tx.muts = append(tx.muts, mutation{op: opPut, table: t.name, key: key, val: raw})
 	return nil
+}
+
+// normalize returns v exactly as the store will read it back, so the live
+// state and a rebuilt one are always the same (F25): through Parquet on a
+// Delta table, through JSON (also returned, for the log) otherwise. It also
+// keeps the caller's value from being shared with the store.
+func (t *Table[V]) normalize(v V) (V, []byte, error) {
+	if t.rowType != nil {
+		v2, err := t.rowType.Normalize(v)
+		if err != nil {
+			return v, nil, fmt.Errorf("filestore: %s: encode row: %w", t.name, err)
+		}
+		return v2, nil, nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return v, nil, fmt.Errorf("filestore: %s: encode row: %w", t.name, err)
+	}
+	v2, err := t.decode(raw)
+	if err != nil {
+		return v, nil, fmt.Errorf("filestore: %s: row does not decode the way it encodes: %w", t.name, err)
+	}
+	return v2, raw, nil
 }
 
 // Delete removes the row with the given key and reports whether it existed.

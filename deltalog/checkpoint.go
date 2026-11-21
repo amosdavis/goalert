@@ -33,6 +33,7 @@ const (
 	keyCommitID = "goalert.commitId"
 	keyFormat   = "goalert.format"
 	keyVersion  = "goalert.version"
+	keyTime     = "goalert.time"
 )
 
 // CheckpointName is the object name of a version's checkpoint.
@@ -191,6 +192,7 @@ func checkpointFooter(s *Snapshot) map[string]string {
 		keyCommitID: s.CommitID,
 		keyFormat:   strconv.Itoa(GoAlertFormat),
 		keyVersion:  strconv.FormatInt(s.Version, 10),
+		keyTime:     strconv.FormatInt(s.Time.UnixMicro(), 10),
 	}
 }
 
@@ -312,6 +314,11 @@ func decodeCheckpoint(version int64, data []byte) (*Snapshot, error) {
 	if versionStr != strconv.FormatInt(version, 10) {
 		return nil, fmt.Errorf("%w: footer says version %q", ErrCorrupt, versionStr)
 	}
+	timeStr, _ := f.Lookup(keyTime)
+	micros, err := strconv.ParseInt(timeStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%w: footer time %q", ErrCorrupt, timeStr)
+	}
 
 	rows := make([]checkpointRow, f.NumRows())
 	r := parquet.NewGenericReader[checkpointRow](bytes.NewReader(data))
@@ -331,7 +338,7 @@ func decodeCheckpoint(version int64, data []byte) (*Snapshot, error) {
 	}
 
 	s := newSnapshot()
-	s.Version, s.CommitID = version, commitID
+	s.Version, s.CommitID, s.Time = version, commitID, time.UnixMicro(micros).UTC()
 	sawProtocol, sawMeta := false, false
 	for i, row := range rows {
 		n := 0

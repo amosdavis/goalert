@@ -22,7 +22,7 @@ type mutation struct {
 // Tx is a write transaction. It sees its own changes. It is valid only inside
 // the function passed to Update, on that goroutine.
 type Tx struct {
-	db      *DB
+	schema  *Schema
 	base    map[string]tableData // the writer's current tables
 	working map[string]tableData // clones of the tables this transaction changed
 	muts    []mutation
@@ -67,7 +67,7 @@ func (tx *Tx) Now() time.Time { return tx.now }
 // Postgres sequence it is part of the transaction, so a transaction that
 // fails does not use up a value.
 func (tx *Tx) NextID(sequence string) (int64, error) {
-	seq := tx.db.schema.seq
+	seq := tx.schema.seq
 	r, _ := seq.Get(tx, sequence)
 	r.Name = sequence
 	r.Value++

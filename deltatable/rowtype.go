@@ -13,19 +13,88 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
 	"regexp"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/format"
 )
 
 // tableName is what a GoAlert table may be called: it becomes a Delta column
-// name and a partition directory, so it stays plain.
-var tableName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+// name and a partition directory (tbl=<name>), so it stays plain. A leading
+// underscore marks the store's own tables, such as its sequences.
+var tableName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
 // rootName names the root of every data file's Parquet schema.
 const rootName = "goalert"
+
+// parquet-go v0.32.0 writes a timestamp as microseconds but reads it back
+// through int64 nanoseconds, so only times from 1677-09-21 to 2262-04-11
+// read back as written. Go's zero time does not. Outside that range,
+// GoAlert would read garbage where other Delta readers see the right time
+// (F25, F35), so such times are refused when written.
+const (
+	minMicros = math.MinInt64 / 1000
+	maxMicros = math.MaxInt64 / 1000
+)
+
+var timeType = reflect.TypeFor[time.Time]()
+
+// hasTimes reports whether values of t can hold a time.Time.
+func hasTimes(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return hasTimes(t.Elem())
+	case reflect.Struct:
+		if t == timeType {
+			return true
+		}
+		for i := range t.NumField() {
+			if f := t.Field(i); f.IsExported() && hasTimes(f.Type) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkTimes refuses a value holding a time that would not read back as
+// written.
+func checkTimes(v reflect.Value) error {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			return nil
+		}
+		return checkTimes(v.Elem())
+	case reflect.Struct:
+		if v.Type() == timeType {
+			t := v.Interface().(time.Time)
+			if us := t.UnixMicro(); us < minMicros || us > maxMicros {
+				return fmt.Errorf("time %s is outside the range a data file holds (%s to %s); use a pointer for a time that can be unset",
+					t.Format(time.RFC3339), time.UnixMicro(minMicros).UTC().Format(time.DateOnly), time.UnixMicro(maxMicros).UTC().Format(time.DateOnly))
+			}
+			return nil
+		}
+		for i := range v.NumField() {
+			if !v.Type().Field(i).IsExported() {
+				continue
+			}
+			if err := checkTimes(v.Field(i)); err != nil {
+				return fmt.Errorf("%s: %w", v.Type().Field(i).Name, err)
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if err := checkTimes(v.Index(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // RowType describes the rows of one GoAlert table in Delta data files.
 type RowType[V any] struct {
@@ -33,6 +102,7 @@ type RowType[V any] struct {
 	wrapper reflect.Type // struct { Row *V `parquet:"<name>,optional"` }
 	schema  *parquet.Schema
 	field   json.RawMessage // this table's column in the Delta schema
+	times   bool            // whether rows can hold times, which are checked
 }
 
 // NewRowType describes table name, whose rows are V. V's fields use parquet
@@ -64,7 +134,7 @@ func NewRowType[V any](name string) (*RowType[V], error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RowType[V]{name: name, wrapper: wrapper, schema: schema, field: raw}, nil
+	return &RowType[V]{name: name, wrapper: wrapper, schema: schema, field: raw, times: hasTimes(vType)}, nil
 }
 
 // Name returns the table's name.
@@ -81,9 +151,19 @@ func (rt *RowType[V]) wrap(v *V) reflect.Value {
 
 // Encode writes rows as one Snappy-compressed Parquet file.
 func (rt *RowType[V]) Encode(rows []V) ([]byte, error) {
+	return rt.encode(rows)
+}
+
+func (rt *RowType[V]) encode(rows []V, opts ...parquet.WriterOption) ([]byte, error) {
 	var buf bytes.Buffer
-	w := parquet.NewWriter(&buf, rt.schema, parquet.Compression(&parquet.Snappy))
+	opts = append([]parquet.WriterOption{rt.schema, parquet.Compression(&parquet.Snappy)}, opts...)
+	w := parquet.NewWriter(&buf, opts...)
 	for i := range rows {
+		if rt.times {
+			if err := checkTimes(reflect.ValueOf(&rows[i]).Elem()); err != nil {
+				return nil, fmt.Errorf("deltatable: %s: row %d: %w", rt.name, i, err)
+			}
+		}
 		if err := w.Write(rt.wrap(&rows[i]).Interface()); err != nil {
 			return nil, fmt.Errorf("deltatable: %s: write row %d: %w", rt.name, i, err)
 		}
@@ -121,7 +201,8 @@ func (rt *RowType[V]) Decode(data []byte) ([]V, error) {
 // with times at microsecond precision in UTC. Every pod builds its state
 // from decoded files, so a writer stores the normalized value too (F25).
 func (rt *RowType[V]) Normalize(v V) (V, error) {
-	data, err := rt.Encode([]V{v})
+	// One row needs small buffers; the defaults are sized for whole files.
+	data, err := rt.encode([]V{v}, parquet.PageBufferSize(4<<10), parquet.WriteBufferSize(4<<10))
 	if err != nil {
 		return v, err
 	}

@@ -88,19 +88,25 @@ func WriteFile[V any](ctx context.Context, store objstore.Store, rt *RowType[V],
 	if err != nil {
 		return deltalog.Add{}, err
 	}
-	path, err := upload(ctx, store, rt.Name(), bucket, data)
+	return Upload(ctx, store, rt.Name(), bucket, data, len(rows), at)
+}
+
+// Upload is WriteFile for a file already encoded: data holds numRecords
+// rows of table. It has the same guarantees.
+func Upload(ctx context.Context, store objstore.Store, table string, bucket int, data []byte, numRecords int, at time.Time) (deltalog.Add, error) {
+	path, err := upload(ctx, store, table, bucket, data)
 	if err != nil {
 		return deltalog.Add{}, err
 	}
 	stats, err := json.Marshal(struct {
 		NumRecords int `json:"numRecords"`
-	}{len(rows)})
+	}{numRecords})
 	if err != nil {
 		return deltalog.Add{}, err
 	}
 	return deltalog.Add{
 		Path:             path,
-		PartitionValues:  map[string]string{TableColumn: rt.Name(), BucketColumn: strconv.Itoa(bucket)},
+		PartitionValues:  map[string]string{TableColumn: table, BucketColumn: strconv.Itoa(bucket)},
 		Size:             int64(len(data)),
 		ModificationTime: at.UnixMilli(),
 		DataChange:       true,

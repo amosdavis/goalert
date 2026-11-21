@@ -89,4 +89,8 @@ type CommitInfo struct {
 	GoAlertWriterID string `json:"goalertWriterId,omitempty"`
 	GoAlertCommitID string `json:"goalertCommitId,omitempty"`
 	GoAlertFormat   int    `json:"goalertFormat,omitempty"`
+	// GoAlertTime is the commit's time in microseconds since the epoch. The
+	// next commit's time is never earlier, whatever the writer's clock says
+	// (F13).
+	GoAlertTime int64 `json:"goalertTime,omitempty"`
 }

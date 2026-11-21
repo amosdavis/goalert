@@ -195,19 +195,20 @@ func (l *Log) Create(ctx context.Context, meta MetaData, at time.Time) error {
 // Commit writes the given version, which must be one past the latest version
 // the caller has seen.
 //
-// It returns nil only when the version holds this commit (F1), and
-// ErrConflict when another commit holds it. If the write's outcome stays
-// unclear after its retries, the error wraps objstore.ErrUnknown: the commit
-// may still appear, so the caller must not report failure, and must find out
-// by reading the version before writing again (F32).
-func (l *Log) Commit(ctx context.Context, version int64, storeID, operation string, at time.Time, actions []Action) (commitID string, err error) {
+// It returns the commit's commitInfo, and no error only when the version
+// holds this commit (F1). It returns ErrConflict when another commit holds
+// it. If the write's outcome stays unclear after its retries, the error wraps
+// objstore.ErrUnknown: the commit may still appear, so the caller must not
+// report failure, and must find out by reading the version before writing
+// again (F32).
+func (l *Log) Commit(ctx context.Context, version int64, storeID, operation string, at time.Time, actions []Action) (CommitInfo, error) {
 	if version < 1 {
-		return "", fmt.Errorf("deltalog: commits start at version 1")
+		return CommitInfo{}, fmt.Errorf("deltalog: commits start at version 1")
 	}
 	return l.commit(ctx, version, storeID, operation, at, actions)
 }
 
-func (l *Log) commit(ctx context.Context, version int64, storeID, operation string, at time.Time, actions []Action) (string, error) {
+func (l *Log) commit(ctx context.Context, version int64, storeID, operation string, at time.Time, actions []Action) (CommitInfo, error) {
 	info := CommitInfo{
 		Timestamp:       at.UnixMilli(),
 		Operation:       operation,
@@ -216,10 +217,11 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 		GoAlertWriterID: l.writerID,
 		GoAlertCommitID: uuid.NewString(),
 		GoAlertFormat:   GoAlertFormat,
+		GoAlertTime:     at.UnixMicro(),
 	}
 	data, err := encode(info, actions)
 	if err != nil {
-		return "", err
+		return CommitInfo{}, err
 	}
 	name := CommitName(version)
 	delay := l.Backoff
@@ -228,7 +230,7 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return "", objstore.Unknown(fmt.Errorf("deltalog: commit %d: %w (after %v)", version, ctx.Err(), lastErr))
+				return CommitInfo{}, objstore.Unknown(fmt.Errorf("deltalog: commit %d: %w (after %v)", version, ctx.Err(), lastErr))
 			case <-time.After(delay/2 + rand.N(delay)):
 			}
 			delay *= 2
@@ -237,7 +239,7 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 		err := l.store.PutIfAbsent(ctx, name, data)
 		switch {
 		case err == nil:
-			return info.GoAlertCommitID, nil
+			return info, nil
 		case errors.Is(err, objstore.ErrExists):
 			// Someone created the version: another writer, or an earlier
 			// attempt of ours whose reply was lost.
@@ -247,18 +249,18 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 				continue
 			}
 			if ours {
-				return info.GoAlertCommitID, nil
+				return info, nil
 			}
-			return "", ErrConflict
+			return CommitInfo{}, ErrConflict
 		case errors.Is(err, objstore.ErrUnknown):
 			// The write may have happened. Look before trying again.
 			lastErr = err
 			ours, rerr := l.isOurs(ctx, name, info.GoAlertCommitID)
 			switch {
 			case rerr == nil && ours:
-				return info.GoAlertCommitID, nil
+				return info, nil
 			case rerr == nil:
-				return "", ErrConflict
+				return CommitInfo{}, ErrConflict
 			case errors.Is(rerr, objstore.ErrNotFound):
 				// Not there (yet). The same write is retried, so if the
 				// earlier one lands first, the retry recognizes it.
@@ -267,10 +269,10 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 			}
 		default:
 			// The store rejected the write outright, so it did not happen.
-			return "", fmt.Errorf("deltalog: commit %d: %w", version, err)
+			return CommitInfo{}, fmt.Errorf("deltalog: commit %d: %w", version, err)
 		}
 	}
-	return "", objstore.Unknown(fmt.Errorf("deltalog: commit %d: outcome still unknown after %d attempts: %v", version, l.MaxAttempts, lastErr))
+	return CommitInfo{}, objstore.Unknown(fmt.Errorf("deltalog: commit %d: outcome still unknown after %d attempts: %v", version, l.MaxAttempts, lastErr))
 }
 
 // isOurs reads a commit file and reports whether it holds commitID. The
@@ -313,8 +315,10 @@ func (l *Log) Latest(ctx context.Context, from int64) (int64, error) {
 // Snapshot is the table's state as of a version.
 type Snapshot struct {
 	Version int64
-	// CommitID is the GoAlert commit ID of Version.
+	// CommitID is the GoAlert commit ID of Version, and Time its commit
+	// time.
 	CommitID string
+	Time     time.Time
 	Protocol Protocol
 	MetaData MetaData
 	Files    map[string]Add
@@ -476,7 +480,26 @@ func (s *Snapshot) Apply(version int64, info CommitInfo, actions []Action) error
 		}
 	}
 	s.Version, s.CommitID, s.Protocol, s.MetaData = next.Version, info.GoAlertCommitID, next.Protocol, next.MetaData
+	s.Time = time.UnixMicro(info.GoAlertTime).UTC()
 	return nil
+}
+
+// Clone returns a copy that later changes to s do not affect.
+func (s *Snapshot) Clone() *Snapshot {
+	c := *s
+	c.Files = make(map[string]Add, len(s.Files))
+	for k, v := range s.Files {
+		c.Files[k] = v
+	}
+	c.Removed = make(map[string]Remove, len(s.Removed))
+	for k, v := range s.Removed {
+		c.Removed[k] = v
+	}
+	c.Txns = make(map[string]int64, len(s.Txns))
+	for k, v := range s.Txns {
+		c.Txns[k] = v
+	}
+	return &c
 }
 
 // FilePaths returns the snapshot's active data files, sorted.

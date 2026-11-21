@@ -64,10 +64,19 @@ the switchover system (`swo/`), and River.
   commit as the change that caused it, and a GoAlert transaction is always
   exactly one Delta commit.
 - **F3 Duplicate pages.** A message is sent twice: a crash between sending and
-  recording it, two pods sending the same message, or a transaction function
-  re-run after a commit conflict. *Rule:* a message is claimed by a commit
-  before it is sent, and only the pod whose claim committed sends it.
-  Transaction functions do no I/O, because they can run more than once.
+  recording it, two pods sending the same message, a transaction function
+  re-run after a commit conflict, or a retry while the first attempt may
+  already have gone out. Postgres GoAlert retries a temporary send failure
+  after 15 seconds, and fails a send still running past its 10-second
+  `sending_deadline`, so a slow provider can page twice. A smoke run on
+  2026-11-21 saw one duplicate SMS (`TestGenericAPIClose`) while the harness
+  moved the clock forward; a rerun of the same commit passed. *Rule:* a
+  message is claimed by a commit before it is sent, and only the pod whose
+  claim committed sends it. Transaction functions do no I/O, because they can
+  run more than once. A claim lasts longer than the provider call's own
+  timeout, so no second send starts while one is in flight. A send whose
+  outcome is unknown is retried, since a duplicate page is better than a lost
+  one (F1), and every retry is counted in a metric.
 - **F4 Lost ack or close.** A stale read-modify-write overwrites a newer change,
   so an acked alert keeps paging. *Rule:* a commit is always made on top of the
   latest version. If another pod committed first, the transaction re-runs on
@@ -102,9 +111,15 @@ the switchover system (`swo/`), and River.
 - **F25 Replay builds a different state.** Every pod rebuilds state by reading
   the log. If applying a commit calls `time.Now()`, generates an ID, uses
   randomness or depends on map iteration order, pods diverge from each other
-  and from what was acknowledged. *Rule:* applying a commit is deterministic.
-  The writer stamps IDs and timestamps into the commit, and a test replays the
-  log and compares the state.
+  and from what was acknowledged. A value that does not read back exactly as
+  it was written diverges the same way: parquet-go v0.32.0 reads timestamps
+  through int64 nanoseconds, so a time outside 1677-09-21 to 2262-04-11, such
+  as Go's zero time, comes back wrong (while other Delta readers get it
+  right, F35). *Rule:* applying a commit is deterministic. The writer stamps
+  IDs and timestamps into the commit, every row is kept exactly as it
+  decodes, a time outside that range is refused when written (a time that
+  can be unset is a pointer), and a test replays the log and compares the
+  state.
 
 ### C. Concurrency and deployment
 
