@@ -1,13 +1,14 @@
-name: Object stores
+name: Delta backend
 
-# Runs the object-store conformance suite against every implementation,
-# including the GCS and Azure emulators (docs/filestore-failure-modes.md, F14).
+# Tests the Delta Lake backend: the object-store conformance suite against
+# every implementation, including the GCS and Azure emulators (F14), and the
+# Delta log (docs/filestore-failure-modes.md).
 on:
   push:
     branches: ['filestore-backend']
-    paths: ['objstore/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths: ['objstore/**', 'deltalog/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
   pull_request:
-    paths: ['objstore/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths: ['objstore/**', 'deltalog/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
 
 jobs:
   conformance:
@@ -36,4 +37,4 @@ jobs:
         env:
           STORAGE_EMULATOR_HOST: localhost:4443
           GOALERT_TEST_GCS_BUCKET: goalert-test
-        run: go test -race -count=1 -v ./objstore/...
+        run: go test -race -count=1 -v ./objstore/... ./deltalog/...
