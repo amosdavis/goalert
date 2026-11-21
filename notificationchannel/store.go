@@ -57,17 +57,14 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Channel, error) {
 	return channels, nil
 }
 
-func (s *Store) FindDestByID(ctx context.Context, tx gadb.DBTX, id uuid.UUID) (gadb.DestV1, error) {
+func (s *Store) FindDestByID(ctx context.Context, tx txn.Tx, id uuid.UUID) (gadb.DestV1, error) {
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return gadb.DestV1{}, err
 	}
 
-	if tx == nil {
-		tx = s.db
-	}
-
-	row, err := gadb.New(tx).NotifChanFindOne(ctx, id)
+	row, err := gadb.New(dbtx).NotifChanFindOne(ctx, id)
 	if err != nil {
 		return gadb.DestV1{}, err
 	}
@@ -85,7 +82,8 @@ func (s *Store) LookupDestID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uui
 	return gadb.New(stx).NotifChanFindDestID(ctx, gadb.NullDestV1{Valid: true, DestV1: d})
 }
 
-func (s *Store) MapDestToID(ctx context.Context, tx gadb.DBTX, d gadb.DestV1) (uuid.UUID, error) {
+func (s *Store) MapDestToID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error) {
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return uuid.UUID{}, err
@@ -99,7 +97,7 @@ func (s *Store) MapDestToID(ctx context.Context, tx gadb.DBTX, d gadb.DestV1) (u
 		return uuid.UUID{}, err
 	}
 
-	return gadb.New(tx).NotifChanUpsertDest(ctx, gadb.NotifChanUpsertDestParams{
+	return gadb.New(dbtx).NotifChanUpsertDest(ctx, gadb.NotifChanUpsertDestParams{
 		ID:   uuid.New(),
 		Dest: gadb.NullDestV1{Valid: true, DestV1: d},
 		Name: info.Text,

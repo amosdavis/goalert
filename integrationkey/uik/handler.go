@@ -125,7 +125,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	cfg, err := h.intStore.Config(ctx, h.db, keyID)
+	cfg, err := h.intStore.Config(ctx, nil, keyID)
 	if errutil.HTTPError(ctx, w, err) {
 		return
 	}

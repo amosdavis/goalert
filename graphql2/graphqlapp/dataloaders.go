@@ -63,21 +63,23 @@ type AlertStatsParam struct {
 // Each loader is configured with appropriate batch settings and ID extraction functions.
 func (a *App) registerLoaders(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, requestLoadersKey, &loaders{
-		Alert:                     dataloader.NewStoreLoader(ctx, a.AlertStore.FindMany, func(a alert.Alert) int { return a.ID }),
-		AlertState:                dataloader.NewStoreLoader(ctx, a.AlertStore.State, func(s alert.State) int { return s.ID }),
-		EP:                        dataloader.NewStoreLoader(ctx, a.PolicyStore.FindManyPolicies, func(p escalation.Policy) string { return p.ID }),
-		Rotation:                  dataloader.NewStoreLoader(ctx, a.RotationStore.FindMany, func(r rotation.Rotation) string { return r.ID }),
-		Schedule:                  dataloader.NewStoreLoader(ctx, a.ScheduleStore.FindMany, func(s schedule.Schedule) string { return s.ID }),
-		Service:                   dataloader.NewStoreLoader(ctx, a.ServiceStore.FindMany, func(s service.Service) string { return s.ID }),
-		User:                      dataloader.NewStoreLoader(ctx, a.UserStore.FindMany, func(u user.User) string { return u.ID }),
-		CM:                        dataloader.NewStoreLoaderWithDB(ctx, a.DB, a.CMStore.FindMany, func(cm contactmethod.ContactMethod) string { return cm.ID.String() }),
+		Alert:      dataloader.NewStoreLoader(ctx, a.AlertStore.FindMany, func(a alert.Alert) int { return a.ID }),
+		AlertState: dataloader.NewStoreLoader(ctx, a.AlertStore.State, func(s alert.State) int { return s.ID }),
+		EP:         dataloader.NewStoreLoader(ctx, a.PolicyStore.FindManyPolicies, func(p escalation.Policy) string { return p.ID }),
+		Rotation:   dataloader.NewStoreLoader(ctx, a.RotationStore.FindMany, func(r rotation.Rotation) string { return r.ID }),
+		Schedule:   dataloader.NewStoreLoader(ctx, a.ScheduleStore.FindMany, func(s schedule.Schedule) string { return s.ID }),
+		Service:    dataloader.NewStoreLoader(ctx, a.ServiceStore.FindMany, func(s service.Service) string { return s.ID }),
+		User:       dataloader.NewStoreLoader(ctx, a.UserStore.FindMany, func(u user.User) string { return u.ID }),
+		CM: dataloader.NewStoreLoader(ctx, func(ctx context.Context, ids []string) ([]contactmethod.ContactMethod, error) {
+			return a.CMStore.FindMany(ctx, nil, ids)
+		}, func(cm contactmethod.ContactMethod) string { return cm.ID.String() }),
 		Heartbeat:                 dataloader.NewStoreLoader(ctx, a.HeartbeatStore.FindMany, func(hb heartbeat.Monitor) string { return hb.ID }),
 		NotificationMessageStatus: dataloader.NewStoreLoader(ctx, a.NotificationStore.FindManyMessageStatuses, func(n notification.SendResult) string { return n.ID }),
 		NC:                        dataloader.NewStoreLoader(ctx, a.NCStore.FindMany, func(nc notificationchannel.Channel) string { return nc.ID.String() }),
 		AlertMetrics:              dataloader.NewStoreLoader(ctx, a.AlertMetricsStore.FindMetrics, func(m alertmetrics.Metric) int { return m.ID }),
 		AlertFeedback:             dataloader.NewStoreLoader(ctx, a.AlertStore.Feedback, func(f alert.Feedback) int { return f.ID }),
 		AlertMetadata: dataloader.NewStoreLoader(ctx, func(ctx context.Context, i []int) ([]alert.MetadataAlertID, error) {
-			return a.AlertStore.FindManyMetadata(ctx, a.DB, i)
+			return a.AlertStore.FindManyMetadata(ctx, nil, i)
 		}, func(md alert.MetadataAlertID) int { return int(md.ID) }),
 		AlertsByStatus: dataloader.NewStoreLoaderAgg(ctx, gadb.New(a.DB).ServiceAlertCounts, func(r gadb.ServiceAlertCountsRow) uuid.UUID { return r.ServiceID.UUID }),
 
@@ -92,7 +94,7 @@ func (a *App) registerLoaders(ctx context.Context) context.Context {
 		}, func(r gadb.ServiceAlertStatsRow) uuid.UUID { return r.ServiceID }),
 
 		CMsByUser: dataloader.NewStoreLoaderAgg(ctx, func(ctx context.Context, userIDs []string) ([]contactmethod.ContactMethod, error) {
-			return a.CMStore.FindAllByUserIDs(ctx, a.DB, userIDs)
+			return a.CMStore.FindAllByUserIDs(ctx, nil, userIDs)
 		}, func(cm contactmethod.ContactMethod) string { return cm.UserID }),
 
 		NRsByUser: dataloader.NewStoreLoaderAgg(ctx, a.NRStore.FindAllByUserIDs, func(nr notificationrule.NotificationRule) string { return nr.UserID }),
@@ -202,7 +204,7 @@ func (app *App) FindAlertCountByStatus(ctx context.Context, serviceID uuid.UUID)
 func (app *App) FindOneAlertMetadata(ctx context.Context, id int) (map[string]string, error) {
 	loader := loadersFrom(ctx).AlertMetadata
 	if loader == nil {
-		return app.AlertStore.Metadata(ctx, app.DB, id)
+		return app.AlertStore.Metadata(ctx, nil, id)
 	}
 
 	md, err := loader.FetchOne(ctx, id)
@@ -292,7 +294,7 @@ func (app *App) FindOneAlertMetric(ctx context.Context, id int) (*alertmetrics.M
 func (app *App) FindOneCM(ctx context.Context, id uuid.UUID) (cm *contactmethod.ContactMethod, err error) {
 	loader := loadersFrom(ctx).CM
 	if loader == nil {
-		cm, err = app.CMStore.FindOne(ctx, app.DB, id)
+		cm, err = app.CMStore.FindOne(ctx, nil, id)
 	} else {
 		cm, err = loader.FetchOne(ctx, id.String())
 	}
@@ -316,7 +318,7 @@ func (app *App) FindManyCMsForUser(ctx context.Context, userID string) ([]contac
 	var cms []contactmethod.ContactMethod
 	var err error
 	if loader == nil {
-		cms, err = app.CMStore.FindAllByUserIDs(ctx, app.DB, []string{userID})
+		cms, err = app.CMStore.FindAllByUserIDs(ctx, nil, []string{userID})
 	} else {
 		cms, err = loader.FetchAggregate(ctx, userID)
 	}

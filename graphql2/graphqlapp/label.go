@@ -8,7 +8,6 @@ import (
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 )
 
@@ -136,7 +135,7 @@ func (m *Mutation) SetLabel(ctx context.Context, input graphql2.SetLabelInput) (
 	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		cfg := config.FromContext(ctx)
 		if cfg.General.DisableLabelCreation {
-			allLabels, err := m.LabelStore.UniqueKeysTx(ctx, sqltxn.Unwrap(tx))
+			allLabels, err := m.LabelStore.UniqueKeysTx(ctx, tx)
 			if err != nil {
 				return err
 			}
@@ -152,7 +151,7 @@ func (m *Mutation) SetLabel(ctx context.Context, input graphql2.SetLabelInput) (
 			}
 		}
 
-		return m.LabelStore.SetTx(ctx, sqltxn.Unwrap(tx), &label.Label{
+		return m.LabelStore.SetTx(ctx, tx, &label.Label{
 			Key:    input.Key,
 			Value:  input.Value,
 			Target: input.Target,

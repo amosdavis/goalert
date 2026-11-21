@@ -11,6 +11,8 @@ import (
 	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/log"
 
 	"github.com/target/goalert/validation"
@@ -76,7 +78,7 @@ func (s *Store) AuthorizeUIK(ctx context.Context, tokStr string) (context.Contex
 	return ctx, nil
 }
 
-func (s *Store) TokenHints(ctx context.Context, db gadb.DBTX, id uuid.UUID) (primary, secondary string, err error) {
+func (s *Store) TokenHints(ctx context.Context, tx txn.Tx, id uuid.UUID) (primary, secondary string, err error) {
 	err = permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return "", "", err
@@ -93,7 +95,8 @@ func (s *Store) TokenHints(ctx context.Context, db gadb.DBTX, id uuid.UUID) (pri
 	return row.PrimaryTokenHint.String, row.SecondaryTokenHint.String, nil
 }
 
-func (s *Store) GenerateToken(ctx context.Context, db gadb.DBTX, id uuid.UUID) (string, error) {
+func (s *Store) GenerateToken(ctx context.Context, tx txn.Tx, id uuid.UUID) (string, error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return "", err
@@ -115,7 +118,7 @@ func (s *Store) GenerateToken(ctx context.Context, db gadb.DBTX, id uuid.UUID) (
 
 	hint := tokStr[:2] + "..." + tokStr[len(tokStr)-4:]
 
-	err = s.setToken(ctx, db, id, tokID, hint)
+	err = s.setToken(ctx, tx, id, tokID, hint)
 	if err != nil {
 		return "", err
 	}
@@ -123,7 +126,8 @@ func (s *Store) GenerateToken(ctx context.Context, db gadb.DBTX, id uuid.UUID) (
 	return tokStr, nil
 }
 
-func (s *Store) setToken(ctx context.Context, db gadb.DBTX, keyID, tokenID uuid.UUID, tokenHint string) error {
+func (s *Store) setToken(ctx context.Context, tx txn.Tx, keyID, tokenID uuid.UUID, tokenHint string) error {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -161,7 +165,8 @@ func (s *Store) setToken(ctx context.Context, db gadb.DBTX, keyID, tokenID uuid.
 	return nil
 }
 
-func (s *Store) PromoteSecondaryToken(ctx context.Context, db gadb.DBTX, id uuid.UUID) error {
+func (s *Store) PromoteSecondaryToken(ctx context.Context, tx txn.Tx, id uuid.UUID) error {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -179,7 +184,8 @@ func (s *Store) PromoteSecondaryToken(ctx context.Context, db gadb.DBTX, id uuid
 	return nil
 }
 
-func (s *Store) DeleteSecondaryToken(ctx context.Context, db gadb.DBTX, id uuid.UUID) error {
+func (s *Store) DeleteSecondaryToken(ctx context.Context, tx txn.Tx, id uuid.UUID) error {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err

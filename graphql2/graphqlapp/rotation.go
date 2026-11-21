@@ -13,7 +13,6 @@ import (
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/timeutil"
@@ -55,7 +54,7 @@ func (m *Mutation) CreateRotation(ctx context.Context, input graphql2.CreateRota
 		}
 
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.RotationTarget(result.ID))
+			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.RotationTarget(result.ID))
 			if err != nil {
 				return err
 			}
@@ -86,7 +85,7 @@ func (r *Rotation) TimeZone(ctx context.Context, rot *rotation.Rotation) (string
 }
 
 func (r *Rotation) Labels(ctx context.Context, raw *rotation.Rotation) ([]label.Label, error) {
-	return r.LabelStore.FindAllByTarget(ctx, r.DB, assignment.RotationTarget(raw.ID))
+	return r.LabelStore.FindAllByTarget(ctx, nil, assignment.RotationTarget(raw.ID))
 }
 
 func (r *Rotation) IsFavorite(ctx context.Context, rot *rotation.Rotation) (bool, error) {

@@ -11,6 +11,8 @@ import (
 	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
@@ -78,7 +80,8 @@ func (s *Store) GetServiceID(ctx context.Context, id string, t Type) (string, er
 	return serviceID.String(), nil
 }
 
-func (s *Store) Create(ctx context.Context, dbtx gadb.DBTX, i *IntegrationKey) (*IntegrationKey, error) {
+func (s *Store) Create(ctx context.Context, tx txn.Tx, i *IntegrationKey) (*IntegrationKey, error) {
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
@@ -114,7 +117,7 @@ func (s *Store) Create(ctx context.Context, dbtx gadb.DBTX, i *IntegrationKey) (
 
 	if n.Type == TypeUniversal {
 		// ensure a config exists
-		err = s.SetConfig(ctx, dbtx, keyUUID, &gadb.UIKConfigV1{})
+		err = s.SetConfig(ctx, tx, keyUUID, &gadb.UIKConfigV1{})
 		if err != nil {
 			return nil, err
 		}
@@ -123,11 +126,12 @@ func (s *Store) Create(ctx context.Context, dbtx gadb.DBTX, i *IntegrationKey) (
 	return n, nil
 }
 
-func (s *Store) Delete(ctx context.Context, dbtx gadb.DBTX, id string) error {
-	return s.DeleteMany(ctx, dbtx, []string{id})
+func (s *Store) Delete(ctx context.Context, tx txn.Tx, id string) error {
+	return s.DeleteMany(ctx, tx, []string{id})
 }
 
-func (s *Store) DeleteMany(ctx context.Context, dbtx gadb.DBTX, ids []string) error {
+func (s *Store) DeleteMany(ctx context.Context, tx txn.Tx, ids []string) error {
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err

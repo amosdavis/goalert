@@ -21,7 +21,6 @@ import (
 	"github.com/target/goalert/schedule/rule"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -89,7 +88,7 @@ func (q *Query) Schedule(ctx context.Context, id string) (*schedule.Schedule, er
 }
 
 func (s *Schedule) Labels(ctx context.Context, raw *schedule.Schedule) ([]label.Label, error) {
-	return s.LabelStore.FindAllByTarget(ctx, s.DB, assignment.ScheduleTarget(raw.ID))
+	return s.LabelStore.FindAllByTarget(ctx, nil, assignment.ScheduleTarget(raw.ID))
 }
 
 func (s *Schedule) Shifts(ctx context.Context, raw *schedule.Schedule, start, end time.Time, userIDs []string) ([]oncall.Shift, error) {
@@ -282,7 +281,7 @@ func (m *Mutation) CreateSchedule(ctx context.Context, input graphql2.CreateSche
 			return err
 		}
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.ScheduleTarget(sched.ID))
+			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.ScheduleTarget(sched.ID))
 			if err != nil {
 				return err
 			}

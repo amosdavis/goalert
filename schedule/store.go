@@ -86,7 +86,8 @@ func (store *Store) FindMany(ctx context.Context, ids []string) ([]Schedule, err
 	return store.FindManyTx(ctx, nil, ids)
 }
 
-func (store *Store) FindManyByUserID(ctx context.Context, db gadb.DBTX, userID uuid.NullUUID) ([]Schedule, error) {
+func (store *Store) FindManyByUserID(ctx context.Context, tx txn.Tx, userID uuid.NullUUID) ([]Schedule, error) {
+	db := sqltxn.DBTX(store.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err

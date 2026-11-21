@@ -12,7 +12,6 @@ import (
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
@@ -152,7 +151,7 @@ func (a *User) AssignedSchedules(ctx context.Context, obj *user.User) (schedules
 		}
 
 		// get list of schedules user is on as a direct assignment, or indirectly from a rotation
-		schedules, err = (*App)(a).ScheduleStore.FindManyByUserID(ctx, sqltxn.Unwrap(tx), uid)
+		schedules, err = (*App)(a).ScheduleStore.FindManyByUserID(ctx, tx, uid)
 		if err != nil {
 			return err
 		}
@@ -246,7 +245,7 @@ func (a *Mutation) CreateUser(ctx context.Context, input graphql2.CreateUserInpu
 			return err
 		}
 		if input.Favorite != nil && *input.Favorite {
-			err = a.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.UserTarget(newUser.ID))
+			err = a.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.UserTarget(newUser.ID))
 			if err != nil {
 				return err
 			}

@@ -9,6 +9,8 @@ import (
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 
 	"github.com/pkg/errors"
 )
@@ -55,7 +57,8 @@ func (l *Label) tgtRot() uuid.NullUUID {
 
 // SetTx will set a label for the service. It can be used to set the key-value pair for the label,
 // delete a label or update the value given the label's key.
-func (s *Store) SetTx(ctx context.Context, db gadb.DBTX, label *Label) error {
+func (s *Store) SetTx(ctx context.Context, tx txn.Tx, label *Label) error {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return err
@@ -97,7 +100,8 @@ func (s *Store) SetTx(ctx context.Context, db gadb.DBTX, label *Label) error {
 }
 
 // FindAllByTarget finds all labels for a particular target. It returns all key-value pairs.
-func (s *Store) FindAllByTarget(ctx context.Context, db gadb.DBTX, t assignment.Target) ([]Label, error) {
+func (s *Store) FindAllByTarget(ctx context.Context, tx txn.Tx, t assignment.Target) ([]Label, error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
@@ -127,7 +131,8 @@ func (s *Store) FindAllByTarget(ctx context.Context, db gadb.DBTX, t assignment.
 	return labels, nil
 }
 
-func (s *Store) UniqueKeysTx(ctx context.Context, db gadb.DBTX) ([]string, error) {
+func (s *Store) UniqueKeysTx(ctx context.Context, tx txn.Tx) ([]string, error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err

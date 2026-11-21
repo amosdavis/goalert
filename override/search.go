@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/gadb"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/permission"
@@ -37,7 +39,8 @@ type SearchCursor struct {
 	ID string `json:"i,omitempty"`
 }
 
-func (s *Store) Search(ctx context.Context, db gadb.DBTX, opts *SearchOptions) ([]UserOverride, error) {
+func (s *Store) Search(ctx context.Context, tx txn.Tx, opts *SearchOptions) ([]UserOverride, error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err

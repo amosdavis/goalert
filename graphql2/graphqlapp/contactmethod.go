@@ -10,7 +10,6 @@ import (
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user/contactmethod"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -143,7 +142,7 @@ func (m *Mutation) CreateUserContactMethod(ctx context.Context, input graphql2.C
 
 	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
-		cm, err = m.CMStore.Create(ctx, sqltxn.Unwrap(tx), cm)
+		cm, err = m.CMStore.Create(ctx, tx, cm)
 		if err != nil {
 			return err
 		}
@@ -177,7 +176,7 @@ func (m *Mutation) UpdateUserContactMethod(ctx context.Context, input graphql2.U
 		if err != nil {
 			return err
 		}
-		cm, err := m.CMStore.FindOne(ctx, sqltxn.Unwrap(tx), id)
+		cm, err := m.CMStore.FindOne(ctx, tx, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return validation.NewFieldError("id", "contact method not found")
 		}
@@ -200,7 +199,7 @@ func (m *Mutation) UpdateUserContactMethod(ctx context.Context, input graphql2.U
 			cm.StatusUpdates = *input.EnableStatusUpdates
 		}
 
-		return m.CMStore.Update(ctx, sqltxn.Unwrap(tx), cm)
+		return m.CMStore.Update(ctx, tx, cm)
 	})
 	return err == nil, err
 }

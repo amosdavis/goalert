@@ -11,18 +11,20 @@ import (
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation/validate"
 )
 
 // Store allows the lookup and management of Favorites.
-type Store struct{}
+type Store struct{ db *sql.DB }
 
 // NewStore will create a new Store.
-func NewStore(ctx context.Context) (*Store, error) { return &Store{}, nil }
+func NewStore(ctx context.Context, db *sql.DB) (*Store, error) { return &Store{db: db}, nil }
 
 // Set will store the target as a favorite of the given user. Must be authorized as System or the same user.
 // It is safe to call multiple times.
-func (s *Store) Set(ctx context.Context, tx gadb.DBTX, userID string, tgt assignment.Target) error {
+func (s *Store) Set(ctx context.Context, tx txn.Tx, userID string, tgt assignment.Target) error {
 	err := permission.LimitCheckAny(ctx, permission.System, permission.MatchUser(userID))
 	if err != nil {
 		return err
@@ -51,7 +53,7 @@ func (s *Store) Set(ctx context.Context, tx gadb.DBTX, userID string, tgt assign
 		args.TgtUserID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
 	}
 
-	err = gadb.New(tx).UserFavSet(ctx, args)
+	err = gadb.New(sqltxn.DBTX(s.db, tx)).UserFavSet(ctx, args)
 	if err != nil {
 		return fmt.Errorf("set favorite: %w", err)
 	}
@@ -61,7 +63,7 @@ func (s *Store) Set(ctx context.Context, tx gadb.DBTX, userID string, tgt assign
 
 // Unset will remove the target as a favorite of the given user. Must be authorized as System or the same user.
 // It is safe to call multiple times.
-func (s *Store) Unset(ctx context.Context, tx gadb.DBTX, userID string, tgt assignment.Target) error {
+func (s *Store) Unset(ctx context.Context, tx txn.Tx, userID string, tgt assignment.Target) error {
 	err := permission.LimitCheckAny(ctx, permission.System, permission.MatchUser(userID))
 	if err != nil {
 		return err
@@ -91,7 +93,7 @@ func (s *Store) Unset(ctx context.Context, tx gadb.DBTX, userID string, tgt assi
 		args.TgtUserID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
 	}
 
-	err = gadb.New(tx).UserFavUnset(ctx, args)
+	err = gadb.New(sqltxn.DBTX(s.db, tx)).UserFavUnset(ctx, args)
 	if errors.Is(err, sql.ErrNoRows) {
 		// ignoring since it is safe to unset favorite (with retries)
 		err = nil
@@ -103,7 +105,7 @@ func (s *Store) Unset(ctx context.Context, tx gadb.DBTX, userID string, tgt assi
 	return nil
 }
 
-func (s *Store) FindAll(ctx context.Context, tx gadb.DBTX, userID string, filter []assignment.TargetType) ([]assignment.Target, error) {
+func (s *Store) FindAll(ctx context.Context, tx txn.Tx, userID string, filter []assignment.TargetType) ([]assignment.Target, error) {
 	err := permission.LimitCheckAny(ctx, permission.System, permission.MatchUser(userID))
 	if err != nil {
 		return nil, err
@@ -126,7 +128,7 @@ func (s *Store) FindAll(ctx context.Context, tx gadb.DBTX, userID string, filter
 		AllowUsers:              len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeUser),
 	}
 
-	favs, err := gadb.New(tx).UserFavFindAll(ctx, args)
+	favs, err := gadb.New(sqltxn.DBTX(s.db, tx)).UserFavFindAll(ctx, args)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

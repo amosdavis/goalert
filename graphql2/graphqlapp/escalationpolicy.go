@@ -19,7 +19,6 @@ import (
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -184,7 +183,7 @@ func (m *Mutation) CreateEscalationPolicy(ctx context.Context, input graphql2.Cr
 			return err
 		}
 		if input.Favorite != nil && *input.Favorite {
-			err = m.FavoriteStore.Set(ctx, sqltxn.Unwrap(tx), permission.UserID(ctx), assignment.EscalationPolicyTarget(pol.ID))
+			err = m.FavoriteStore.Set(ctx, tx, permission.UserID(ctx), assignment.EscalationPolicyTarget(pol.ID))
 			if err != nil {
 				return err
 			}
@@ -313,7 +312,7 @@ func (m *Mutation) UpdateEscalationPolicyStep(ctx context.Context, input graphql
 		// update targets if provided
 		if input.Actions != nil {
 			// get current actions
-			existing, err := m.PolicyStore.FindAllStepActionsTx(ctx, sqltxn.Unwrap(tx), step.ID)
+			existing, err := m.PolicyStore.FindAllStepActionsTx(ctx, tx, step.ID)
 			if err != nil {
 				return err
 			}
@@ -389,7 +388,7 @@ func (step *EscalationPolicy) IsFavorite(ctx context.Context, raw *escalation.Po
 }
 
 func (ep *EscalationPolicy) Labels(ctx context.Context, raw *escalation.Policy) ([]label.Label, error) {
-	return ep.LabelStore.FindAllByTarget(ctx, ep.DB, assignment.EscalationPolicyTarget(raw.ID))
+	return ep.LabelStore.FindAllByTarget(ctx, nil, assignment.EscalationPolicyTarget(raw.ID))
 }
 
 func (ep *EscalationPolicy) Steps(ctx context.Context, raw *escalation.Policy) ([]escalation.Step, error) {

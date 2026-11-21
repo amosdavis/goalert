@@ -113,17 +113,15 @@ func (s *Store) DeleteStepActionTx(ctx context.Context, tx txn.Tx, stepID uuid.U
 	})
 }
 
-func (s *Store) FindAllStepActionsTx(ctx context.Context, tx gadb.DBTX, stepID uuid.UUID) ([]gadb.DestV1, error) {
+func (s *Store) FindAllStepActionsTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID) ([]gadb.DestV1, error) {
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
-	if tx == nil {
-		tx = s.db
-	}
 
-	actions, err := gadb.New(tx).EPStepActionsByStepId(ctx, stepID)
+	actions, err := gadb.New(dbtx).EPStepActionsByStepId(ctx, stepID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

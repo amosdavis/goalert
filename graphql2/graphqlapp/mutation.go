@@ -55,7 +55,7 @@ func (a *Mutation) SendSignal(ctx context.Context, input graphql2.SendSignalInpu
 		return false, err
 	}
 
-	destID, err := a.NCStore.MapDestToID(ctx, a.DB, *input.Dest)
+	destID, err := a.NCStore.MapDestToID(ctx, nil, *input.Dest)
 	if err != nil {
 		return false, err
 	}
@@ -80,9 +80,9 @@ func (a *Mutation) SendSignal(ctx context.Context, input graphql2.SendSignalInpu
 func (a *Mutation) SetFavorite(ctx context.Context, input graphql2.SetFavoriteInput) (bool, error) {
 	var err error
 	if input.Favorite {
-		err = a.FavoriteStore.Set(ctx, a.DB, permission.UserID(ctx), input.Target)
+		err = a.FavoriteStore.Set(ctx, nil, permission.UserID(ctx), input.Target)
 	} else {
-		err = a.FavoriteStore.Unset(ctx, a.DB, permission.UserID(ctx), input.Target)
+		err = a.FavoriteStore.Unset(ctx, nil, permission.UserID(ctx), input.Target)
 	}
 
 	if err != nil {
@@ -114,7 +114,7 @@ func (a *Mutation) SetScheduleOnCallNotificationRules(ctx context.Context, input
 			}
 
 			// MapDestToID handles the appropriate validation checks, outside of the IsSchedOnCallNotify check done above.
-			chID, err := a.NCStore.MapDestToID(ctx, sqltxn.Unwrap(tx), r.Dest)
+			chID, err := a.NCStore.MapDestToID(ctx, tx, r.Dest)
 			if err != nil {
 				return err
 			}
@@ -262,7 +262,7 @@ func (a *Mutation) tryDeleteAll(ctx context.Context, input []assignment.RawTarge
 			case assignment.TargetTypeEscalationPolicy:
 				err = errors.Wrap(a.PolicyStore.DeleteManyPoliciesTx(ctx, tx, ids), "delete escalation policies")
 			case assignment.TargetTypeIntegrationKey:
-				err = errors.Wrap(a.IntKeyStore.DeleteMany(ctx, sqltxn.Unwrap(tx), ids), "delete integration keys")
+				err = errors.Wrap(a.IntKeyStore.DeleteMany(ctx, tx, ids), "delete integration keys")
 			case assignment.TargetTypeSchedule:
 				err = errors.Wrap(a.ScheduleStore.DeleteManyTx(ctx, tx, ids), "delete schedules")
 			case assignment.TargetTypeCalendarSubscription:
@@ -270,7 +270,7 @@ func (a *Mutation) tryDeleteAll(ctx context.Context, input []assignment.RawTarge
 			case assignment.TargetTypeRotation:
 				err = errors.Wrap(a.RotationStore.DeleteManyTx(ctx, tx, ids), "delete rotations")
 			case assignment.TargetTypeContactMethod:
-				err = errors.Wrap(a.CMStore.Delete(ctx, sqltxn.Unwrap(tx), ids...), "delete contact methods")
+				err = errors.Wrap(a.CMStore.Delete(ctx, tx, ids...), "delete contact methods")
 			case assignment.TargetTypeNotificationRule:
 				err = errors.Wrap(a.NRStore.DeleteTx(ctx, tx, ids...), "delete notification rules")
 			case assignment.TargetTypeHeartbeatMonitor:

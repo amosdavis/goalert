@@ -155,7 +155,7 @@ func (app *App) initStores(ctx context.Context) error {
 	}
 
 	if app.ContactMethodStore == nil {
-		app.ContactMethodStore = contactmethod.NewStore(app.DestRegistry)
+		app.ContactMethodStore = contactmethod.NewStore(app.db, app.DestRegistry)
 	}
 
 	if app.NotificationRuleStore == nil {
@@ -240,7 +240,7 @@ func (app *App) initStores(ctx context.Context) error {
 	}
 
 	if app.FavoriteStore == nil {
-		app.FavoriteStore, err = favorite.NewStore(ctx)
+		app.FavoriteStore, err = favorite.NewStore(ctx, app.db)
 	}
 	if err != nil {
 		return errors.Wrap(err, "init favorite store")

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/util/sqlutil"
 )
@@ -46,6 +47,15 @@ func (db DB) Run(ctx context.Context, opts *txn.Options, fn func(tx txn.Tx) erro
 		return err
 	}
 	return tx.Commit()
+}
+
+// DBTX returns the *sql.Tx inside tx, or db if tx is nil, for store methods
+// that run in the caller's transaction or, without one, on their own.
+func DBTX(db *sql.DB, tx txn.Tx) gadb.DBTX {
+	if stx := Unwrap(tx); stx != nil {
+		return stx
+	}
+	return db
 }
 
 // Unwrap returns the *sql.Tx inside tx, or nil if tx is nil.

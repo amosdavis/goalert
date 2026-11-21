@@ -9,6 +9,8 @@ import (
 	"github.com/sqlc-dev/pqtype"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -21,7 +23,8 @@ type metadataDBFormat struct {
 }
 
 // Metadata returns the metadata for a single alert. If err == nil, meta is guaranteed to be non-nil. If the alert has no metadata, an empty map is returned.
-func (s *Store) Metadata(ctx context.Context, db gadb.DBTX, alertID int) (meta map[string]string, err error) {
+func (s *Store) Metadata(ctx context.Context, tx txn.Tx, alertID int) (meta map[string]string, err error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err = permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
@@ -54,7 +57,8 @@ type MetadataAlertID struct {
 	Meta map[string]string
 }
 
-func (s Store) FindManyMetadata(ctx context.Context, db gadb.DBTX, alertIDs []int) ([]MetadataAlertID, error) {
+func (s Store) FindManyMetadata(ctx context.Context, tx txn.Tx, alertIDs []int) ([]MetadataAlertID, error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
@@ -98,7 +102,8 @@ func (s Store) FindManyMetadata(ctx context.Context, db gadb.DBTX, alertIDs []in
 	return res, nil
 }
 
-func (s Store) SetMetadataTx(ctx context.Context, db gadb.DBTX, alertID int, meta map[string]string) error {
+func (s Store) SetMetadataTx(ctx context.Context, tx txn.Tx, alertID int, meta map[string]string) error {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Service)
 	if err != nil {
 		return err

@@ -22,7 +22,6 @@ import (
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/service"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/timeutil"
 	"github.com/target/goalert/validation"
@@ -202,7 +201,7 @@ func (q *Query) Alert(ctx context.Context, alertID int) (*alert.Alert, error) {
  * Merges favorites and user-specified serviceIDs in opts.FilterByServiceID
  */
 func (q *Query) mergeFavorites(ctx context.Context, svcs []string) ([]string, error) {
-	targets, err := q.FavoriteStore.FindAll(ctx, q.DB, permission.UserID(ctx), []assignment.TargetType{assignment.TargetTypeService})
+	targets, err := q.FavoriteStore.FindAll(ctx, nil, permission.UserID(ctx), []assignment.TargetType{assignment.TargetTypeService})
 	if err != nil {
 		return nil, err
 	}
@@ -440,7 +439,7 @@ func (m *Mutation) CreateAlert(ctx context.Context, input graphql2.CreateAlertIn
 		}
 
 		if meta != nil {
-			err = m.AlertStore.SetMetadataTx(ctx, sqltxn.Unwrap(tx), newAlert.ID, meta)
+			err = m.AlertStore.SetMetadataTx(ctx, tx, newAlert.ID, meta)
 			if err != nil {
 				return err
 			}

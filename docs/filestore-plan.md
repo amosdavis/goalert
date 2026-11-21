@@ -319,3 +319,7 @@ holder while it is sending.
   storage write, conflicts and unclear commits with nothing acknowledged lost
   or applied twice, pods converging on one state, and delta-rs reading tables
   GoAlert wrote. Phase 2 continues with `txn.DB.Run`.
+- 2026-11-21: Phase 2: the GraphQL layer runs its transactions through
+  `txn.DB.Run`, and the 37 store methods that took a `gadb.DBTX` take a
+  `txn.Tx`, with nil meaning "not in a transaction". Callers no longer pass
+  a `*sql.DB` to them.

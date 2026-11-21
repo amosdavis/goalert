@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -96,7 +98,8 @@ func (s *Store) ValidateUIKConfigV1(ctx context.Context, cfg gadb.UIKConfigV1) e
 	return nil
 }
 
-func (s *Store) Config(ctx context.Context, db gadb.DBTX, keyID uuid.UUID) (*gadb.UIKConfigV1, error) {
+func (s *Store) Config(ctx context.Context, tx txn.Tx, keyID uuid.UUID) (*gadb.UIKConfigV1, error) {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Service)
 	if err != nil {
 		return nil, err
@@ -117,7 +120,8 @@ func (s *Store) Config(ctx context.Context, db gadb.DBTX, keyID uuid.UUID) (*gad
 	return &cfg.V1, nil
 }
 
-func (s *Store) SetConfig(ctx context.Context, db gadb.DBTX, keyID uuid.UUID, cfg *gadb.UIKConfigV1) error {
+func (s *Store) SetConfig(ctx context.Context, tx txn.Tx, keyID uuid.UUID, cfg *gadb.UIKConfigV1) error {
+	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -148,12 +152,12 @@ func (s *Store) SetConfig(ctx context.Context, db gadb.DBTX, keyID uuid.UUID, cf
 		if cfg.Rules[i].ID == uuid.Nil {
 			cfg.Rules[i].ID = uuid.New()
 		}
-		err := s.setActionChannels(ctx, db, cfg.Rules[i].Actions)
+		err := s.setActionChannels(ctx, tx, cfg.Rules[i].Actions)
 		if err != nil {
 			return err
 		}
 	}
-	err = s.setActionChannels(ctx, db, cfg.DefaultActions)
+	err = s.setActionChannels(ctx, tx, cfg.DefaultActions)
 	if err != nil {
 		return err
 	}
@@ -169,7 +173,7 @@ func (s *Store) SetConfig(ctx context.Context, db gadb.DBTX, keyID uuid.UUID, cf
 	return nil
 }
 
-func (s *Store) setActionChannels(ctx context.Context, tx gadb.DBTX, actions []gadb.UIKActionV1) error {
+func (s *Store) setActionChannels(ctx context.Context, tx txn.Tx, actions []gadb.UIKActionV1) error {
 	for i, act := range actions {
 		ok, err := s.reg.IsDynamicAction(ctx, act.Dest.Type)
 		if err != nil {

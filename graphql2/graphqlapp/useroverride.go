@@ -129,7 +129,7 @@ func (q *Query) UserOverrides(ctx context.Context, input *graphql2.UserOverrideS
 	}
 
 	searchOpts.Limit++
-	overrides, err := q.OverrideStore.Search(ctx, q.DB, &searchOpts)
+	overrides, err := q.OverrideStore.Search(ctx, nil, &searchOpts)
 	if err != nil {
 		return nil, err
 	}
