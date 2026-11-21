@@ -43,6 +43,7 @@ func TestWriteInteropTable(t *testing.T) {
 	if dir == "" {
 		t.Skip("set GOALERT_DELTA_INTEROP_DIR to write the interop table")
 	}
+	dir = filepath.Join(dir, "deltatable")
 	ctx := context.Background()
 	store, err := objstore.NewDir(filepath.Join(dir, "table"))
 	require.NoError(t, err)
@@ -130,8 +131,10 @@ func TestWriteInteropTable(t *testing.T) {
 	expected := map[string]any{
 		"version": 3,
 		"files":   []string{a1.Path, u2.Path, u3.Path},
-		"alerts":  []any{expectAlert(alertRows[0]), expectAlert(alertRows[1])},
-		"users":   expectUsers,
+		"tables": map[string]any{
+			"alerts": []any{expectAlert(alertRows[0]), expectAlert(alertRows[1])},
+			"users":  expectUsers,
+		},
 	}
 	data, err := json.MarshalIndent(expected, "", "  ")
 	require.NoError(t, err)
