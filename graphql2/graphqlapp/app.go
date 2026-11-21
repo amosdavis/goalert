@@ -2,7 +2,6 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -48,6 +47,7 @@ import (
 	"github.com/target/goalert/service"
 	"github.com/target/goalert/swo"
 	"github.com/target/goalert/timezone"
+	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/user/contactmethod"
 	"github.com/target/goalert/user/favorite"
@@ -61,7 +61,7 @@ import (
 )
 
 type App struct {
-	DB                *sql.DB
+	DB                txn.DB
 	AuthBasicStore    *basic.Store
 	UserStore         *user.Store
 	CMStore           *contactmethod.Store

@@ -4,11 +4,12 @@ import (
 	"context"
 
 	"github.com/target/goalert/graphql2/graphqlapp"
+	"github.com/target/goalert/txn/sqltxn"
 )
 
 func (app *App) initGraphQL(ctx context.Context) error {
 	app.graphql2 = &graphqlapp.App{
-		DB:                  app.db,
+		DB:                  sqltxn.DB{DB: app.db},
 		AuthBasicStore:      app.AuthBasicStore,
 		UserStore:           app.UserStore,
 		CMStore:             app.ContactMethodStore,

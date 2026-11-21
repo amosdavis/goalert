@@ -304,7 +304,7 @@ func (app *App) initStores(ctx context.Context) error {
 		return errors.Wrap(err, "init API key store")
 	}
 
-	app.UIKHandler = uik.NewHandler(app.db, app.httpClient, app.IntegrationKeyStore, app.AlertStore)
+	app.UIKHandler = uik.NewHandler(app.httpClient, app.IntegrationKeyStore, app.AlertStore)
 
 	return nil
 }

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 
 	"github.com/target/goalert/expflag"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/search"
@@ -27,7 +26,7 @@ func (q *Query) MessageStatusHistory(ctx context.Context, idStr string) ([]graph
 		return nil, err
 	}
 
-	msgs, err := gadb.New(q.DB).GraphQL_MessageStatusHistory(ctx, id)
+	msgs, err := q.NotificationStore.MessageStatusHistory(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

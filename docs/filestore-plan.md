@@ -161,7 +161,11 @@ several stores can write in one transaction. They switch to `txn.Tx`.
 
 Exit:
 
-- Only store implementations import `database/sql` or `gadb`.
+- Only store implementations, the engine (until Phase 4) and the app's
+  wiring touch the database: they alone call `gadb.New`, hold a `*sql.DB`
+  or `*sql.Tx`, or run SQL. Other packages may still use the types `gadb`
+  generates, such as `gadb.DestV1`, and `sql.Null*` values; those move in
+  Phase 3.
 - The suite is green on Postgres.
 
 ## Phase 3: The stores on the Delta backend, leaf packages first
@@ -323,3 +327,8 @@ holder while it is sending.
   `txn.DB.Run`, and the 37 store methods that took a `gadb.DBTX` take a
   `txn.Tx`, with nil meaning "not in a transaction". Callers no longer pass
   a `*sql.DB` to them.
+- 2026-11-21: Phase 2: the GraphQL layer no longer touches the database. Its
+  six direct queries moved into the alert, integration key, notification and
+  user stores, and its `App` holds a `txn.DB`. `keyring.ReEncryptAll` takes
+  a `txn.DB`. Left for Phase 2: the auth handler's transaction, the list of
+  transactions that do I/O or run long, and `overrideconflict_test.go`.

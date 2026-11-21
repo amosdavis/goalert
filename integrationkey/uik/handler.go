@@ -2,7 +2,6 @@ package uik
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,17 +22,11 @@ import (
 type Handler struct {
 	intStore   *integrationkey.Store
 	alertStore *alert.Store
-	db         TxAble
 	hc         *http.Client
 }
 
-type TxAble interface {
-	gadb.DBTX
-	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
-}
-
-func NewHandler(db TxAble, hc *http.Client, intStore *integrationkey.Store, aStore *alert.Store) *Handler {
-	return &Handler{intStore: intStore, hc: hc, db: db, alertStore: aStore}
+func NewHandler(hc *http.Client, intStore *integrationkey.Store, aStore *alert.Store) *Handler {
+	return &Handler{intStore: intStore, hc: hc, alertStore: aStore}
 }
 
 func (h *Handler) handleAction(ctx context.Context, act gadb.UIKActionV1) (inserted bool, err error) {
@@ -74,7 +67,7 @@ func (h *Handler) handleAction(ctx context.Context, act gadb.UIKActionV1) (inser
 			return false, err
 		}
 
-		err = gadb.New(h.db).IntKeyInsertSignalMessage(ctx, gadb.IntKeyInsertSignalMessageParams{
+		err = h.intStore.InsertSignalMessage(ctx, nil, gadb.IntKeyInsertSignalMessageParams{
 			DestID:    act.ChannelID,
 			ServiceID: permission.ServiceNullUUID(ctx).UUID,
 			Params:    data,

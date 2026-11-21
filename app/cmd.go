@@ -30,6 +30,7 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/remotemonitor"
 	"github.com/target/goalert/swo"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/calllimiter"
@@ -492,7 +493,7 @@ Migration: %s (#%d)
 
 			ctx = permission.SystemContext(ctx, "ReEncryptAll")
 
-			return keyring.ReEncryptAll(ctx, db, c.EncryptionKeys)
+			return keyring.ReEncryptAll(ctx, sqltxn.DB{DB: db}, c.EncryptionKeys)
 		},
 	}
 

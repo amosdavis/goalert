@@ -22,7 +22,6 @@ import (
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/service"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/timeutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -289,7 +288,7 @@ func (m *Mutation) CreateService(ctx context.Context, input graphql2.CreateServi
 }
 
 func (a *Mutation) UpdateService(ctx context.Context, input graphql2.UpdateServiceInput) (bool, error) {
-	err := sqltxn.DB{DB: a.DB}.Run(ctx, nil, func(tx txn.Tx) error {
+	err := a.DB.Run(ctx, nil, func(tx txn.Tx) error {
 		svc, err := a.ServiceStore.FindOneForUpdate(ctx, tx, input.ID)
 		if err != nil {
 			return err

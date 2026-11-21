@@ -81,10 +81,10 @@ func (a *App) registerLoaders(ctx context.Context) context.Context {
 		AlertMetadata: dataloader.NewStoreLoader(ctx, func(ctx context.Context, i []int) ([]alert.MetadataAlertID, error) {
 			return a.AlertStore.FindManyMetadata(ctx, nil, i)
 		}, func(md alert.MetadataAlertID) int { return int(md.ID) }),
-		AlertsByStatus: dataloader.NewStoreLoaderAgg(ctx, gadb.New(a.DB).ServiceAlertCounts, func(r gadb.ServiceAlertCountsRow) uuid.UUID { return r.ServiceID.UUID }),
+		AlertsByStatus: dataloader.NewStoreLoaderAgg(ctx, a.AlertStore.ServiceAlertCounts, func(r gadb.ServiceAlertCountsRow) uuid.UUID { return r.ServiceID.UUID }),
 
 		AlertStats: dataloader.NewStoreLoaderAggParam(ctx, func(ctx context.Context, param AlertStatsParam, ids []uuid.UUID) ([]gadb.ServiceAlertStatsRow, error) {
-			return gadb.New(a.DB).ServiceAlertStats(ctx, gadb.ServiceAlertStatsParams{
+			return a.AlertStore.ServiceAlertStats(ctx, gadb.ServiceAlertStatsParams{
 				Stride:     param.Stride,
 				Origin:     param.Origin,
 				StartTime:  param.StartTime,
@@ -180,7 +180,7 @@ func (a *App) closeLoaders(ctx context.Context) {
 func (a *App) FindAlertStats(ctx context.Context, params AlertStatsParam, serviceID uuid.UUID) ([]gadb.ServiceAlertStatsRow, error) {
 	loader := loadersFrom(ctx).AlertStats
 	if loader == nil {
-		return gadb.New(a.DB).ServiceAlertStats(ctx, gadb.ServiceAlertStatsParams{
+		return a.AlertStore.ServiceAlertStats(ctx, gadb.ServiceAlertStatsParams{
 			Stride:     params.Stride,
 			Origin:     params.Origin,
 			StartTime:  params.StartTime,
@@ -195,7 +195,7 @@ func (a *App) FindAlertStats(ctx context.Context, params AlertStatsParam, servic
 func (app *App) FindAlertCountByStatus(ctx context.Context, serviceID uuid.UUID) ([]gadb.ServiceAlertCountsRow, error) {
 	loader := loadersFrom(ctx).AlertsByStatus
 	if loader == nil {
-		return gadb.New(app.DB).ServiceAlertCounts(ctx, []uuid.UUID{serviceID})
+		return app.AlertStore.ServiceAlertCounts(ctx, []uuid.UUID{serviceID})
 	}
 
 	return loader.FetchAggregate(ctx, serviceID)

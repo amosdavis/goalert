@@ -535,7 +535,7 @@ func (a *Alert) PendingNotifications(ctx context.Context, obj *alert.Alert) ([]g
 		return nil, err
 	}
 
-	rows, err := gadb.New(a.DB).AllPendingMsgDests(ctx, gadb.AllPendingMsgDestsParams{
+	rows, err := a.AlertStore.PendingMessageDests(ctx, gadb.AllPendingMsgDestsParams{
 		AlertID:   int64(obj.ID),
 		ServiceID: uuid.MustParse(obj.ServiceID),
 	})

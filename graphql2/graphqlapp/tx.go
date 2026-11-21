@@ -2,10 +2,8 @@ package graphqlapp
 
 import (
 	context "context"
-	"database/sql"
 
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/errutil"
 )
 
@@ -17,7 +15,7 @@ import (
 //
 // Run commits and rolls back. On the Delta backend it can run fn more than
 // once, so fn must do no I/O beyond the stores it calls (F3).
-func withContextTx(ctx context.Context, db *sql.DB, fn func(context.Context, txn.Tx) error) error {
+func withContextTx(ctx context.Context, db txn.DB, fn func(context.Context, txn.Tx) error) error {
 	// Defining a static key to store the transaction within Context. The `0` value is arbitrary,
 	// it just needs to be a unique type/value pair, vs. other context values.
 	type ctxTx int
@@ -30,7 +28,7 @@ func withContextTx(ctx context.Context, db *sql.DB, fn func(context.Context, txn
 		return errutil.MapDBError(fn(ctx, tx))
 	}
 
-	err := sqltxn.DB{DB: db}.Run(ctx, nil, func(tx txn.Tx) error {
+	err := db.Run(ctx, nil, func(tx txn.Tx) error {
 		return fn(context.WithValue(ctx, txKey, tx), tx)
 	})
 

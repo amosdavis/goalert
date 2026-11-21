@@ -14,7 +14,6 @@ import (
 	"github.com/target/goalert/retry"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -65,7 +64,7 @@ func (a *Mutation) SendSignal(ctx context.Context, input graphql2.SendSignalInpu
 		return false, err
 	}
 
-	err = gadb.New(a.DB).IntKeyInsertSignalMessage(ctx, gadb.IntKeyInsertSignalMessageParams{
+	err = a.IntKeyStore.InsertSignalMessage(ctx, nil, gadb.IntKeyInsertSignalMessageParams{
 		DestID:    destID,
 		ServiceID: svcID,
 		Params:    data,
@@ -224,7 +223,7 @@ func (a *Mutation) DeleteAll(ctx context.Context, input []assignment.RawTarget) 
 }
 
 func (a *Mutation) tryDeleteAll(ctx context.Context, input []assignment.RawTarget) error {
-	return sqltxn.DB{DB: a.DB}.Run(ctx, nil, func(tx txn.Tx) error {
+	return a.DB.Run(ctx, nil, func(tx txn.Tx) error {
 		var err error
 
 		m := make(map[assignment.TargetType][]string)

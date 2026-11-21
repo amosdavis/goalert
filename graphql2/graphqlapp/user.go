@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/target/goalert/auth/basic"
 	"github.com/target/goalert/calsub"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/txn"
@@ -42,7 +41,7 @@ func (a *User) OnCallOverview(ctx context.Context, obj *user.User) (*graphql2.On
 		return nil, err
 	}
 
-	data, err := gadb.New(a.DB).GQLUserOnCallOverview(ctx, id)
+	data, err := a.UserStore.OnCallOverview(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &graphql2.OnCallOverview{ServiceAssignments: []graphql2.OnCallServiceAssignment{}}, nil
 	}
