@@ -8,6 +8,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation/validate"
@@ -25,7 +27,8 @@ func NewStore(ctx context.Context, db *sql.DB, usr *user.Store) (*Store, error) 
 	}, nil
 }
 
-func (store *Store) FindManyTx(ctx context.Context, tx *sql.Tx, ids []string) ([]Schedule, error) {
+func (store *Store) FindManyTx(ctx context.Context, tx txn.Tx, ids []string) ([]Schedule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -45,8 +48,8 @@ func (store *Store) FindManyTx(ctx context.Context, tx *sql.Tx, ids []string) ([
 	}
 
 	db := gadb.New(store.db)
-	if tx != nil {
-		db = db.WithTx(tx)
+	if stx != nil {
+		db = db.WithTx(stx)
 	}
 
 	rows, err := db.SchedFindMany(ctx, gadb.SchedFindManyParams{
@@ -114,7 +117,8 @@ func (store *Store) Create(ctx context.Context, s *Schedule) (*Schedule, error) 
 	return store.CreateScheduleTx(ctx, nil, s)
 }
 
-func (store *Store) CreateScheduleTx(ctx context.Context, tx *sql.Tx, s *Schedule) (*Schedule, error) {
+func (store *Store) CreateScheduleTx(ctx context.Context, tx txn.Tx, s *Schedule) (*Schedule, error) {
+	stx := sqltxn.Unwrap(tx)
 	n, err := s.Normalize()
 	if err != nil {
 		return nil, err
@@ -126,8 +130,8 @@ func (store *Store) CreateScheduleTx(ctx context.Context, tx *sql.Tx, s *Schedul
 	}
 
 	db := gadb.New(store.db)
-	if tx != nil {
-		db = db.WithTx(tx)
+	if stx != nil {
+		db = db.WithTx(stx)
 	}
 
 	id, err := db.SchedCreate(ctx, gadb.SchedCreateParams{
@@ -173,7 +177,8 @@ func (store *Store) Update(ctx context.Context, s *Schedule) error {
 	return err
 }
 
-func (store *Store) UpdateTx(ctx context.Context, tx *sql.Tx, s *Schedule) error {
+func (store *Store) UpdateTx(ctx context.Context, tx txn.Tx, s *Schedule) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -193,7 +198,7 @@ func (store *Store) UpdateTx(ctx context.Context, tx *sql.Tx, s *Schedule) error
 		return err
 	}
 
-	err = gadb.New(store.db).WithTx(tx).SchedUpdate(ctx, gadb.SchedUpdateParams{
+	err = gadb.New(store.db).WithTx(stx).SchedUpdate(ctx, gadb.SchedUpdateParams{
 		ID:          id,
 		Name:        n.Name,
 		Description: n.Description,
@@ -230,7 +235,8 @@ func (store *Store) FindAll(ctx context.Context) ([]Schedule, error) {
 	return res, nil
 }
 
-func (store *Store) FindOneForUpdate(ctx context.Context, tx *sql.Tx, id string) (*Schedule, error) {
+func (store *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Schedule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -246,8 +252,8 @@ func (store *Store) FindOneForUpdate(ctx context.Context, tx *sql.Tx, id string)
 	}
 
 	db := gadb.New(store.db)
-	if tx != nil {
-		db = db.WithTx(tx)
+	if stx != nil {
+		db = db.WithTx(stx)
 	}
 
 	row, err := db.SchedFindOneForUpdate(ctx, schedID)
@@ -311,11 +317,13 @@ func (store *Store) Delete(ctx context.Context, id string) error {
 	return store.DeleteTx(ctx, nil, id)
 }
 
-func (store *Store) DeleteTx(ctx context.Context, tx *sql.Tx, id string) error {
-	return store.DeleteManyTx(ctx, tx, []string{id})
+func (store *Store) DeleteTx(ctx context.Context, tx txn.Tx, id string) error {
+	stx := sqltxn.Unwrap(tx)
+	return store.DeleteManyTx(ctx, stx, []string{id})
 }
 
-func (store *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) error {
+func (store *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -338,8 +346,8 @@ func (store *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) 
 	}
 
 	db := gadb.New(store.db)
-	if tx != nil {
-		db = db.WithTx(tx)
+	if stx != nil {
+		db = db.WithTx(stx)
 	}
 
 	err = db.SchedDeleteMany(ctx, uuids)

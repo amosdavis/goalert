@@ -2,11 +2,12 @@ package schedule
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/timeutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -15,7 +16,8 @@ import (
 const onCallNotificationRuleLimit = 50
 
 // SetOnCallNotificationRules will set/replace all notification rules for the given schedule ID.
-func (store *Store) SetOnCallNotificationRules(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID, rules []OnCallNotificationRule) error {
+func (store *Store) SetOnCallNotificationRules(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, rules []OnCallNotificationRule) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -101,7 +103,7 @@ func (store *Store) SetOnCallNotificationRules(ctx context.Context, tx *sql.Tx, 
 		rules[i].ID.id = nextID()
 	}
 
-	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
+	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
 		data.V1.OnCallNotificationRules = rules
 
 		return nil
@@ -109,13 +111,14 @@ func (store *Store) SetOnCallNotificationRules(ctx context.Context, tx *sql.Tx, 
 }
 
 // OnCallNotificationRules returns the current set of OnCallNotificationRules for the provided scheduleID.
-func (store *Store) OnCallNotificationRules(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID) ([]OnCallNotificationRule, error) {
+func (store *Store) OnCallNotificationRules(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID) ([]OnCallNotificationRule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := store.scheduleData(ctx, tx, scheduleID)
+	data, err := store.scheduleData(ctx, stx, scheduleID)
 	if err != nil {
 		return nil, err
 	}

@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/sqlutil"
@@ -290,9 +292,10 @@ func (db *DB) loadKey(encData []byte) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-func (db *DB) commitNewKeyring(ctx context.Context, tx *sql.Tx) error {
+func (db *DB) commitNewKeyring(ctx context.Context, tx txn.Tx) error {
+	stx := sqltxn.Unwrap(tx)
 	var t time.Time
-	err := tx.Stmt(db.txTime).QueryRowContext(ctx).Scan(&t)
+	err := stx.Stmt(db.txTime).QueryRowContext(ctx).Scan(&t)
 	if err != nil {
 		return err
 	}
@@ -324,7 +327,7 @@ func (db *DB) commitNewKeyring(ctx context.Context, tx *sql.Tx) error {
 		nextRotTime = t.Add(time.Hour * 24 * time.Duration(db.cfg.RotationDays))
 	}
 
-	res, err := tx.Stmt(db.insertKeys).ExecContext(ctx, db.cfg.Name, vData, signData, nextData, nextRotTime)
+	res, err := stx.Stmt(db.insertKeys).ExecContext(ctx, db.cfg.Name, vData, signData, nextData, nextRotTime)
 	if err != nil {
 		return err
 	}
@@ -332,7 +335,7 @@ func (db *DB) commitNewKeyring(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	err = tx.Commit()
+	err = stx.Commit()
 	if err != nil {
 		return err
 	}

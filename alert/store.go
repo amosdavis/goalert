@@ -10,6 +10,8 @@ import (
 	"github.com/target/goalert/alert/alertlog"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/sqlutil"
@@ -459,7 +461,8 @@ func (s *Store) UpdateManyAlertStatus(ctx context.Context, status Status, alertI
 	return updatedIDs, nil
 }
 
-func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Alert, error) {
+func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Alert, error) {
+	stx := sqltxn.Unwrap(tx)
 	n, err := a.Normalize() // validation
 	if err != nil {
 		return nil, err
@@ -478,17 +481,17 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Alert, err
 		return nil, err
 	}
 
-	err = gadb.New(tx).Alert_LockService(ctx, uuid.MustParse(a.ServiceID))
+	err = gadb.New(stx).Alert_LockService(ctx, uuid.MustParse(a.ServiceID))
 	if err != nil {
 		return nil, err
 	}
 
-	n, meta, err := s._create(ctx, tx, *n)
+	n, meta, err := s._create(ctx, stx, *n)
 	if err != nil {
 		return nil, err
 	}
 
-	s.logDB.MustLogTx(ctx, tx, n.ID, alertlog.TypeCreated, meta)
+	s.logDB.MustLogTx(ctx, stx, n.ID, alertlog.TypeCreated, meta)
 
 	ctx = log.WithFields(ctx, log.Fields{"AlertID": n.ID, "ServiceID": n.ServiceID})
 	log.Logf(ctx, "Alert created.")
@@ -497,16 +500,17 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Alert, err
 	return n, nil
 }
 
-func (s *Store) _create(ctx context.Context, tx *sql.Tx, a Alert) (*Alert, *alertlog.CreatedMetaData, error) {
+func (s *Store) _create(ctx context.Context, tx txn.Tx, a Alert) (*Alert, *alertlog.CreatedMetaData, error) {
+	stx := sqltxn.Unwrap(tx)
 	var meta alertlog.CreatedMetaData
 
-	row := tx.StmtContext(ctx, s.insert).QueryRowContext(ctx, a.Summary, a.Details, a.ServiceID, a.Source, a.Status, a.DedupKey())
+	row := stx.StmtContext(ctx, s.insert).QueryRowContext(ctx, a.Summary, a.Details, a.ServiceID, a.Source, a.Status, a.DedupKey())
 	err := row.Scan(&a.ID, &a.CreatedAt)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	hasSteps, err := gadb.New(tx).Alert_ServiceEPHasSteps(ctx, uuid.MustParse(a.ServiceID))
+	hasSteps, err := gadb.New(stx).Alert_ServiceEPHasSteps(ctx, uuid.MustParse(a.ServiceID))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -516,7 +520,8 @@ func (s *Store) _create(ctx context.Context, tx *sql.Tx, a Alert) (*Alert, *aler
 
 // CreateOrUpdateTx returns `isNew` to indicate if the returned alert was a new one.
 // It is the caller's responsibility to log alert creation if the transaction is committed (and isNew is true).
-func (s *Store) CreateOrUpdateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Alert, bool, error) {
+func (s *Store) CreateOrUpdateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Alert, bool, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx,
 		permission.System,
 		permission.Admin,
@@ -542,7 +547,7 @@ func (s *Store) CreateOrUpdateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Al
 		return nil, false, err
 	}
 
-	err = gadb.New(tx).Alert_LockService(ctx, uuid.MustParse(n.ServiceID))
+	err = gadb.New(stx).Alert_LockService(ctx, uuid.MustParse(n.ServiceID))
 	if err != nil {
 		return nil, false, err
 	}
@@ -553,14 +558,14 @@ func (s *Store) CreateOrUpdateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Al
 	switch n.Status {
 	case StatusTriggered:
 		var m alertlog.CreatedMetaData
-		err = tx.Stmt(s.createUpdNew).
+		err = stx.Stmt(s.createUpdNew).
 			QueryRowContext(ctx, n.Summary, n.Details, n.ServiceID, n.Source, n.DedupKey()).
 			Scan(&n.ID, &n.Summary, &n.Details, &n.Status, &n.Source, &n.CreatedAt, &inserted)
 		if !inserted {
 			logType = alertlog.TypeDuplicateSupressed
 		} else {
 			logType = alertlog.TypeCreated
-			hasSteps, err := gadb.New(tx).Alert_ServiceEPHasSteps(ctx, uuid.MustParse(n.ServiceID))
+			hasSteps, err := gadb.New(stx).Alert_ServiceEPHasSteps(ctx, uuid.MustParse(n.ServiceID))
 			if err != nil {
 				return nil, false, err
 			}
@@ -569,14 +574,14 @@ func (s *Store) CreateOrUpdateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Al
 		meta = &m
 	case StatusActive:
 		var oldStatus Status
-		err = tx.Stmt(s.createUpdAck).
+		err = stx.Stmt(s.createUpdAck).
 			QueryRowContext(ctx, n.ServiceID, n.DedupKey()).
 			Scan(&n.ID, &n.Summary, &n.Details, &oldStatus, &n.CreatedAt)
 		if oldStatus != n.Status {
 			logType = alertlog.TypeAcknowledged
 		}
 	case StatusClosed:
-		err = tx.Stmt(s.createUpdClose).
+		err = stx.Stmt(s.createUpdClose).
 			QueryRowContext(ctx, n.ServiceID, n.DedupKey()).
 			Scan(&n.ID, &n.Summary, &n.Details, &n.CreatedAt)
 		logType = alertlog.TypeClosed
@@ -589,7 +594,7 @@ func (s *Store) CreateOrUpdateTx(ctx context.Context, tx *sql.Tx, a *Alert) (*Al
 		return nil, false, err
 	}
 	if logType != "" {
-		s.logDB.MustLogTx(ctx, tx, n.ID, logType, meta)
+		s.logDB.MustLogTx(ctx, stx, n.ID, logType, meta)
 	}
 
 	return n, inserted, nil
@@ -656,9 +661,10 @@ func (s *Store) createOrUpdate(ctx context.Context, a *Alert, meta map[string]st
 	return n, isNew, nil
 }
 
-func (s *Store) UpdateStatusTx(ctx context.Context, tx *sql.Tx, id int, stat Status) error {
+func (s *Store) UpdateStatusTx(ctx context.Context, tx txn.Tx, id int, stat Status) error {
+	stx := sqltxn.Unwrap(tx)
 	var _stat gadb.EnumAlertStatus
-	_stat, err := gadb.New(tx).Alert_GetStatusAndLockService(ctx, int64(id))
+	_stat, err := gadb.New(stx).Alert_GetStatusAndLockService(ctx, int64(id))
 	if err != nil {
 		return err
 	}
@@ -666,7 +672,7 @@ func (s *Store) UpdateStatusTx(ctx context.Context, tx *sql.Tx, id int, stat Sta
 		return logError{isAlreadyClosed: true, alertID: id, _type: alertlog.TypeClosed, logDB: s.logDB}
 	}
 	if _stat == gadb.EnumAlertStatusActive && stat == StatusActive {
-		multiAck, err := gadb.New(tx).Alert_AlertMultiAck(ctx, int64(id))
+		multiAck, err := gadb.New(stx).Alert_AlertMultiAck(ctx, int64(id))
 		if err != nil {
 			return err
 		}
@@ -677,19 +683,19 @@ func (s *Store) UpdateStatusTx(ctx context.Context, tx *sql.Tx, id int, stat Sta
 		// The alert is already acknowledged, but the current step is multi-ack,
 		// so we still want a record of who acknowledged and when. The status is
 		// unchanged, so return before the update below.
-		s.logDB.MustLogTx(ctx, tx, id, alertlog.TypeAcknowledged, nil)
+		s.logDB.MustLogTx(ctx, stx, id, alertlog.TypeAcknowledged, nil)
 		return nil
 	}
 
-	_, err = tx.Stmt(s.update).ExecContext(ctx, id, stat)
+	_, err = stx.Stmt(s.update).ExecContext(ctx, id, stat)
 	if err != nil {
 		return err
 	}
 
 	if stat == StatusClosed {
-		s.logDB.MustLogTx(ctx, tx, id, alertlog.TypeClosed, nil)
+		s.logDB.MustLogTx(ctx, stx, id, alertlog.TypeClosed, nil)
 	} else if stat == StatusActive {
-		s.logDB.MustLogTx(ctx, tx, id, alertlog.TypeAcknowledged, nil)
+		s.logDB.MustLogTx(ctx, stx, id, alertlog.TypeAcknowledged, nil)
 	} else if stat != StatusTriggered {
 		log.Log(ctx, errors.Errorf("unknown/unhandled alert status update: %s", stat))
 	}

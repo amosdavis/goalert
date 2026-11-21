@@ -13,6 +13,8 @@ import (
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/oncall"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -103,12 +105,14 @@ func (s *Store) _FindOne(ctx context.Context, q *gadb.Queries, id string, upd bo
 	return &cs, nil
 }
 
-func (s *Store) FindOneForUpdate(ctx context.Context, tx *sql.Tx, id string) (*Subscription, error) {
-	return s._FindOne(ctx, gadb.New(s.db).WithTx(tx), id, true)
+func (s *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Subscription, error) {
+	stx := sqltxn.Unwrap(tx)
+	return s._FindOne(ctx, gadb.New(s.db).WithTx(stx), id, true)
 }
 
 // UpdateTx will update the given calendar subscription with the given input.
-func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, cs *Subscription) error {
+func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, cs *Subscription) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.MatchUser(cs.UserID))
 	if err != nil {
 		return err
@@ -133,7 +137,7 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, cs *Subscription) erro
 		return err
 	}
 
-	err = gadb.New(s.db).WithTx(tx).UpdateCalSub(ctx, gadb.UpdateCalSubParams{
+	err = gadb.New(s.db).WithTx(stx).UpdateCalSub(ctx, gadb.UpdateCalSubParams{
 		ID:       uuid.MustParse(n.ID),
 		Name:     n.Name,
 		Disabled: n.Disabled,
@@ -144,7 +148,8 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, cs *Subscription) erro
 }
 
 // CreateTx will return a created calendar subscription with the given input.
-func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, cs *Subscription) (*Subscription, error) {
+func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, cs *Subscription) (*Subscription, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.MatchUser(cs.UserID))
 	if err != nil {
 		return nil, err
@@ -165,7 +170,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, cs *Subscription) (*Su
 		return nil, err
 	}
 
-	now, err := gadb.New(s.db).WithTx(tx).CreateCalSub(ctx, gadb.CreateCalSubParams{
+	now, err := gadb.New(s.db).WithTx(stx).CreateCalSub(ctx, gadb.CreateCalSubParams{
 		ID:         uuid.MustParse(n.ID),
 		Name:       n.Name,
 		UserID:     uuid.MustParse(n.UserID),
@@ -227,7 +232,8 @@ func (s *Store) FindAllByUser(ctx context.Context, userID string) ([]Subscriptio
 }
 
 // DeleteTx removes calendar subscriptions with the given ids for the given user.
-func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, userID string, ids ...string) error {
+func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, userID string, ids ...string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.MatchUser(userID))
 	if err != nil {
 		return err
@@ -250,7 +256,7 @@ func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, userID string, ids ...
 		uids[i] = uuid.MustParse(id)
 	}
 
-	return gadb.New(s.db).WithTx(tx).DeleteManyCalSub(ctx, gadb.DeleteManyCalSubParams{
+	return gadb.New(s.db).WithTx(stx).DeleteManyCalSub(ctx, gadb.DeleteManyCalSubParams{
 		Column1: uids,
 		UserID:  uuid.MustParse(userID),
 	})

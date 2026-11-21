@@ -10,12 +10,15 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rotation"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
 
-func (s *Store) AddStepActionTx(ctx context.Context, tx *sql.Tx, stepID uuid.UUID, dest gadb.DestV1) error {
+func (s *Store) AddStepActionTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, dest gadb.DestV1) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -50,14 +53,14 @@ func (s *Store) AddStepActionTx(ctx context.Context, tx *sql.Tx, stepID uuid.UUI
 		}
 		rotationID = uuid.NullUUID{UUID: id, Valid: true}
 	default:
-		id, err := s.ncStore.MapDestToID(ctx, tx, dest)
+		id, err := s.ncStore.MapDestToID(ctx, stx, dest)
 		if err != nil {
 			return err
 		}
 		channelID = uuid.NullUUID{UUID: id, Valid: true}
 	}
 
-	return gadb.New(tx).EPStepActionsAddAction(ctx, gadb.EPStepActionsAddActionParams{
+	return gadb.New(stx).EPStepActionsAddAction(ctx, gadb.EPStepActionsAddActionParams{
 		EscalationPolicyStepID: stepID,
 		UserID:                 userID,
 		ScheduleID:             scheduleID,
@@ -66,7 +69,8 @@ func (s *Store) AddStepActionTx(ctx context.Context, tx *sql.Tx, stepID uuid.UUI
 	})
 }
 
-func (s *Store) DeleteStepActionTx(ctx context.Context, tx *sql.Tx, stepID uuid.UUID, dest gadb.DestV1) error {
+func (s *Store) DeleteStepActionTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, dest gadb.DestV1) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -93,14 +97,14 @@ func (s *Store) DeleteStepActionTx(ctx context.Context, tx *sql.Tx, stepID uuid.
 		}
 		rotationID = uuid.NullUUID{UUID: id, Valid: true}
 	default:
-		id, err := s.ncStore.LookupDestID(ctx, tx, dest)
+		id, err := s.ncStore.LookupDestID(ctx, stx, dest)
 		if err != nil {
 			return err
 		}
 		channelID = uuid.NullUUID{UUID: id, Valid: true}
 	}
 
-	return gadb.New(tx).EPStepActionsDeleteAction(ctx, gadb.EPStepActionsDeleteActionParams{
+	return gadb.New(stx).EPStepActionsDeleteAction(ctx, gadb.EPStepActionsDeleteActionParams{
 		EscalationPolicyStepID: stepID,
 		UserID:                 userID,
 		ScheduleID:             scheduleID,

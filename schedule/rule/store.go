@@ -7,6 +7,8 @@ import (
 
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
@@ -139,14 +141,16 @@ func (s *Store) Add(ctx context.Context, r *Rule) (*Rule, error) {
 	return r, nil
 }
 
-func (s *Store) CreateRuleTx(ctx context.Context, tx *sql.Tx, r *Rule) (*Rule, error) {
-	if tx == nil {
+func (s *Store) CreateRuleTx(ctx context.Context, tx txn.Tx, r *Rule) (*Rule, error) {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		return s._Add(ctx, s.add, r)
 	}
-	return s._Add(ctx, tx.Stmt(s.add), r)
+	return s._Add(ctx, stx.Stmt(s.add), r)
 }
 
-func (s *Store) FindByTargetTx(ctx context.Context, tx *sql.Tx, scheduleID string, target assignment.Target) ([]Rule, error) {
+func (s *Store) FindByTargetTx(ctx context.Context, tx txn.Tx, scheduleID string, target assignment.Target) ([]Rule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -161,8 +165,8 @@ func (s *Store) FindByTargetTx(ctx context.Context, tx *sql.Tx, scheduleID strin
 	}
 
 	stmt := s.findTgt
-	if tx != nil {
-		stmt = tx.StmtContext(ctx, stmt)
+	if stx != nil {
+		stmt = stx.StmtContext(ctx, stmt)
 	}
 
 	var tgtUser, tgtRot sql.NullString
@@ -197,7 +201,8 @@ func (s *Store) FindByTargetTx(ctx context.Context, tx *sql.Tx, scheduleID strin
 	return result, nil
 }
 
-func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ruleIDs []string) error {
+func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ruleIDs []string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -210,8 +215,8 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ruleIDs []string) 
 		return err
 	}
 	stmt := s.delete
-	if tx != nil {
-		stmt = tx.StmtContext(ctx, stmt)
+	if stx != nil {
+		stmt = stx.StmtContext(ctx, stmt)
 	}
 
 	_, err = stmt.ExecContext(ctx, sqlutil.UUIDArray(ruleIDs))
@@ -219,7 +224,8 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ruleIDs []string) 
 
 }
 
-func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, r *Rule) error {
+func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, r *Rule) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -232,8 +238,8 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, r *Rule) error {
 	f := n.readFields()
 
 	stmt := s.update
-	if tx != nil {
-		stmt = tx.StmtContext(ctx, stmt)
+	if stx != nil {
+		stmt = stx.StmtContext(ctx, stmt)
 	}
 	_, err = stmt.ExecContext(ctx, f...)
 	if err != nil {
@@ -246,7 +252,8 @@ func (s *Store) FindAll(ctx context.Context, scheduleID string) ([]Rule, error) 
 	return s.FindAllTx(ctx, nil, scheduleID)
 }
 
-func (s *Store) FindAllTx(ctx context.Context, tx *sql.Tx, scheduleID string) ([]Rule, error) {
+func (s *Store) FindAllTx(ctx context.Context, tx txn.Tx, scheduleID string) ([]Rule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("ScheduleID", scheduleID)
 	if err != nil {
 		return nil, err
@@ -256,8 +263,8 @@ func (s *Store) FindAllTx(ctx context.Context, tx *sql.Tx, scheduleID string) ([
 		return nil, err
 	}
 	stmt := s.findAll
-	if tx != nil {
-		stmt = tx.StmtContext(ctx, stmt)
+	if stx != nil {
+		stmt = stx.StmtContext(ctx, stmt)
 	}
 	rows, err := stmt.QueryContext(ctx, scheduleID)
 	if err != nil {

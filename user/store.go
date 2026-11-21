@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/retry"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
@@ -294,7 +296,8 @@ func (s *Store) AuthSubjectsFunc(ctx context.Context, providerID string, userIDs
 
 // DeleteManyTx will delete multiple users within the same transaction. If tx is nil,
 // a transaction will be started and committed before returning.
-func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) error {
+func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -309,39 +312,41 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) erro
 	}
 
 	var ownsTx bool
-	if tx == nil {
+	if stx == nil {
 		ownsTx = true
-		tx, err = s.db.BeginTx(ctx, nil)
+		stx, err = s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		defer sqlutil.Rollback(ctx, "user: delete", tx)
+		defer sqlutil.Rollback(ctx, "user: delete", stx)
 	}
 
 	for _, id := range ids {
-		err = s.retryDeleteTx(ctx, tx, id)
+		err = s.retryDeleteTx(ctx, stx, id)
 		if err != nil {
 			return err
 		}
 	}
 
 	if ownsTx {
-		return tx.Commit()
+		return stx.Commit()
 	}
 
 	return nil
 }
 
-func withTx(ctx context.Context, tx *sql.Tx, stmt *sql.Stmt) *sql.Stmt {
-	if tx == nil {
+func withTx(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		return stmt
 	}
 
-	return tx.StmtContext(ctx, stmt)
+	return stx.StmtContext(ctx, stmt)
 }
 
 // InsertTx creates a new User.
-func (s *Store) InsertTx(ctx context.Context, tx *sql.Tx, u *User) (*User, error) {
+func (s *Store) InsertTx(ctx context.Context, tx txn.Tx, u *User) (*User, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -352,7 +357,7 @@ func (s *Store) InsertTx(ctx context.Context, tx *sql.Tx, u *User) (*User, error
 		return nil, err
 	}
 
-	_, err = withTx(ctx, tx, s.insert).ExecContext(ctx, n.fields()...)
+	_, err = withTx(ctx, stx, s.insert).ExecContext(ctx, n.fields()...)
 	if err != nil {
 		return nil, err
 	}
@@ -363,9 +368,10 @@ func (s *Store) InsertTx(ctx context.Context, tx *sql.Tx, u *User) (*User, error
 // Insert is equivalent to calling InsertTx(ctx, nil, u).
 func (s *Store) Insert(ctx context.Context, u *User) (*User, error) { return s.InsertTx(ctx, nil, u) }
 
-func (s *Store) retryDeleteTx(ctx context.Context, tx *sql.Tx, id string) error {
+func (s *Store) retryDeleteTx(ctx context.Context, tx txn.Tx, id string) error {
+	stx := sqltxn.Unwrap(tx)
 	return retry.DoTemporaryError(func(int) error {
-		err := s._deleteTx(ctx, tx, id)
+		err := s._deleteTx(ctx, stx, id)
 		sqlErr := sqlutil.MapError(err)
 		if sqlErr != nil && sqlErr.Code == "23503" {
 			// retry foreign key errors when deleting a user
@@ -379,14 +385,15 @@ func (s *Store) retryDeleteTx(ctx context.Context, tx *sql.Tx, id string) error 
 	)
 }
 
-func (s *Store) _deleteTx(ctx context.Context, tx *sql.Tx, id string) error {
-	_, err := tx.StmtContext(ctx, s.lockRotTables).ExecContext(ctx)
+func (s *Store) _deleteTx(ctx context.Context, tx txn.Tx, id string) error {
+	stx := sqltxn.Unwrap(tx)
+	_, err := stx.StmtContext(ctx, s.lockRotTables).ExecContext(ctx)
 	if err != nil {
 		return err
 	}
 
 	// cleanup rotations first
-	rows, err := tx.StmtContext(ctx, s.userRotations).QueryContext(ctx, id)
+	rows, err := stx.StmtContext(ctx, s.userRotations).QueryContext(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
@@ -406,26 +413,27 @@ func (s *Store) _deleteTx(ctx context.Context, tx *sql.Tx, id string) error {
 	}
 
 	for _, rID := range rotationIDs {
-		err = s.removeUserFromRotation(ctx, tx, id, rID)
+		err = s.removeUserFromRotation(ctx, stx, id, rID)
 		if err != nil {
 			return fmt.Errorf("remove user '%s' from rotation '%s': %w", id, rID, err)
 		}
 	}
 
-	_, err = tx.StmtContext(ctx, s.deleteOne).ExecContext(ctx, id)
+	_, err = stx.StmtContext(ctx, s.deleteOne).ExecContext(ctx, id)
 	if err != nil {
 		return fmt.Errorf("delete user row: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) removeUserFromRotation(ctx context.Context, tx *sql.Tx, userID, rotationID string) error {
+func (s *Store) removeUserFromRotation(ctx context.Context, tx txn.Tx, userID, rotationID string) error {
+	stx := sqltxn.Unwrap(tx)
 	type part struct {
 		ID     string
 		UserID string
 	}
 	var participants []part
-	rows, err := tx.StmtContext(ctx, s.rotationParts).QueryContext(ctx, rotationID)
+	rows, err := stx.StmtContext(ctx, s.rotationParts).QueryContext(ctx, rotationID)
 	if err != nil {
 		return fmt.Errorf("query participants: %w", err)
 	}
@@ -440,7 +448,7 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx *sql.Tx, userID, 
 	}
 
 	var activeIndex int
-	err = tx.StmtContext(ctx, s.rotActiveIndex).QueryRowContext(ctx, rotationID).Scan(&activeIndex)
+	err = stx.StmtContext(ctx, s.rotActiveIndex).QueryRowContext(ctx, rotationID).Scan(&activeIndex)
 	if err != nil {
 		return fmt.Errorf("query active index: %w", err)
 	}
@@ -448,7 +456,7 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx *sql.Tx, userID, 
 	// update participant user IDs
 	var skipped bool
 	curIndex := -1
-	updatePart := tx.StmtContext(ctx, s.updateRotationPart)
+	updatePart := stx.StmtContext(ctx, s.updateRotationPart)
 	for i, p := range participants {
 		if p.UserID == userID {
 			if i < activeIndex {
@@ -471,7 +479,7 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx *sql.Tx, userID, 
 	}
 
 	// delete in reverse order from the end
-	deletePart := tx.StmtContext(ctx, s.deleteRotationPart)
+	deletePart := stx.StmtContext(ctx, s.deleteRotationPart)
 	for i := len(participants) - 1; i > curIndex; i-- {
 		_, err = deletePart.ExecContext(ctx, participants[i].ID)
 		if err != nil {
@@ -479,7 +487,7 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx *sql.Tx, userID, 
 		}
 	}
 
-	_, err = tx.StmtContext(ctx, s.rotSetActive).ExecContext(ctx, rotationID, activeIndex, participants[activeIndex].ID)
+	_, err = stx.StmtContext(ctx, s.rotSetActive).ExecContext(ctx, rotationID, activeIndex, participants[activeIndex].ID)
 	if err != nil {
 		return fmt.Errorf("set active index: %w", err)
 	}
@@ -488,7 +496,8 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx *sql.Tx, userID, 
 }
 
 // UpdateTx allows updating a user name and email.
-func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, u *User) error {
+func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, u *User) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin, permission.MatchUser(u.ID))
 	if err != nil {
 		return err
@@ -499,12 +508,13 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, u *User) error {
 		return err
 	}
 
-	_, err = withTx(ctx, tx, s.update).ExecContext(ctx, n.userUpdateFields()...)
+	_, err = withTx(ctx, stx, s.update).ExecContext(ctx, n.userUpdateFields()...)
 	return err
 }
 
 // SetUserRoleTx allows updating the role of the given user ID.
-func (s *Store) SetUserRoleTx(ctx context.Context, tx *sql.Tx, id string, role permission.Role) error {
+func (s *Store) SetUserRoleTx(ctx context.Context, tx txn.Tx, id string, role permission.Role) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -518,7 +528,7 @@ func (s *Store) SetUserRoleTx(ctx context.Context, tx *sql.Tx, id string, role p
 		return err
 	}
 
-	_, err = withTx(ctx, tx, s.setUserRole).ExecContext(ctx, id, role)
+	_, err = withTx(ctx, stx, s.setUserRole).ExecContext(ctx, id, role)
 	return err
 }
 
@@ -566,7 +576,8 @@ func (s *Store) FindOne(ctx context.Context, id string) (*User, error) {
 
 // FindOneTx will return a single user, locking the row if forUpdate is set. When `forUpdate` is true,
 // favorite information is omitted (always false).
-func (s *Store) FindOneTx(ctx context.Context, tx *sql.Tx, id string, forUpdate bool) (*User, error) {
+func (s *Store) FindOneTx(ctx context.Context, tx txn.Tx, id string, forUpdate bool) (*User, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -579,9 +590,9 @@ func (s *Store) FindOneTx(ctx context.Context, tx *sql.Tx, id string, forUpdate 
 
 	var row *sql.Row
 	if forUpdate {
-		row = withTx(ctx, tx, s.findOneForUpdate).QueryRowContext(ctx, id)
+		row = withTx(ctx, stx, s.findOneForUpdate).QueryRowContext(ctx, id)
 	} else {
-		row = withTx(ctx, tx, s.findOne).QueryRowContext(ctx, id, permission.UserNullUUID(ctx))
+		row = withTx(ctx, stx, s.findOne).QueryRowContext(ctx, id, permission.UserNullUUID(ctx))
 	}
 
 	var u User
@@ -686,7 +697,8 @@ func (s *Store) FindAllAuthSubjectsForUser(ctx context.Context, userID string) (
 }
 
 // AddAuthSubjectTx adds an auth subject for a user.
-func (s *Store) AddAuthSubjectTx(ctx context.Context, tx *sql.Tx, a *AuthSubject) error {
+func (s *Store) AddAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubject) error {
+	stx := sqltxn.Unwrap(tx)
 	var userID string
 	if a != nil {
 		userID = a.UserID
@@ -701,14 +713,15 @@ func (s *Store) AddAuthSubjectTx(ctx context.Context, tx *sql.Tx, a *AuthSubject
 		return err
 	}
 
-	_, err = withTx(ctx, tx, s.insertUserAuthSubject).ExecContext(ctx, a.UserID, n.ProviderID, n.SubjectID)
+	_, err = withTx(ctx, stx, s.insertUserAuthSubject).ExecContext(ctx, a.UserID, n.ProviderID, n.SubjectID)
 	return err
 }
 
 // DeleteAuthSubjectTx removes an auth subject for a user.
 //
 // If the subject does not exist, nil is returned.
-func (s *Store) DeleteAuthSubjectTx(ctx context.Context, tx *sql.Tx, a *AuthSubject) error {
+func (s *Store) DeleteAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubject) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -719,7 +732,7 @@ func (s *Store) DeleteAuthSubjectTx(ctx context.Context, tx *sql.Tx, a *AuthSubj
 		return err
 	}
 
-	_, err = withTx(ctx, tx, s.deleteUserAuthSubject).ExecContext(ctx, a.UserID, n.ProviderID, n.SubjectID)
+	_, err = withTx(ctx, stx, s.deleteUserAuthSubject).ExecContext(ctx, a.UserID, n.ProviderID, n.SubjectID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		// do not return error if auth subject doesn't exist
 		return err

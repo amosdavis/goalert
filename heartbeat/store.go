@@ -9,6 +9,8 @@ import (
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
 )
@@ -26,7 +28,8 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 }
 
 // CreateTx creates a new heartbeat Monitor.
-func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, m *Monitor) (*Monitor, error) {
+func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, m *Monitor) (*Monitor, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -39,7 +42,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, m *Monitor) (*Monitor,
 	id := uuid.New()
 	n.ID = id.String()
 
-	err = s.dbtx(tx).HBInsert(ctx, gadb.HBInsertParams{
+	err = s.dbtx(stx).HBInsert(ctx, gadb.HBInsertParams{
 		ID:                id,
 		Name:              n.Name,
 		ServiceID:         uuid.MustParse(n.ServiceID), // already validated in Normalize
@@ -53,13 +56,14 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, m *Monitor) (*Monitor,
 	return n, nil
 }
 
-func (s *Store) dbtx(tx *sql.Tx) *gadb.Queries {
+func (s *Store) dbtx(tx txn.Tx) *gadb.Queries {
+	stx := sqltxn.Unwrap(tx)
 	db := gadb.New(s.db)
-	if tx == nil {
+	if stx == nil {
 		return db
 	}
 
-	return db.WithTx(tx)
+	return db.WithTx(stx)
 }
 
 // RecordHeartbeat records a heartbeat for the given heartbeat ID.
@@ -73,7 +77,8 @@ func (s *Store) RecordHeartbeat(ctx context.Context, idStr string) error {
 }
 
 // DeleteTx deletes the heartbeat check with the given ID(s).
-func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, idStrs ...string) error {
+func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, idStrs ...string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -84,11 +89,12 @@ func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, idStrs ...string) erro
 		return err
 	}
 
-	return s.dbtx(tx).HBDelete(ctx, ids)
+	return s.dbtx(stx).HBDelete(ctx, ids)
 }
 
 // UpdateTx updates a heartbeat Monitor.
-func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, m *Monitor) error {
+func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, m *Monitor) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -104,7 +110,7 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, m *Monitor) error {
 		return err
 	}
 
-	return s.dbtx(tx).HBUpdate(ctx, gadb.HBUpdateParams{
+	return s.dbtx(stx).HBUpdate(ctx, gadb.HBUpdateParams{
 		ID:                id,
 		Name:              n.Name,
 		HeartbeatInterval: sqlutil.IntervalMicro(n.Timeout),
@@ -114,7 +120,8 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, m *Monitor) error {
 }
 
 // FindOneTx returns a heartbeat montior for updating.
-func (s *Store) FindOneTx(ctx context.Context, tx *sql.Tx, idStr string) (*Monitor, error) {
+func (s *Store) FindOneTx(ctx context.Context, tx txn.Tx, idStr string) (*Monitor, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -125,7 +132,7 @@ func (s *Store) FindOneTx(ctx context.Context, tx *sql.Tx, idStr string) (*Monit
 		return nil, err
 	}
 
-	m, err := s.dbtx(tx).HBByIDForUpdate(ctx, id)
+	m, err := s.dbtx(stx).HBByIDForUpdate(ctx, id)
 	if err != nil {
 		return nil, err
 	}

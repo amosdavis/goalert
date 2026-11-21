@@ -2,11 +2,12 @@ package schedule
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -16,13 +17,14 @@ import (
 const FixedShiftsPerTemporaryScheduleLimit = 150
 
 // TemporarySchedules will return the current set for the provided scheduleID.
-func (store *Store) TemporarySchedules(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID) ([]TemporarySchedule, error) {
+func (store *Store) TemporarySchedules(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID) ([]TemporarySchedule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := store.scheduleData(ctx, tx, scheduleID)
+	data, err := store.scheduleData(ctx, stx, scheduleID)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +68,8 @@ func validateFuture(fieldName string, t time.Time) error {
 }
 
 // SetTemporarySchedule will cause the schedule to use only, and exactly, the provided set of shifts between the provided start and end times.
-func (store *Store) SetTemporarySchedule(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID, temp TemporarySchedule) error {
+func (store *Store) SetTemporarySchedule(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, temp TemporarySchedule) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -82,14 +85,15 @@ func (store *Store) SetTemporarySchedule(ctx context.Context, tx *sql.Tx, schedu
 		return err
 	}
 
-	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
+	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
 		data.V1.TemporarySchedules = setFixedShifts(data.V1.TemporarySchedules, *newTemp)
 		return nil
 	})
 }
 
 // SetClearTemporarySchedules works like SetTemporarySchedule after clearing out any existing TemporarySchedules between clearStart and clearEnd.
-func (store *Store) SetClearTemporarySchedule(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID, temp TemporarySchedule, clearStart, clearEnd time.Time) error {
+func (store *Store) SetClearTemporarySchedule(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, temp TemporarySchedule, clearStart, clearEnd time.Time) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -115,7 +119,7 @@ func (store *Store) SetClearTemporarySchedule(ctx context.Context, tx *sql.Tx, s
 		clearStart = now
 	}
 
-	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
+	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
 		data.V1.TemporarySchedules = deleteFixedShifts(data.V1.TemporarySchedules, clearStart, clearEnd)
 		data.V1.TemporarySchedules = setFixedShifts(data.V1.TemporarySchedules, *newTemp)
 		return nil
@@ -123,7 +127,8 @@ func (store *Store) SetClearTemporarySchedule(ctx context.Context, tx *sql.Tx, s
 }
 
 // ClearTemporarySchedules will clear out (or split, if needed) any defined TemporarySchedules that exist between the start and end time.
-func (store *Store) ClearTemporarySchedules(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID, start, end time.Time) error {
+func (store *Store) ClearTemporarySchedules(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, start, end time.Time) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -140,7 +145,7 @@ func (store *Store) ClearTemporarySchedules(ctx context.Context, tx *sql.Tx, sch
 		start = time.Now()
 	}
 
-	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
+	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
 		data.V1.TemporarySchedules = deleteFixedShifts(data.V1.TemporarySchedules, start, end)
 		return nil
 	})

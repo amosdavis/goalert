@@ -6,6 +6,8 @@ import (
 	"errors"
 
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation/validate"
 )
@@ -37,14 +39,15 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 }
 
 // UpdateLimitsTx updates all configurable limits.
-func (s *Store) UpdateLimitsTx(ctx context.Context, tx *sql.Tx, id string, max int) error {
+func (s *Store) UpdateLimitsTx(ctx context.Context, tx txn.Tx, id string, max int) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
 	}
 	stmt := s.update
-	if tx != nil {
-		stmt = tx.Stmt(stmt)
+	if stx != nil {
+		stmt = stx.Stmt(stmt)
 	}
 	_, err = stmt.ExecContext(ctx, id, max)
 	if err != nil {

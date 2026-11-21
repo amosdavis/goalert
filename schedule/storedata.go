@@ -7,14 +7,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/gadb"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/jsonutil"
 	"github.com/target/goalert/util/sqlutil"
 )
 
-func (store *Store) scheduleData(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID) (*Data, error) {
+func (store *Store) scheduleData(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID) (*Data, error) {
+	stx := sqltxn.Unwrap(tx)
 	db := gadb.New(store.db)
-	if tx != nil {
-		db = db.WithTx(tx)
+	if stx != nil {
+		db = db.WithTx(stx)
 	}
 	rawData, err := db.SchedFindData(ctx, scheduleID)
 	if err == sql.ErrNoRows {
@@ -35,18 +38,19 @@ func (store *Store) scheduleData(ctx context.Context, tx *sql.Tx, scheduleID uui
 	return &data, nil
 }
 
-func (store *Store) updateScheduleData(ctx context.Context, tx *sql.Tx, scheduleID uuid.UUID, apply func(data *Data) error) error {
+func (store *Store) updateScheduleData(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, apply func(data *Data) error) error {
+	stx := sqltxn.Unwrap(tx)
 	var err error
-	externalTx := tx != nil
+	externalTx := stx != nil
 	if !externalTx {
-		tx, err = store.db.BeginTx(ctx, nil)
+		stx, err = store.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		defer sqlutil.Rollback(ctx, "schedule: update data", tx)
+		defer sqlutil.Rollback(ctx, "schedule: update data", stx)
 	}
 
-	db := gadb.New(store.db).WithTx(tx)
+	db := gadb.New(store.db).WithTx(stx)
 
 	var rawData json.RawMessage
 	// Select for update, if it does not exist try inserting, if that fails due to a race, re-try select for update
@@ -90,7 +94,7 @@ func (store *Store) updateScheduleData(ctx context.Context, tx *sql.Tx, schedule
 	}
 
 	if !externalTx {
-		return tx.Commit()
+		return stx.Commit()
 	}
 
 	return nil

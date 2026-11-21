@@ -16,6 +16,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/errutil"
 	"github.com/target/goalert/util/jsonutil"
@@ -128,12 +130,13 @@ func (s *Store) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func wrapTx(ctx context.Context, tx *sql.Tx, stmt *sql.Stmt) *sql.Stmt {
-	if tx == nil {
+func wrapTx(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		return stmt
 	}
 
-	return tx.StmtContext(ctx, stmt)
+	return stx.StmtContext(ctx, stmt)
 }
 
 // Reload will re-read and update the current config state from the DB.
@@ -201,13 +204,14 @@ func (s *Store) ServeConfig(w http.ResponseWriter, req *http.Request) {
 }
 
 // ConfigData will return the current raw config data from the DB.
-func (s *Store) ConfigData(ctx context.Context, tx *sql.Tx) (id, schemaVersion int, data []byte, err error) {
+func (s *Store) ConfigData(ctx context.Context, tx txn.Tx) (id, schemaVersion int, data []byte, err error) {
+	stx := sqltxn.Unwrap(tx)
 	err = permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return 0, 0, nil, err
 	}
 
-	err = wrapTx(ctx, tx, s.latestConfig).QueryRowContext(ctx, SchemaVersion).Scan(&id, &data, &schemaVersion)
+	err = wrapTx(ctx, stx, s.latestConfig).QueryRowContext(ctx, SchemaVersion).Scan(&id, &data, &schemaVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, SchemaVersion, []byte("{}"), nil
 	}
@@ -224,7 +228,8 @@ func (s *Store) ConfigData(ctx context.Context, tx *sql.Tx) (id, schemaVersion i
 }
 
 // SetConfigData will replace the current DB config with data.
-func (s *Store) SetConfigData(ctx context.Context, tx *sql.Tx, data []byte) (int, error) {
+func (s *Store) SetConfigData(ctx context.Context, tx txn.Tx, data []byte) (int, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return 0, err
@@ -242,7 +247,7 @@ func (s *Store) SetConfigData(ctx context.Context, tx *sql.Tx, data []byte) (int
 	}
 
 	var id int
-	err = wrapTx(ctx, tx, s.setConfig).QueryRowContext(ctx, SchemaVersion, data).Scan(&id)
+	err = wrapTx(ctx, stx, s.setConfig).QueryRowContext(ctx, SchemaVersion, data).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -250,8 +255,9 @@ func (s *Store) SetConfigData(ctx context.Context, tx *sql.Tx, data []byte) (int
 	return id, nil
 }
 
-func (s *Store) reloadTx(ctx context.Context, tx *sql.Tx) (*Config, int, error) {
-	id, schemaVersion, data, err := s.ConfigData(ctx, tx)
+func (s *Store) reloadTx(ctx context.Context, tx txn.Tx) (*Config, int, error) {
+	stx := sqltxn.Unwrap(tx)
+	id, schemaVersion, data, err := s.ConfigData(ctx, stx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -302,13 +308,14 @@ func (s *Store) SetConfig(ctx context.Context, cfg Config) error {
 	return s.UpdateConfig(ctx, func(Config) (Config, error) { return cfg, nil })
 }
 
-func (s *Store) updateConfigTx(ctx context.Context, tx *sql.Tx, fn func(Config) (Config, error)) (int, error) {
-	_, err := tx.StmtContext(ctx, s.lock).ExecContext(ctx)
+func (s *Store) updateConfigTx(ctx context.Context, tx txn.Tx, fn func(Config) (Config, error)) (int, error) {
+	stx := sqltxn.Unwrap(tx)
+	_, err := stx.StmtContext(ctx, s.lock).ExecContext(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	cfg, _, err := s.reloadTx(ctx, tx)
+	cfg, _, err := s.reloadTx(ctx, stx)
 	if err != nil {
 		return 0, err
 	}
@@ -327,7 +334,7 @@ func (s *Store) updateConfigTx(ctx context.Context, tx *sql.Tx, fn func(Config) 
 		return 0, errors.Wrap(err, "merge config")
 	}
 
-	return s.SetConfigData(ctx, tx, data)
+	return s.SetConfigData(ctx, stx, data)
 }
 
 // Config will return the current config state.

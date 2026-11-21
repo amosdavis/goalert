@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
@@ -45,7 +47,8 @@ func (s *Store) Insert(ctx context.Context, n *NotificationRule) (*NotificationR
 
 // CreateTx implements the NotificationRuleStore interface by inserting the new NotificationRule into the database.
 // A new ID is always created.
-func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, n *NotificationRule) (*NotificationRule, error) {
+func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, n *NotificationRule) (*NotificationRule, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin, permission.MatchUser(n.UserID))
 	if err != nil {
 		return nil, err
@@ -58,7 +61,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, n *NotificationRule) (
 
 	n.ID = uuid.New().String()
 
-	_, err = wrapTx(ctx, tx, s.insert).ExecContext(ctx, n.ID, n.UserID, n.DelayMinutes, n.ContactMethodID)
+	_, err = wrapTx(ctx, stx, s.insert).ExecContext(ctx, n.ID, n.UserID, n.DelayMinutes, n.ContactMethodID)
 	if err != nil {
 		return nil, err
 	}
@@ -66,16 +69,18 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, n *NotificationRule) (
 	return n, nil
 }
 
-func wrapTx(ctx context.Context, tx *sql.Tx, stmt *sql.Stmt) *sql.Stmt {
-	if tx == nil {
+func wrapTx(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		return stmt
 	}
 
-	return tx.StmtContext(ctx, stmt)
+	return stx.StmtContext(ctx, stmt)
 }
 
 // DeleteTx will delete notification rules with the provided ids.
-func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, ids ...string) error {
+func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, ids ...string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -91,11 +96,11 @@ func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, ids ...string) error {
 	}
 
 	if permission.Admin(ctx) {
-		_, err = wrapTx(ctx, tx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
+		_, err = wrapTx(ctx, stx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
 		return err
 	}
 
-	rows, err := wrapTx(ctx, tx, s.lookupUserID).QueryContext(ctx, sqlutil.UUIDArray(ids))
+	rows, err := wrapTx(ctx, stx, s.lookupUserID).QueryContext(ctx, sqlutil.UUIDArray(ids))
 	if err != nil {
 		return err
 	}
@@ -115,7 +120,7 @@ func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, ids ...string) error {
 	if err != nil {
 		return err
 	}
-	_, err = wrapTx(ctx, tx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
+	_, err = wrapTx(ctx, stx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
 	return err
 }
 

@@ -7,6 +7,8 @@ import (
 
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -103,7 +105,8 @@ func (b *Store) NewHashedPassword(ctx context.Context, password string) (HashedP
 // CreateTx should add a new entry for the username/password combination linking to userID.
 // An error is returned if the username is not unique or the userID is invalid.
 // Must have same user or admin role.
-func (b *Store) CreateTx(ctx context.Context, tx *sql.Tx, userID, username string, password HashedPassword) error {
+func (b *Store) CreateTx(ctx context.Context, tx txn.Tx, userID, username string, password HashedPassword) error {
+	stx := sqltxn.Unwrap(tx)
 	err := ValidateBasicAuth(ctx)
 	if err != nil {
 		return err
@@ -122,12 +125,13 @@ func (b *Store) CreateTx(ctx context.Context, tx *sql.Tx, userID, username strin
 		return err
 	}
 
-	_, err = tx.StmtContext(ctx, b.insert).ExecContext(ctx, userID, username, password.Hash())
+	_, err = stx.StmtContext(ctx, b.insert).ExecContext(ctx, userID, username, password.Hash())
 	return err
 }
 
 // UpdateTx updates a user's password. oldPass is required if the current context is not an admin.
-func (b *Store) UpdateTx(ctx context.Context, tx *sql.Tx, userID string, oldPass ValidatedPassword, newPass HashedPassword) error {
+func (b *Store) UpdateTx(ctx context.Context, tx txn.Tx, userID string, oldPass ValidatedPassword, newPass HashedPassword) error {
+	stx := sqltxn.Unwrap(tx)
 	err := ValidateBasicAuth(ctx)
 	if err != nil {
 		return err
@@ -150,7 +154,7 @@ func (b *Store) UpdateTx(ctx context.Context, tx *sql.Tx, userID string, oldPass
 		return validation.NewFieldError("OldPassword", "Previous password required")
 	}
 
-	res, err := tx.StmtContext(ctx, b.update).ExecContext(ctx, userID, newPass.Hash())
+	res, err := stx.StmtContext(ctx, b.update).ExecContext(ctx, userID, newPass.Hash())
 	if err != nil {
 		return err
 	}

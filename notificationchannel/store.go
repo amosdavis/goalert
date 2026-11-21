@@ -10,6 +10,8 @@ import (
 	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation/validate"
 )
@@ -73,13 +75,14 @@ func (s *Store) FindDestByID(ctx context.Context, tx gadb.DBTX, id uuid.UUID) (g
 	return row.Dest.DestV1, nil
 }
 
-func (s *Store) LookupDestID(ctx context.Context, tx *sql.Tx, d gadb.DestV1) (uuid.UUID, error) {
+func (s *Store) LookupDestID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return uuid.UUID{}, err
 	}
 
-	return gadb.New(tx).NotifChanFindDestID(ctx, gadb.NullDestV1{Valid: true, DestV1: d})
+	return gadb.New(stx).NotifChanFindDestID(ctx, gadb.NullDestV1{Valid: true, DestV1: d})
 }
 
 func (s *Store) MapDestToID(ctx context.Context, tx gadb.DBTX, d gadb.DestV1) (uuid.UUID, error) {
@@ -103,7 +106,8 @@ func (s *Store) MapDestToID(ctx context.Context, tx gadb.DBTX, d gadb.DestV1) (u
 	})
 }
 
-func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) error {
+func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return err
@@ -115,8 +119,8 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) erro
 	}
 
 	db := gadb.New(s.db)
-	if tx != nil {
-		db = db.WithTx(tx)
+	if stx != nil {
+		db = db.WithTx(stx)
 	}
 
 	return db.NotifChanDeleteMany(ctx, uuids)

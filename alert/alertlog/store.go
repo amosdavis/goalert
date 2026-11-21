@@ -13,6 +13,8 @@ import (
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/validation/validate"
@@ -125,10 +127,13 @@ func (s *Store) MustLog(ctx context.Context, alertID int, _type Type, meta inter
 	s.MustLogTx(ctx, nil, alertID, _type, meta)
 }
 
-func (s *Store) MustLogTx(ctx context.Context, tx *sql.Tx, alertID int, _type Type, meta interface{}) {
-	// suppress duplicate duplicate-suppression logs since they aren't actionable and just add noise
+func (s *Store) MustLogTx(ctx context.Context, tx txn.Tx, alertID int, _type Type, meta interface{}) {
+	stx :=
+		// suppress duplicate duplicate-suppression logs since they aren't actionable and just add noise
+		sqltxn.Unwrap(tx)
+
 	if _type == TypeDuplicateSupressed {
-		hasRecent, err := gadb.New(tx).AlertLog_HasRecentDuplicate(ctx, int64(alertID))
+		hasRecent, err := gadb.New(stx).AlertLog_HasRecentDuplicate(ctx, int64(alertID))
 		if err != nil {
 			log.Log(ctx, errors.Wrap(err, "check for recent duplicate alert log"))
 			return
@@ -140,13 +145,14 @@ func (s *Store) MustLogTx(ctx context.Context, tx *sql.Tx, alertID int, _type Ty
 		}
 	}
 
-	err := s.LogTx(ctx, tx, alertID, _type, meta)
+	err := s.LogTx(ctx, stx, alertID, _type, meta)
 	if err != nil {
 		log.Log(ctx, errors.Wrap(err, "append alert log"))
 	}
 }
 
-func (s *Store) LogEPTx(ctx context.Context, tx *sql.Tx, epID string, _type Type, meta *EscalationMetaData) error {
+func (s *Store) LogEPTx(ctx context.Context, tx txn.Tx, epID string, _type Type, meta *EscalationMetaData) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -157,7 +163,7 @@ func (s *Store) LogEPTx(ctx context.Context, tx *sql.Tx, epID string, _type Type
 		return err
 	}
 
-	e, err := s.logEntry(ctx, tx, _type, meta)
+	e, err := s.logEntry(ctx, stx, _type, meta)
 	if err != nil {
 		return err
 	}
@@ -174,10 +180,11 @@ func (s *Store) LogEPTx(ctx context.Context, tx *sql.Tx, epID string, _type Type
 		Message:             e.message,
 	}
 
-	return s.queries(tx).AlertLog_InsertEP(ctx, params)
+	return s.queries(stx).AlertLog_InsertEP(ctx, params)
 }
 
-func (s *Store) LogServiceTx(ctx context.Context, tx *sql.Tx, serviceID string, _type Type, meta interface{}) error {
+func (s *Store) LogServiceTx(ctx context.Context, tx txn.Tx, serviceID string, _type Type, meta interface{}) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -194,7 +201,7 @@ func (s *Store) LogServiceTx(ctx context.Context, tx *sql.Tx, serviceID string, 
 	case TypeClosed:
 		t = _TypeCloseAll
 	}
-	e, err := s.logEntry(ctx, tx, t, meta)
+	e, err := s.logEntry(ctx, stx, t, meta)
 	if err != nil {
 		return err
 	}
@@ -212,16 +219,17 @@ func (s *Store) LogServiceTx(ctx context.Context, tx *sql.Tx, serviceID string, 
 		Message:             e.message,
 	}
 
-	return s.queries(tx).AlertLog_InsertSvc(ctx, params)
+	return s.queries(stx).AlertLog_InsertSvc(ctx, params)
 }
 
-func (s *Store) LogManyTx(ctx context.Context, tx *sql.Tx, alertIDs []int, _type Type, meta interface{}) error {
+func (s *Store) LogManyTx(ctx context.Context, tx txn.Tx, alertIDs []int, _type Type, meta interface{}) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
 	}
 
-	e, err := s.logEntry(ctx, tx, _type, meta)
+	e, err := s.logEntry(ctx, stx, _type, meta)
 	if err != nil {
 		return err
 	}
@@ -244,28 +252,32 @@ func (s *Store) LogManyTx(ctx context.Context, tx *sql.Tx, alertIDs []int, _type
 		Message:             e.message,
 	}
 
-	return s.queries(tx).AlertLog_InsertMany(ctx, params)
+	return s.queries(stx).AlertLog_InsertMany(ctx, params)
 }
 
-func (s *Store) queries(tx *sql.Tx) *gadb.Queries {
-	if tx != nil {
-		return gadb.New(tx)
+func (s *Store) queries(tx txn.Tx) *gadb.Queries {
+	stx := sqltxn.Unwrap(tx)
+	if stx != nil {
+		return gadb.New(stx)
 	}
 	return gadb.New(s.db)
 }
 
-func (s *Store) LogTx(ctx context.Context, tx *sql.Tx, alertID int, _type Type, meta interface{}) error {
-	return s.LogManyTx(ctx, tx, []int{alertID}, _type, meta)
+func (s *Store) LogTx(ctx context.Context, tx txn.Tx, alertID int, _type Type, meta interface{}) error {
+	stx := sqltxn.Unwrap(tx)
+	return s.LogManyTx(ctx, stx, []int{alertID}, _type, meta)
 }
 
-func txWrap(ctx context.Context, tx *sql.Tx, stmt *sql.Stmt) *sql.Stmt {
-	if tx == nil {
+func txWrap(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		return stmt
 	}
-	return tx.StmtContext(ctx, stmt)
+	return stx.StmtContext(ctx, stmt)
 }
 
-func (s *Store) logEntry(ctx context.Context, tx *sql.Tx, _type Type, meta interface{}) (*Entry, error) {
+func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interface{}) (*Entry, error) {
+	stx := sqltxn.Unwrap(tx)
 	var classExtras []string
 	switch _type {
 	case _TypeAcknowledgeAll:
@@ -288,8 +300,8 @@ func (s *Store) logEntry(ctx context.Context, tx *sql.Tx, _type Type, meta inter
 
 	src := permission.Source(ctx)
 	gdb := gadb.New(s.db)
-	if tx != nil {
-		gdb = gdb.WithTx(tx)
+	if stx != nil {
+		gdb = gdb.WithTx(stx)
 	}
 
 	if src != nil {
@@ -324,7 +336,7 @@ func (s *Store) logEntry(ctx context.Context, tx *sql.Tx, _type Type, meta inter
 				r.subject.classifier = "no immediate rule"
 				break
 			}
-			dest, err := s.queries(tx).AlertLog_LookupCMDest(ctx, uuid.MustParse(src.ID))
+			dest, err := s.queries(stx).AlertLog_LookupCMDest(ctx, uuid.MustParse(src.ID))
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup contact method type for callback ID")
 			}
@@ -354,7 +366,7 @@ func (s *Store) logEntry(ctx context.Context, tx *sql.Tx, _type Type, meta inter
 			r.subject.classifier = info.Name
 		case permission.SourceTypeHeartbeat:
 			r.subject._type = SubjectTypeHeartbeatMonitor
-			minutes, err := s.queries(tx).AlertLog_HBIntervalMinutes(ctx, uuid.MustParse(src.ID))
+			minutes, err := s.queries(stx).AlertLog_HBIntervalMinutes(ctx, uuid.MustParse(src.ID))
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup heartbeat monitor interval by ID")
 			}
@@ -373,7 +385,7 @@ func (s *Store) logEntry(ctx context.Context, tx *sql.Tx, _type Type, meta inter
 		case permission.SourceTypeIntegrationKey:
 			r.subject._type = SubjectTypeIntegrationKey
 			var ikeyType integrationkey.Type
-			err = txWrap(ctx, tx, s.lookupIKeyType).QueryRowContext(ctx, src.ID).Scan(&ikeyType)
+			err = txWrap(ctx, stx, s.lookupIKeyType).QueryRowContext(ctx, src.ID).Scan(&ikeyType)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup integration key type by ID")
 			}

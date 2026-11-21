@@ -5,6 +5,8 @@ import (
 	"database/sql"
 
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
@@ -95,7 +97,8 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	return s, prep.Err
 }
 
-func (s *Store) FindOneForUpdate(ctx context.Context, tx *sql.Tx, id string) (*Service, error) {
+func (s *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Service, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
@@ -105,7 +108,7 @@ func (s *Store) FindOneForUpdate(ctx context.Context, tx *sql.Tx, id string) (*S
 		return nil, err
 	}
 	var svc Service
-	err = tx.StmtContext(ctx, s.findOneUp).QueryRowContext(ctx, id).Scan(&svc.ID, &svc.Name, &svc.Description, &svc.EscalationPolicyID)
+	err = stx.StmtContext(ctx, s.findOneUp).QueryRowContext(ctx, id).Scan(&svc.ID, &svc.Name, &svc.Description, &svc.EscalationPolicyID)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +137,8 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Service, error) {
 	return scanAllFrom(rows)
 }
 
-func (s *Store) CreateServiceTx(ctx context.Context, tx *sql.Tx, svc *Service) (*Service, error) {
+func (s *Store) CreateServiceTx(ctx context.Context, tx txn.Tx, svc *Service) (*Service, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
@@ -147,8 +151,8 @@ func (s *Store) CreateServiceTx(ctx context.Context, tx *sql.Tx, svc *Service) (
 
 	n.ID = uuid.New().String()
 	stmt := s.insert
-	if tx != nil {
-		stmt = tx.Stmt(stmt)
+	if stx != nil {
+		stmt = stx.Stmt(stmt)
 	}
 	_, err = stmt.ExecContext(ctx, n.ID, n.Name, n.Description, n.EscalationPolicyID)
 	if err != nil {
@@ -158,7 +162,8 @@ func (s *Store) CreateServiceTx(ctx context.Context, tx *sql.Tx, svc *Service) (
 	return n, nil
 }
 
-func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) error {
+func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -168,21 +173,23 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx *sql.Tx, ids []string) erro
 		return err
 	}
 	stmt := s.delete
-	if tx != nil {
-		stmt = tx.StmtContext(ctx, stmt)
+	if stx != nil {
+		stmt = stx.StmtContext(ctx, stmt)
 	}
 	_, err = stmt.ExecContext(ctx, sqlutil.UUIDArray(ids))
 	return err
 }
 
-func wrap(tx *sql.Tx, s *sql.Stmt) *sql.Stmt {
-	if tx == nil {
+func wrap(tx txn.Tx, s *sql.Stmt) *sql.Stmt {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		return s
 	}
-	return tx.Stmt(s)
+	return stx.Stmt(s)
 }
 
-func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, svc *Service) error {
+func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, svc *Service) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -203,7 +210,7 @@ func (s *Store) UpdateTx(ctx context.Context, tx *sql.Tx, svc *Service) error {
 		Valid: !n.MaintenanceExpiresAt.IsZero(),
 	}
 
-	_, err = wrap(tx, s.update).ExecContext(ctx, n.ID, n.Name, n.Description, n.EscalationPolicyID, mExp)
+	_, err = wrap(stx, s.update).ExecContext(ctx, n.ID, n.Name, n.Description, n.EscalationPolicyID, mExp)
 	return err
 }
 

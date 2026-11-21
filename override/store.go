@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
@@ -97,8 +99,9 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	}, p.Err
 }
 
-func (s *Store) withTx(ctx context.Context, tx *sql.Tx, fn func(tx *sql.Tx) error) error {
-	if tx == nil {
+func (s *Store) withTx(ctx context.Context, tx txn.Tx, fn func(tx *sql.Tx) error) error {
+	stx := sqltxn.Unwrap(tx)
+	if stx == nil {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -114,22 +117,24 @@ func (s *Store) withTx(ctx context.Context, tx *sql.Tx, fn func(tx *sql.Tx) erro
 		return tx.Commit()
 	}
 
-	_, err := tx.StmtContext(ctx, s.lock).ExecContext(ctx)
+	_, err := stx.StmtContext(ctx, s.lock).ExecContext(ctx)
 	if err != nil {
 		return err
 	}
 
-	return fn(tx)
+	return fn(stx)
 }
 
-func (s *Store) execContext(ctx context.Context, tx *sql.Tx, stmt *sql.Stmt, args ...interface{}) error {
-	return s.withTx(ctx, tx, func(tx *sql.Tx) error {
+func (s *Store) execContext(ctx context.Context, tx txn.Tx, stmt *sql.Stmt, args ...interface{}) error {
+	stx := sqltxn.Unwrap(tx)
+	return s.withTx(ctx, stx, func(tx *sql.Tx) error {
 		_, err := tx.StmtContext(ctx, stmt).ExecContext(ctx, args...)
 		return err
 	})
 }
 
-func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx *sql.Tx, id string, forUpdate bool) (*UserOverride, error) {
+func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx txn.Tx, id string, forUpdate bool) (*UserOverride, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -141,7 +146,7 @@ func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx *sql.Tx, id string
 
 	var o UserOverride
 	var add, rem, schedTgt sql.NullString
-	err = s.withTx(ctx, tx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, stx, func(tx *sql.Tx) error {
 		var row *sql.Row
 		if forUpdate {
 			row = tx.StmtContext(ctx, s.findUOUpdate).QueryRowContext(ctx, id)
@@ -167,7 +172,8 @@ func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx *sql.Tx, id string
 }
 
 // UpdateUserOverrideTx updates an existing UserOverride, inside an optional transaction.
-func (s *Store) UpdateUserOverrideTx(ctx context.Context, tx *sql.Tx, o *UserOverride) error {
+func (s *Store) UpdateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOverride) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -197,7 +203,7 @@ func (s *Store) UpdateUserOverrideTx(ctx context.Context, tx *sql.Tx, o *UserOve
 		schedTgt.Valid = true
 		schedTgt.String = n.Target.TargetID()
 	}
-	return s.execContext(ctx, tx, s.updateUO, n.ID, add, rem, n.Start, n.End, schedTgt)
+	return s.execContext(ctx, stx, s.updateUO, n.ID, add, rem, n.Start, n.End, schedTgt)
 }
 
 // UpdateUserOverride updates an existing UserOverride.
@@ -206,7 +212,8 @@ func (s *Store) UpdateUserOverride(ctx context.Context, o *UserOverride) error {
 }
 
 // CreateUserOverrideTx adds a UserOverride to the DB with a new ID.
-func (s *Store) CreateUserOverrideTx(ctx context.Context, tx *sql.Tx, o *UserOverride) (*UserOverride, error) {
+func (s *Store) CreateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOverride) (*UserOverride, error) {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -233,7 +240,7 @@ func (s *Store) CreateUserOverrideTx(ctx context.Context, tx *sql.Tx, o *UserOve
 		schedTgt.Valid = true
 		schedTgt.String = n.Target.TargetID()
 	}
-	err = s.execContext(ctx, tx, s.createUO, n.ID, add, rem, n.Start, n.End, schedTgt)
+	err = s.execContext(ctx, stx, s.createUO, n.ID, add, rem, n.Start, n.End, schedTgt)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +249,8 @@ func (s *Store) CreateUserOverrideTx(ctx context.Context, tx *sql.Tx, o *UserOve
 }
 
 // DeleteUserOverride removes a UserOverride from the DB matching the given ID.
-func (s *Store) DeleteUserOverrideTx(ctx context.Context, tx *sql.Tx, ids ...string) error {
+func (s *Store) DeleteUserOverrideTx(ctx context.Context, tx txn.Tx, ids ...string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -255,7 +263,7 @@ func (s *Store) DeleteUserOverrideTx(ctx context.Context, tx *sql.Tx, ids ...str
 		return err
 	}
 
-	return s.execContext(ctx, tx, s.deleteUO, sqlutil.UUIDArray(ids))
+	return s.execContext(ctx, stx, s.deleteUO, sqlutil.UUIDArray(ids))
 }
 
 // FindAllUserOverrides will return all UserOverrides that belong to the provided Target within the provided time range.

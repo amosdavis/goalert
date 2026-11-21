@@ -18,6 +18,8 @@ import (
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/errutil"
@@ -151,21 +153,23 @@ type UserSession struct {
 	UserID       string
 }
 
-func (h *Handler) EndUserSessionTx(ctx context.Context, tx *sql.Tx, id ...string) error {
+func (h *Handler) EndUserSessionTx(ctx context.Context, tx txn.Tx, id ...string) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
 	if permission.Admin(ctx) {
-		_, err = tx.StmtContext(ctx, h.endSession).ExecContext(ctx, sqlutil.UUIDArray(id))
+		_, err = stx.StmtContext(ctx, h.endSession).ExecContext(ctx, sqlutil.UUIDArray(id))
 	} else {
-		_, err = tx.StmtContext(ctx, h.endSessionUser).ExecContext(ctx, permission.UserNullUUID(ctx), sqlutil.UUIDArray(id))
+		_, err = stx.StmtContext(ctx, h.endSessionUser).ExecContext(ctx, permission.UserNullUUID(ctx), sqlutil.UUIDArray(id))
 	}
 	return err
 }
 
 // EndAllUserSessionsTx ends all sessions other than the user's currently active session
-func (h *Handler) EndAllUserSessionsTx(ctx context.Context, tx *sql.Tx) error {
+func (h *Handler) EndAllUserSessionsTx(ctx context.Context, tx txn.Tx) error {
+	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.MatchUser(permission.UserID(ctx)))
 	if err != nil {
 		return err
@@ -175,8 +179,8 @@ func (h *Handler) EndAllUserSessionsTx(ctx context.Context, tx *sql.Tx) error {
 	src := permission.Source(ctx)
 
 	stmt := h.endAllSessionsUser
-	if tx != nil {
-		stmt = tx.StmtContext(ctx, stmt)
+	if stx != nil {
+		stmt = stx.StmtContext(ctx, stmt)
 	}
 	_, err = stmt.ExecContext(ctx, permission.UserNullUUID(ctx), src.ID)
 
