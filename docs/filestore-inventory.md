@@ -420,7 +420,10 @@ Unique:
 
 - keyring_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `keyring/delta.go`, one row per keyring name. `select ... for
+update` and `on conflict do nothing` become a transaction that runs again when
+another pod commits first: two pods creating a keyring end up with the same
+keys, and a due rotation happens once (F4). `now()` is the transaction's time.
 
 ### labels
 

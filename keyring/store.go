@@ -84,7 +84,9 @@ type Config struct {
 type DB struct {
 	logger *log.Logger
 
-	db *sql.DB
+	db    *sql.DB
+	txdb  txn.DB
+	delta *DeltaTables // the Delta backend, if set (delta.go)
 
 	cfg Config
 
@@ -138,6 +140,56 @@ func parseVerificationKeys(data []byte) (map[byte]ecdsa.PublicKey, error) {
 
 // NewDB creates a new postgres-backed keyring.
 func NewDB(ctx context.Context, logger *log.Logger, db *sql.DB, cfg *Config) (*DB, error) {
+	d, err := newDB(logger, cfg)
+	if err != nil {
+		return nil, err
+	}
+	p := &util.Prepare{DB: db, Ctx: ctx}
+	d.db, d.txdb = db, sqltxn.DB{DB: db}
+	d.txTime = p.P(`select now()`)
+	d.insertKeys = p.P(`
+			insert into keyring (
+				id,
+				verification_keys,
+				signing_key,
+				next_key,
+				next_rotation,
+				rotation_count
+			) values (
+				$1, $2, $3, $4, $5, 0
+			)
+			on conflict do nothing
+		`)
+	d.fetchKeys = p.P(`
+			select
+				verification_keys,
+				signing_key,
+				next_key,
+				now(),
+				next_rotation,
+				rotation_count
+			from keyring
+			where id = $1
+			for update
+		`)
+	d.setKeys = p.P(`
+			update keyring
+			set
+				verification_keys = $2,
+				signing_key = $3,
+				next_key = $4,
+				next_rotation = $5,
+				rotation_count = $6
+			where id = $1
+		`)
+	if p.Err != nil {
+		return nil, p.Err
+	}
+	return d.start(ctx)
+}
+
+// newDB checks cfg and returns a keyring with no backend yet.
+func newDB(logger *log.Logger, cfg *Config) (*DB, error) {
 	if cfg == nil {
 		cfg = &Config{Name: "default"}
 	}
@@ -156,65 +208,22 @@ func NewDB(ctx context.Context, logger *log.Logger, db *sql.DB, cfg *Config) (*D
 	if err != nil {
 		return nil, err
 	}
-	p := &util.Prepare{DB: db, Ctx: ctx}
-	d := &DB{
-		db:  db,
-		cfg: *cfg,
-
-		logger: logger,
-
+	return &DB{
+		cfg:         *cfg,
+		logger:      logger,
 		forceRotate: make(chan chan error),
 		shutdown:    make(chan context.Context),
+	}, nil
+}
 
-		txTime: p.P(`select now()`),
-		insertKeys: p.P(`
-			insert into keyring (
-				id,
-				verification_keys,
-				signing_key,
-				next_key,
-				next_rotation,
-				rotation_count
-			) values (
-				$1, $2, $3, $4, $5, 0
-			)
-			on conflict do nothing
-		`),
-		fetchKeys: p.P(`
-			select
-				verification_keys,
-				signing_key,
-				next_key,
-				now(),
-				next_rotation,
-				rotation_count
-			from keyring
-			where id = $1
-			for update
-		`),
-		setKeys: p.P(`
-			update keyring
-			set
-				verification_keys = $2,
-				signing_key = $3,
-				next_key = $4,
-				next_rotation = $5,
-				rotation_count = $6
-			where id = $1
-		`),
-	}
-
-	if p.Err != nil {
-		return nil, p.Err
-	}
-
-	err = d.refreshAndRotateKeys(ctx, false)
+// start loads, or sets up, the keyring and starts rotating it.
+func (db *DB) start(ctx context.Context) (*DB, error) {
+	err := db.refreshAndRotateKeys(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-
-	go d.loop()
-	return d, nil
+	go db.loop()
+	return db, nil
 }
 
 // Shutdown allows gracefully shutting down the keyring (e.g. auto rotations) after
@@ -397,6 +406,9 @@ func (db *DB) RotateKeys(ctx context.Context) error {
 //
 // When a key is rotated, a new key is generated and inserted.
 func (db *DB) refreshAndRotateKeys(ctx context.Context, forceRotation bool) error {
+	if db.delta != nil {
+		return db.deltaRefreshAndRotate(ctx, forceRotation)
+	}
 	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

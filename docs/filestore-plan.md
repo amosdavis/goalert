@@ -137,7 +137,7 @@ Exit:
 - Several in-process pods writing one table converge on the same state (F25).
 - delta-rs reads the table and its rows match GoAlert's state (F35).
 
-## Phase 2: Replace the transaction seam (still on Postgres)
+## Phase 2: Replace the transaction seam (still on Postgres) (done)
 
 122 functions take a `*sql.Tx`, and 37 take a generic query interface, so that
 several stores can write in one transaction. They switch to `txn.Tx`.
@@ -380,3 +380,9 @@ holder while it is sending.
   triggers: another pod reloads a new config version as soon as it follows
   the commit. A read outside a transaction sees the pod's current view, which
   can lag the log until the pod follows it (F29).
+- 2026-11-21: Phase 2 done: its last changes passed the Smoke suite on
+  Postgres, with only the stores, the engine and the app's wiring touching the
+  database.
+- 2026-11-21: Phase 3: `keyring` ported. Two pods setting up a keyring at once
+  share its keys, a due rotation happens once, and forced rotations each
+  happen (F4).
