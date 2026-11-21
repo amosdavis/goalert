@@ -73,6 +73,9 @@ type App struct {
 	l      net.Listener
 	events *sqlutil.Listener
 
+	// riverTimePool serves River's clock in smoke tests (ForceRiverDBTime).
+	riverTimePool *pgxpool.Pool
+
 	httpClient *http.Client
 
 	doneCh chan struct{}

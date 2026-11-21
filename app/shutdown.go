@@ -60,6 +60,10 @@ func (app *App) _Shutdown(ctx context.Context) error {
 	shut(app.smtpsrv, "SMTP receiver server")
 	shut(app.srv, "HTTP server")
 	shut(app.Engine, "engine")
+	if app.riverTimePool != nil {
+		// The engine stops River, the pool's only user.
+		app.riverTimePool.Close()
+	}
 	shut(app.events, "event listener")
 	shut(app.SessionKeyring, "session keyring")
 	shut(app.OAuthKeyring, "oauth keyring")

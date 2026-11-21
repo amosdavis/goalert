@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -104,12 +105,24 @@ func (t *timeGen) NowOrNil() *time.Time {
 func (app *App) initRiver(ctx context.Context) error {
 	app.RiverWorkers = river.NewWorkers()
 	var testCfg river.TestConfig
+	var err error
 	if app.cfg.ForceRiverDBTime {
-		// used during smoke tests to pickup mock DB time changes
-		testCfg.Time = &timeGen{pgx: app.pgx}
+		// Used during smoke tests to pick up mock DB time changes.
+		//
+		// The time is read through its own small pool. River reads the time
+		// while it holds connections from the main pool (for example during
+		// InsertManyFast), so reading it from that pool deadlocks once every
+		// connection is held by something waiting for the time.
+		cfg := app.pgx.Config()
+		cfg.MaxConns = 4
+		cfg.MinConns = 0
+		app.riverTimePool, err = pgxpool.NewWithConfig(ctx, cfg)
+		if err != nil {
+			return fmt.Errorf("create River time pool: %w", err)
+		}
+		testCfg.Time = &timeGen{pgx: app.riverTimePool}
 	}
 
-	var err error
 	app.River, err = river.NewClient(riverpgxv5.New(app.pgx), &river.Config{
 		// River tends to log "context canceled" errors while shutting down
 		Logger:  slog.New(&ignoreCancel{h: app.Logger.With("module", "river").Handler()}),
