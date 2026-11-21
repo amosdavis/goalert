@@ -96,7 +96,7 @@ func TestCRUD(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
 	db := openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 
 	put(t, db, s.rows, testRow{ID: "b", N: 2}, testRow{ID: "a", N: 1}, testRow{ID: "c", N: 3})
 	assert.Equal(t, []string{"a", "b", "c"}, ids(db.View(), s.rows))
@@ -124,7 +124,7 @@ func TestIndexes(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
 	db := openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 
 	put(t, db, s.rows,
 		testRow{ID: "1", Group: "x", Email: "a@x"},
@@ -175,7 +175,7 @@ func TestFailedTransactionChangesNothing(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
 	db := openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 
 	put(t, db, s.rows, testRow{ID: "keep"})
 	before := db.View()
@@ -204,7 +204,7 @@ func TestReadersSeeASnapshot(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
 	db := openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 
 	put(t, db, s.rows, testRow{ID: "a", N: 1})
 	old := db.View()
@@ -221,7 +221,7 @@ func TestTxSeesOwnWrites(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
 	db := openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 
 	require.NoError(t, db.Update(context.Background(), func(tx *Tx) error {
 		require.NoError(t, s.rows.Put(tx, testRow{ID: "a", Group: "g"}))
@@ -241,7 +241,7 @@ func TestTxNowAndUseAfterUpdate(t *testing.T) {
 	opts := memOpts(t, m)
 	opts.Clock = clock
 	db := openMem(t, m, s, opts)
-	defer db.Close()
+	defer closeDB(t, db)
 
 	var saved *Tx
 	require.NoError(t, db.Update(context.Background(), func(tx *Tx) error {
@@ -257,7 +257,7 @@ func TestUpdateHonorsContext(t *testing.T) {
 	s := newTestSchema()
 	m := newMemFS()
 	db := openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 
 	inside, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error)
@@ -303,7 +303,7 @@ func TestReopenReplaysTheLog(t *testing.T) {
 	assert.Greater(t, segs, 1, "the test should cover several segments")
 
 	db = openMem(t, m, s, opts)
-	defer db.Close()
+	defer closeDB(t, db)
 	assert.Equal(t, want, dump(t, db.View()))
 	assert.Equal(t, wantIndex, db.View().Index())
 	assert.Equal(t, 17, s.byGroup.Count(db.View(), "0"), "indexes are rebuilt")
@@ -327,7 +327,7 @@ func TestSequencesPersist(t *testing.T) {
 	assert.EqualValues(t, 2, next())
 	require.NoError(t, db.Close())
 	db = openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 	assert.EqualValues(t, 3, next())
 }
 
@@ -429,15 +429,22 @@ func TestUnfinishedWriteIsDropped(t *testing.T) {
 			sizeBefore := len(must(m.ReadFile(path)))
 
 			db = openMem(t, m, s, memOpts(t, m))
-			defer db.Close()
+			defer closeDB(t, db)
 			assert.Equal(t, want, dump(t, db.View()))
 			assert.Less(t, len(must(m.ReadFile(path))), sizeBefore, "the unfinished write is truncated")
 			put(t, db, s.rows, testRow{ID: "d"}) // the log is usable again
 			require.NoError(t, db.Close())
 			db = openMem(t, m, s, memOpts(t, m))
 			assert.Equal(t, []string{"a", "b", "d"}, ids(db.View(), s.rows))
+			closeDB(t, db)
 		})
 	}
+}
+
+// closeDB closes db at the end of a test, failing the test on error.
+func closeDB(t *testing.T, db *DB) {
+	t.Helper()
+	assert.NoError(t, db.Close())
 }
 
 // frozenClock returns a FakeClock stopped at exactly t. (NewFakeClock starts
@@ -502,7 +509,7 @@ func TestDamagedSnapshotFallsBack(t *testing.T) {
 	m.put(newest, data)
 
 	db = openMem(t, m, s, memOpts(t, m))
-	defer db.Close()
+	defer closeDB(t, db)
 	assert.Equal(t, want, dump(t, db.View()), "the older snapshot plus the log rebuild everything")
 	left, err := listSnapshots(m, memDir)
 	require.NoError(t, err)
@@ -586,7 +593,7 @@ func TestWriteErrorStopsWrites(t *testing.T) {
 			_ = db.Close()
 
 			db = openMem(t, m, s, memOpts(t, m))
-			defer db.Close()
+			defer closeDB(t, db)
 			require.NoError(t, db.Health())
 			got := ids(db.View(), s.rows)
 			assert.Contains(t, got, "a")
@@ -614,7 +621,7 @@ func TestBackupAndRestore(t *testing.T) {
 	m2 := newMemFS()
 	require.NoError(t, restore(memDir, s.Schema, bytes.NewReader(buf.Bytes()), m2, true))
 	db = openMem(t, m2, s, memOpts(t, m2))
-	defer db.Close()
+	defer closeDB(t, db)
 	assert.Equal(t, want, dump(t, db.View()))
 	assert.Equal(t, index, db.View().Index())
 	assert.Equal(t, 20, s.byGroup.Count(db.View(), "g"))
