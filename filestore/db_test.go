@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -461,6 +462,42 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// TestTornNewSegmentIsRemoved covers a crash while starting a new log
+// segment: the new file holds no records, only a header that never fully
+// reached the disk, so recovery removes it and nothing is lost.
+func TestTornNewSegmentIsRemoved(t *testing.T) {
+	var storeID [16]byte
+	cases := map[string]func(hdr []byte) []byte{
+		"empty":          func([]byte) []byte { return nil },
+		"partial header": func(hdr []byte) []byte { return hdr[:17] },
+		"zeros":          func(hdr []byte) []byte { return make([]byte, len(hdr)) },
+		"bad checksum":   func(hdr []byte) []byte { h := bytes.Clone(hdr); h[len(h)-1] ^= 0xff; return h },
+	}
+	for name, tear := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := newTestSchema()
+			m := newMemFS()
+			db := openMem(t, m, s, memOpts(t, m))
+			put(t, db, s.rows, testRow{ID: "a"}, testRow{ID: "b"})
+			want := dump(t, db.View())
+			next := db.View().Index() + 1
+			storeID = db.storeID
+			require.NoError(t, db.Close())
+
+			path := filepath.Join(memDir, segmentName(next))
+			m.put(path, tear(encodeWALHeader(storeID, next)))
+
+			db = openMem(t, m, s, memOpts(t, m))
+			defer closeDB(t, db)
+			assert.Equal(t, want, dump(t, db.View()))
+			_, err := m.ReadFile(path)
+			assert.ErrorIs(t, err, fs.ErrNotExist, "the torn segment is removed")
+			put(t, db, s.rows, testRow{ID: "c"})
+			assert.Equal(t, []string{"a", "b", "c"}, ids(db.View(), s.rows))
+		})
+	}
 }
 
 func TestDamageBeforeValidRecordsStopsStartup(t *testing.T) {

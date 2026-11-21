@@ -22,7 +22,8 @@ type memFile struct {
 // way POSIX allows:
 //
 //   - A file's contents survive only up to its last Sync. Some part of what
-//     was written after that may also survive, possibly followed by zeros.
+//     was written after that may also survive, and some of that part may
+//     read back as zeros. A file is never longer than what was written.
 //   - Creating, renaming or removing a file survives only once the
 //     directory has been synced.
 //
@@ -84,10 +85,14 @@ func (m *memFS) reboot(rng *rand.Rand) {
 		data := bytes.Clone(f.synced)
 		if rng != nil && len(f.data) > len(f.synced) && bytes.HasPrefix(f.data, f.synced) {
 			extra := f.data[len(f.synced):]
-			data = append(data, extra[:rng.Intn(len(extra)+1)]...)
-			if rng.Intn(4) == 0 {
-				data = append(data, make([]byte, rng.Intn(100))...) // zero-filled blocks
+			kept := bytes.Clone(extra[:rng.Intn(len(extra)+1)])
+			if len(kept) > 0 && rng.Intn(4) == 0 {
+				// The file grew, but some of its new blocks never reached
+				// the disk, so they read back as zeros. A file never ends
+				// up longer than what was written to it.
+				clear(kept[rng.Intn(len(kept)):])
 			}
+			data = append(data, kept...)
 		}
 		files[name] = &memFile{data: data, synced: bytes.Clone(data)}
 	}
