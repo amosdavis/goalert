@@ -95,6 +95,23 @@ Inventory every trigger (42), function (67), cascade (75), `CHECK` (31) and
 unique constraint. Map each one to the Go code that will replace it and the
 test that proves it (F2, F7, F8).
 
+Design:
+
+- A new package `txn` defines `Tx` (`Commit`, `Rollback`) and `DB`
+  (`BeginTx`). `*sql.Tx` already has `Commit` and `Rollback`, so it satisfies
+  `txn.Tx` unchanged. Store methods change their parameter from `*sql.Tx` to
+  `txn.Tx` and unwrap it in the Postgres implementation, while existing
+  callers keep compiling. That makes the change mechanical and lets it land
+  one package at a time, each step checked by the Smoke workflow.
+- Methods that take a `gadb.DBTX` (a transaction or the database) take a
+  `txn.Tx` instead, where nil means "not in a transaction".
+- Callers then start transactions through `txn.DB` instead of `*sql.DB`.
+  `withContextTx` in `graphql2/graphqlapp` keeps its nesting behavior.
+- The file backend has one writer, so a write transaction held open during
+  slow work, such as a network call, would block every other writer,
+  including the engine (F15). Phase 2 lists every place a transaction can
+  stay open across I/O, and those are fixed before Phase 4.
+
 Exit:
 
 - Only store implementations import `database/sql` or `gadb`.
