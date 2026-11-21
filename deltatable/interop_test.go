@@ -71,10 +71,10 @@ func TestWriteInteropTable(t *testing.T) {
 		},
 		{ID: 2, Summary: "cpu", Created: at, Tags: []string{}, Detail: testDetail{}},
 	}
-	userRows := []interopUser{{ID: "u1", Name: "Bob"}, {ID: "u2", Name: "Jane"}}
+	userRows := []interopUser{{ID: "u1", Name: "Bob"}, {ID: "u2", Name: "Jane"}, {ID: "u3", Name: "Ann"}}
 
 	// Version 1 adds a file in each table's bucket. Version 2 replaces the
-	// users bucket, the way a GoAlert update rewrites a bucket.
+	// users bucket 0 file, the way a GoAlert update rewrites a bucket.
 	a1, err := WriteFile(ctx, store, alerts, 3, alertRows, at)
 	require.NoError(t, err)
 	u1, err := WriteFile(ctx, store, users, 0, userRows[:1], at)
@@ -82,13 +82,31 @@ func TestWriteInteropTable(t *testing.T) {
 	_, err = log.Commit(ctx, 1, tableID, "WRITE", at, []deltalog.Action{{Add: &a1}, {Add: &u1}})
 	require.NoError(t, err)
 
-	u2, err := WriteFile(ctx, store, users, 0, userRows, at)
+	u2, err := WriteFile(ctx, store, users, 0, userRows[:2], at)
 	require.NoError(t, err)
 	_, err = log.Commit(ctx, 2, tableID, "WRITE", at, []deltalog.Action{
 		{Remove: &deltalog.Remove{Path: u1.Path, DeletionTimestamp: at.UnixMilli(), DataChange: true}},
 		{Add: &u2},
 	})
 	require.NoError(t, err)
+
+	// Version 2 is checkpointed, version 3 follows, and the commits the
+	// checkpoint covers are deleted, as log cleanup will do. The other
+	// reader can only get there through GoAlert's checkpoint.
+	s, err := log.Load(ctx)
+	require.NoError(t, err)
+	require.NoError(t, log.WriteCheckpoint(ctx, s, at, deltalog.DefaultTombstoneRetention))
+	u3, err := WriteFile(ctx, store, users, 1, userRows[2:], at)
+	require.NoError(t, err)
+	_, err = log.Commit(ctx, 3, tableID, "WRITE", at, []deltalog.Action{{Add: &u3}})
+	require.NoError(t, err)
+	for v := int64(0); v <= 2; v++ {
+		require.NoError(t, store.Delete(ctx, deltalog.CommitName(v)))
+	}
+	s, err = log.Load(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, s.Version)
+	require.ElementsMatch(t, []string{a1.Path, u2.Path, u3.Path}, s.FilePaths())
 
 	ts := func(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000+00:00") }
 	expectAlert := func(a interopAlert) map[string]any {
@@ -105,11 +123,15 @@ func TestWriteInteropTable(t *testing.T) {
 		}
 		return m
 	}
+	var expectUsers []any
+	for _, u := range userRows {
+		expectUsers = append(expectUsers, map[string]any{"id": u.ID, "name": u.Name})
+	}
 	expected := map[string]any{
-		"version": 2,
-		"files":   []string{a1.Path, u2.Path},
+		"version": 3,
+		"files":   []string{a1.Path, u2.Path, u3.Path},
 		"alerts":  []any{expectAlert(alertRows[0]), expectAlert(alertRows[1])},
-		"users":   []any{map[string]any{"id": "u1", "name": "Bob"}, map[string]any{"id": "u2", "name": "Jane"}},
+		"users":   expectUsers,
 	}
 	data, err := json.MarshalIndent(expected, "", "  ")
 	require.NoError(t, err)

@@ -76,6 +76,16 @@ type Log struct {
 	// Backoff is the first retry delay. It doubles each attempt, with
 	// jitter.
 	Backoff time.Duration
+
+	// Warn, if set, receives the problems Load works around, such as a
+	// checkpoint it skipped, so they are not hidden (F21).
+	Warn func(error)
+}
+
+func (l *Log) warn(err error) {
+	if l.Warn != nil {
+		l.Warn(err)
+	}
 }
 
 // New returns a Log in store. writerID names this process in every commit it
@@ -302,33 +312,83 @@ func (l *Log) Latest(ctx context.Context, from int64) (int64, error) {
 
 // Snapshot is the table's state as of a version.
 type Snapshot struct {
-	Version  int64
+	Version int64
+	// CommitID is the GoAlert commit ID of Version.
+	CommitID string
 	Protocol Protocol
 	MetaData MetaData
 	Files    map[string]Add
-	Txns     map[string]int64
+	// Removed holds the tombstones of removed files. VACUUM keeps a removed
+	// file until its tombstone expires, since a pod that lags behind may
+	// still read it (F6).
+	Removed map[string]Remove
+	Txns    map[string]int64
 }
 
-// Load reads the whole log and returns the latest snapshot.
-func (l *Log) Load(ctx context.Context) (*Snapshot, error) {
-	latest, err := l.Latest(ctx, -1)
-	if err != nil {
-		return nil, err
+// snapshotAdd and snapshotRemove give an action as a snapshot holds it,
+// which is how a checkpoint stores it, so a snapshot loaded from a
+// checkpoint equals one built by replaying the log (F25).
+func snapshotAdd(a Add) Add {
+	a.DataChange = false
+	if a.PartitionValues == nil {
+		a.PartitionValues = map[string]string{}
 	}
-	s := &Snapshot{Version: -1, Files: map[string]Add{}, Txns: map[string]int64{}}
-	for v := int64(0); v <= latest; v++ {
+	return a
+}
+
+func snapshotRemove(r Remove) Remove {
+	r.DataChange = false
+	if len(r.PartitionValues) == 0 {
+		r.PartitionValues = nil
+	}
+	return r
+}
+
+func newSnapshot() *Snapshot {
+	return &Snapshot{Version: -1, Files: map[string]Add{}, Removed: map[string]Remove{}, Txns: map[string]int64{}}
+}
+
+// catchUp applies every commit after the snapshot's version, up to the
+// latest one.
+func (l *Log) catchUp(ctx context.Context, s *Snapshot) error {
+	latest, err := l.Latest(ctx, s.Version)
+	if err != nil {
+		return err
+	}
+	for v := s.Version + 1; v <= latest; v++ {
 		info, actions, err := l.Read(ctx, v)
 		if errors.Is(err, objstore.ErrNotFound) {
-			return nil, fmt.Errorf("%w: version %d is missing, but %d exists", ErrCorrupt, v, latest)
+			return fmt.Errorf("%w: version %d is missing, but %d exists", ErrCorrupt, v, latest)
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := s.Apply(v, info, actions); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return s, nil
+	return nil
+}
+
+// checkProtocol refuses protocol versions this code does not implement
+// (F19).
+func checkProtocol(p Protocol) error {
+	if p.MinReaderVersion > ReaderVersion || p.MinWriterVersion > WriterVersion {
+		return fmt.Errorf("%w: protocol reader %d / writer %d (supported: %d / %d)", ErrUnsupported, p.MinReaderVersion, p.MinWriterVersion, ReaderVersion, WriterVersion)
+	}
+	return nil
+}
+
+// checkMetaData refuses tables in a GoAlert format, or with settings, that
+// this code does not handle (F19, F30).
+func checkMetaData(m MetaData) error {
+	if f := m.Configuration[FormatKey]; f != strconv.Itoa(GoAlertFormat) {
+		return fmt.Errorf("%w: table GoAlert format %q (this version reads %d)", ErrUnsupported, f, GoAlertFormat)
+	}
+	if m.Configuration["delta.appendOnly"] == "true" {
+		return fmt.Errorf("%w: delta.appendOnly tables", ErrUnsupported)
+	}
+	return nil
 }
 
 // Next applies the commit after the snapshot's version, if it exists, and
@@ -371,17 +431,14 @@ func (s *Snapshot) Apply(version int64, info CommitInfo, actions []Action) error
 		switch {
 		case a.Protocol != nil:
 			p := *a.Protocol
-			if p.MinReaderVersion > ReaderVersion || p.MinWriterVersion > WriterVersion {
-				return fmt.Errorf("%w: protocol reader %d / writer %d (supported: %d / %d)", ErrUnsupported, p.MinReaderVersion, p.MinWriterVersion, ReaderVersion, WriterVersion)
+			if err := checkProtocol(p); err != nil {
+				return err
 			}
 			next.Protocol, sawProtocol = p, true
 		case a.MetaData != nil:
 			m := *a.MetaData
-			if f := m.Configuration[FormatKey]; f != strconv.Itoa(GoAlertFormat) {
-				return fmt.Errorf("%w: table GoAlert format %q (this version reads %d)", ErrUnsupported, f, GoAlertFormat)
-			}
-			if m.Configuration["delta.appendOnly"] == "true" {
-				return fmt.Errorf("%w: delta.appendOnly tables", ErrUnsupported)
+			if err := checkMetaData(m); err != nil {
+				return err
 			}
 			if version > 0 && m.ID != s.MetaData.ID {
 				return fmt.Errorf("%w: version %d changes the table ID", ErrCorrupt, version)
@@ -409,14 +466,16 @@ func (s *Snapshot) Apply(version int64, info CommitInfo, actions []Action) error
 	for _, a := range actions {
 		switch {
 		case a.Add != nil:
-			s.Files[a.Add.Path] = *a.Add
+			s.Files[a.Add.Path] = snapshotAdd(*a.Add)
+			delete(s.Removed, a.Add.Path)
 		case a.Remove != nil:
 			delete(s.Files, a.Remove.Path)
+			s.Removed[a.Remove.Path] = snapshotRemove(*a.Remove)
 		case a.Txn != nil:
 			s.Txns[a.Txn.AppID] = a.Txn.Version
 		}
 	}
-	s.Version, s.Protocol, s.MetaData = next.Version, next.Protocol, next.MetaData
+	s.Version, s.CommitID, s.Protocol, s.MetaData = next.Version, info.GoAlertCommitID, next.Protocol, next.MetaData
 	return nil
 }
 
