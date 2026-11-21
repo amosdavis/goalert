@@ -2,9 +2,6 @@ package harness
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/target/goalert/util/sqlutil"
@@ -62,16 +59,4 @@ func ExecSQLBatch(ctx context.Context, url string, query string) error {
 	}
 
 	return tx.Commit(ctx)
-}
-
-// SQLRollback will rollback the transaction for cleanup, failing the test on error.
-func SQLRollback(t *testing.T, errMsg string, tx *sql.Tx) {
-	err := tx.Rollback()
-	switch {
-	case err == nil:
-	case errors.Is(err, sql.ErrTxDone):
-	case errors.Is(err, sql.ErrConnDone):
-	default:
-		t.Fatalf("ERROR: %s: tx rollback: %v", errMsg, err)
-	}
 }

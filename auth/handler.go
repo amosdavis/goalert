@@ -461,33 +461,28 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 			return
 		}
 
-		// create user
-		tx, err := h.db.BeginTx(ctx, nil)
-		if err != nil {
-			errRedirect(err)
-			return
-		}
-		defer sqlutil.Rollback(ctx, "auth: create user", tx)
-
-		u := &user.User{
-			Role:  permission.RoleUser,
-			Name:  validate.SanitizeName(sub.Name),
-			Email: validate.SanitizeEmail(sub.Email),
-		}
-		permission.SudoContext(ctx, func(ctx context.Context) {
-			u, err = h.cfg.UserStore.InsertTx(ctx, tx, u)
+		// create user, with its subject, in one transaction
+		err = sqltxn.DB{DB: h.db}.Run(ctx, nil, func(tx txn.Tx) error {
+			// Built inside, so that a rerun starts from scratch.
+			u := &user.User{
+				Role:  permission.RoleUser,
+				Name:  validate.SanitizeName(sub.Name),
+				Email: validate.SanitizeEmail(sub.Email),
+			}
+			var err error
+			permission.SudoContext(ctx, func(ctx context.Context) {
+				u, err = h.cfg.UserStore.InsertTx(ctx, tx, u)
+			})
+			if err != nil {
+				return err
+			}
+			_, err = sqltxn.Unwrap(tx).Stmt(h.addSubject).ExecContext(ctx, id, sub.SubjectID, u.ID)
+			if err != nil {
+				return err
+			}
+			userID = u.ID
+			return nil
 		})
-		if err != nil {
-			errRedirect(err)
-			return
-		}
-		_, err = tx.Stmt(h.addSubject).ExecContext(ctx, id, sub.SubjectID, u.ID)
-		userID = u.ID
-		if err != nil {
-			errRedirect(err)
-			return
-		}
-		err = tx.Commit()
 		if err != nil {
 			errRedirect(err)
 			return

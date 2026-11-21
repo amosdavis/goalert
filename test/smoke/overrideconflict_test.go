@@ -2,6 +2,7 @@ package smoke
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,17 +11,22 @@ import (
 	"github.com/target/goalert/override"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/test/smoke/harness"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/sqltxn"
 )
 
+// TestOverrideConflict checks that two transactions creating the same
+// override can't both commit, even when the second checks for conflicts
+// while the first is still open.
 func TestOverrideConflict(t *testing.T) {
 	t.Parallel()
 
 	sql := `
-	insert into users (id, name, email) 
+	insert into users (id, name, email)
 	values
 		({{uuid "u1"}}, 'bob', 'bob@example.com');
 
-	insert into schedules (id, name, time_zone) 
+	insert into schedules (id, name, time_zone)
 	values
 		({{uuid "sid"}}, 'schedule', 'UTC');
 	`
@@ -28,48 +34,48 @@ func TestOverrideConflict(t *testing.T) {
 	h := harness.NewHarness(t, sql, "sched-module-v3")
 	defer h.Close()
 
-	db := h.App().DB()
+	db := sqltxn.DB{DB: h.App().DB()}
 
 	ctx := permission.SystemContext(context.Background(), "Smoketest")
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	tx1, err := db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer harness.SQLRollback(t, "override conflict tx1", tx1)
-
-	tx2, err := db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer harness.SQLRollback(t, "override conflict tx2", tx2)
-
 	start := time.Now().Add(-time.Hour)
 	end := start.Add(8 * time.Hour)
-
-	_, err = h.App().OverrideStore.CreateUserOverrideTx(ctx, tx1, &override.UserOverride{
-		AddUserID: h.UUID("u1"),
-		Target:    assignment.ScheduleTarget(h.UUID("sid")),
-		Start:     start,
-		End:       end,
-	})
-	require.NoError(t, err)
-
-	errCh := make(chan error, 1)
-	go func() {
-		defer close(errCh)
-		_, err := h.App().OverrideStore.CreateUserOverrideTx(ctx, tx2, &override.UserOverride{
+	create := func(tx txn.Tx) error {
+		_, err := h.App().OverrideStore.CreateUserOverrideTx(ctx, tx, &override.UserOverride{
 			AddUserID: h.UUID("u1"),
 			Target:    assignment.ScheduleTarget(h.UUID("sid")),
 			Start:     start,
 			End:       end,
 		})
-		if err != nil {
-			errCh <- err
-			return
-		}
+		return err
+	}
 
-		errCh <- tx2.Commit()
+	// The first transaction creates the override and stays open for a
+	// while. A transaction can run more than once on some backends, so it
+	// signals only once.
+	var once sync.Once
+	created := make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- db.Run(ctx, nil, func(tx txn.Tx) error {
+			if err := create(tx); err != nil {
+				return err
+			}
+			once.Do(func() { close(created) })
+			time.Sleep(3 * time.Second)
+			return nil
+		})
 	}()
-	time.Sleep(3 * time.Second)
-	require.NoError(t, tx1.Commit())
-	require.Error(t, <-errCh)
+	select {
+	case <-created:
+	case err := <-first:
+		t.Fatalf("first transaction ended before creating the override: %v", err)
+	}
+
+	// The second checks for conflicts while the first is open.
+	second := db.Run(ctx, nil, create)
+	require.NoError(t, <-first)
+	require.Error(t, second, "the second override conflicts with the first")
 }
