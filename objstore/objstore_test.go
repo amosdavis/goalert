@@ -48,7 +48,7 @@ func TestMemFaults(t *testing.T) {
 type lax struct{ *objstore.Mem }
 
 func (l lax) PutIfAbsent(ctx context.Context, name string, data []byte) error {
-	return l.Mem.Put(ctx, name, data)
+	return l.Put(ctx, name, data)
 }
 
 // refusing denies every create.
