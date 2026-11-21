@@ -164,7 +164,9 @@ Unique:
 
 - auth_nonce_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `auth/nonce/delta.go`. The primary key is the table key;
+`created_at DEFAULT now()` is the transaction's time. Cleanup after a week, as
+on Postgres.
 
 ### auth_subjects
 

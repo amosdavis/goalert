@@ -20,6 +20,8 @@ type Store struct {
 
 	consume *sql.Stmt
 	cleanup *sql.Stmt
+
+	delta *deltaStore // the Delta backend, if set (delta.go)
 }
 
 // NewStore prepares a new Store.
@@ -57,7 +59,12 @@ func (s *Store) loop() {
 	for {
 		select {
 		case <-t.C:
-			_, err := s.cleanup.ExecContext(ctx)
+			var err error
+			if s.delta != nil {
+				err = s.delta.cleanup(ctx)
+			} else {
+				_, err = s.cleanup.ExecContext(ctx)
+			}
 			if err != nil {
 				log.Log(ctx, errors.Wrap(err, "cleanup old nonce values"))
 			}
@@ -90,6 +97,9 @@ func (s *Store) New() [16]byte { return uuid.New() }
 // The first call to Consume for a given ID will return true, subsequent calls
 // for the same ID will return false.
 func (s *Store) Consume(ctx context.Context, id [16]byte) (bool, error) {
+	if s.delta != nil {
+		return s.delta.consume(ctx, uuid.UUID(id))
+	}
 	res, err := s.consume.ExecContext(ctx, uuid.UUID(id).String())
 	if err != nil {
 		return false, err

@@ -201,6 +201,26 @@ Port the packages in this order:
 7. notification channels, calendar subscriptions, API keys, universal keys,
    signals, favorites, limits
 
+How a store is ported, in every package:
+
+- The package defines its tables for the Delta backend with
+  `DefineDeltaTables(s *filestore.Schema)`: row types with parquet tags (a
+  time that can be unset is a pointer, F25), the primary key, and an index
+  or unique index for each Postgres index and unique constraint the store
+  relies on (F8). Every table is in the one schema the app builds, so a
+  GoAlert transaction stays one commit (F2).
+- The store keeps its type and its methods. `NewDeltaStore` builds it for
+  the Delta backend, and each method runs its Delta implementation when the
+  store has one, so callers don't change, and a running GoAlert uses one
+  backend (F23).
+- A Delta method takes the same `txn.Tx` (`txn/deltatxn`), runs in or as a
+  `txn.DB.Run`, and does no I/O inside it (F3). Triggers, defaults (`now()`
+  becomes `tx.Now()`), cascades and checks become code in the same
+  transaction (F2, F7, F8), and the table's inventory entry says where.
+- Its tests run the store against an in-memory Delta table, including two
+  pods racing wherever the Postgres version relied on a lock or a unique
+  index (F4, F8).
+
 Two pieces of work go with the port:
 
 - A test-only fixture loader parses the fixture SQL and applies it through the
@@ -352,3 +372,6 @@ holder while it is sending.
   user stores, and its `App` holds a `txn.DB`. `keyring.ReEncryptAll` takes
   a `txn.DB`. Left for Phase 2: the auth handler's transaction, the list of
   transactions that do I/O or run long, and `overrideconflict_test.go`.
+- 2026-11-21: Phase 3 started. `txn/deltatxn` puts the Delta backend behind
+  the `txn` seam, and the porting pattern is above. The first port is
+  `auth/nonce`: two pods racing on one nonce consume it exactly once (F4).
