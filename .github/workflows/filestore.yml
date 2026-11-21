@@ -1,0 +1,27 @@
+name: Filestore
+
+# The storage engine's durability and locking code is platform-specific, so
+# its tests (crash recovery, process kill, locking, permissions) run on every
+# supported OS (docs/filestore-failure-modes.md, F14).
+on:
+  push:
+    branches: ['filestore-backend']
+    paths: ['filestore/**', 'go.mod', 'go.sum', '.github/workflows/filestore.yml']
+  pull_request:
+    paths: ['filestore/**', 'go.mod', 'go.sum', '.github/workflows/filestore.yml']
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./filestore/...
+      - run: go test -race -count=1 ./filestore/...
