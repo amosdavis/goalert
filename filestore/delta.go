@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"sort"
@@ -311,7 +312,10 @@ type DeltaDB struct {
 	currentWall, currentMono time.Time
 	view                     atomic.Pointer[View]
 
-	conflicts atomic.Int64
+	conflicts, batches, batched atomic.Int64
+
+	queueMu sync.Mutex
+	queue   []*pendingTx // transactions waiting for a writer
 
 	mu     sync.Mutex // guards the fields below
 	failed error
@@ -595,66 +599,195 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Update runs fn in a transaction and commits its changes as one Delta
-// commit on top of the latest version. It catches up with other pods'
-// commits first, and if one still commits first, it catches up and runs fn
-// again (F4). fn must do no I/O, since it can run more than once (F3).
+// maxBatch bounds how many transactions go into one commit.
+const maxBatch = 256
+
+// batchTimeout bounds the storage work of one commit, which may serve
+// several callers.
+const batchTimeout = time.Minute
+
+type pendingTx struct {
+	ctx  context.Context
+	fn   func(tx *Tx) error
+	done chan txResult // buffered, so a result can always be delivered
+}
+
+type txResult struct {
+	version int64
+	err     error
+}
+
+// Update runs fn in a transaction and commits its changes on top of the
+// latest version. It catches up with other pods' commits first, and if one
+// still commits first, it catches up and runs fn again (F4). fn must do no
+// I/O, since it can run more than once (F3).
+//
+// Transactions that wait for each other in one pod share a Delta commit
+// (F15). Each runs on top of those before it, and one that fails is left out
+// without affecting the others.
 //
 // Update returns the version that holds the changes; a read that must see
 // them waits for it with WaitFor (F29). An error matching
 // objstore.ErrUnknown means the commit may or may not have happened: report
-// the outcome as unknown, never as a failure (F32). After any other error,
-// nothing changed.
+// the outcome as unknown, never as a failure (F32). This includes giving up,
+// through ctx, while the transaction is being committed. After any other
+// error, nothing changed.
 func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, error) {
-	if err := db.lock(ctx); err != nil {
-		return 0, err
-	}
-	defer db.unlock()
 	if err := db.writeErr(); err != nil {
 		return 0, err
 	}
+	p := &pendingTx{ctx: ctx, fn: fn, done: make(chan txResult, 1)}
+	db.queueMu.Lock()
+	db.queue = append(db.queue, p)
+	db.queueMu.Unlock()
+	for {
+		select {
+		case r := <-p.done:
+			return r.version, r.err
+		case db.sem <- struct{}{}:
+			// Commit whatever is waiting, this transaction included unless an
+			// earlier batch took it. The batch runs on its own goroutine, so
+			// this caller can still give up through ctx while it runs.
+			go func() {
+				defer db.unlock()
+				db.commitQueued()
+			}()
+		case <-ctx.Done():
+			if db.dequeue(p) {
+				return 0, ctx.Err()
+			}
+			select {
+			case r := <-p.done:
+				return r.version, r.err
+			default:
+				return 0, objstore.Unknown(fmt.Errorf("filestore: %w while the transaction was being committed", ctx.Err()))
+			}
+		}
+	}
+}
 
+// dequeue removes p from the queue, and reports whether it was still there,
+// so that no batch has taken it.
+func (db *DeltaDB) dequeue(p *pendingTx) bool {
+	db.queueMu.Lock()
+	defer db.queueMu.Unlock()
+	i := slices.Index(db.queue, p)
+	if i < 0 {
+		return false
+	}
+	db.queue = slices.Delete(db.queue, i, i+1)
+	return true
+}
+
+// commitQueued commits the transactions waiting in the queue as one batch,
+// and gives each its result. The caller holds the writer lock.
+func (db *DeltaDB) commitQueued() {
+	db.queueMu.Lock()
+	n := min(len(db.queue), maxBatch)
+	batch := slices.Clone(db.queue[:n])
+	db.queue = slices.Delete(db.queue, 0, n)
+	db.queueMu.Unlock()
+
+	live := batch[:0]
+	for _, p := range batch {
+		if err := p.ctx.Err(); err != nil {
+			p.done <- txResult{err: err} // not started, so nothing changed
+			continue
+		}
+		live = append(live, p)
+	}
+	if len(live) == 0 {
+		return
+	}
+	// The batch serves several callers, so no single caller's cancellation
+	// stops it halfway.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(live[0].ctx), batchTimeout)
+	defer cancel()
+	version, errs, err := db.commitBatch(ctx, live)
+	for i, p := range live {
+		switch {
+		case err != nil:
+			p.done <- txResult{err: err}
+		case errs[i] != nil:
+			p.done <- txResult{err: errs[i]}
+		default:
+			p.done <- txResult{version: version}
+		}
+	}
+	db.batches.Add(1)
+	db.batched.Add(int64(len(live)))
+}
+
+// commitBatch runs the transactions, each on top of those before it that
+// succeeded, and commits their changes as one Delta commit. errs holds each
+// transaction's own error; err fails them all.
+func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version int64, errs []error, err error) {
+	if err := db.writeErr(); err != nil {
+		return 0, nil, err
+	}
 	delay := 5 * time.Millisecond
 	for attempt := 1; ; attempt++ {
 		if err := db.catchUp(ctx); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
-		tx := &Tx{schema: db.schema, base: db.master, working: make(map[string]tableData), now: db.commitTime()}
-		err := fn(tx)
-		tx.done = true
-		if err != nil {
-			return 0, err
+		now := db.commitTime()
+		base := maps.Clone(db.master)
+		working := make(map[string]tableData)
+		var muts []mutation
+		errs = make([]error, len(batch))
+		for i, p := range batch {
+			tx := &Tx{schema: db.schema, base: base, working: make(map[string]tableData), now: now}
+			err := p.fn(tx)
+			tx.done = true
+			if err != nil {
+				errs[i] = err
+				continue
+			}
+			for name, d := range tx.working {
+				base[name], working[name] = d, d
+			}
+			muts = append(muts, tx.muts...)
 		}
-		actions, files, err := db.prepare(ctx, tx)
+
+		all := &Tx{schema: db.schema, base: db.master, working: working, muts: muts, now: now, done: true}
+		actions, files, err := db.prepare(ctx, all)
 		if err != nil {
 			db.noteStorage(err, true)
-			return 0, err
+			return 0, nil, err
 		}
 		if len(actions) == 0 {
-			return db.snap.Version, nil
+			return db.snap.Version, errs, nil
 		}
 
 		version := db.snap.Version + 1
-		info, err := db.log.Commit(ctx, version, db.snap.MetaData.ID, "WRITE", tx.now, actions)
+		info, err := db.log.Commit(ctx, version, db.snap.MetaData.ID, "WRITE", now, actions)
 		db.noteStorage(err, true)
 		if err == nil {
-			db.committed(version, info, actions, files, tx.working)
-			return version, nil
+			db.committed(version, info, actions, files, working)
+			return version, errs, nil
 		}
 		if !errors.Is(err, deltalog.ErrConflict) {
 			// A definite failure, or an unknown outcome that the next catch
 			// up settles by reading the version.
-			return 0, err
+			return 0, nil, err
 		}
 		db.conflicts.Add(1)
 		if attempt >= db.opts.MaxConflicts {
-			return 0, fmt.Errorf("%w (%d attempts)", ErrConflicts, attempt)
+			return 0, nil, fmt.Errorf("%w (%d attempts)", ErrConflicts, attempt)
 		}
+		// The last attempt lost to another commit, so if this wait is cut
+		// short, nothing of the batch is in the log.
 		if err := sleepCtx(ctx, delay/2+rand.N(delay)); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		delay = min(2*delay, time.Second)
 	}
+}
+
+// Batches returns how many commits this pod made from queued transactions,
+// and how many transactions they held (F15).
+func (db *DeltaDB) Batches() (commits, transactions int64) {
+	return db.batches.Load(), db.batched.Load()
 }
 
 // commitTime is the next transaction's time: the clock, but never earlier

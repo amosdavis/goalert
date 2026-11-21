@@ -276,3 +276,9 @@ holder while it is sending.
   half the shorter retention reloads from a checkpoint first. Without that, a
   test shows a paused pod taking a cleaned-up commit for the end of the log
   and committing that version a second time.
+- 2026-11-21: Phase 1b: grouped commits (F15). Transactions that wait for
+  each other in one pod share a Delta commit; each runs on top of the ones
+  before it, and one that fails is left out without affecting the rest. A
+  caller that gives up while its transaction is being committed gets an
+  unknown outcome, never a failure (F32). `Batches` counts commits and the
+  transactions they held.

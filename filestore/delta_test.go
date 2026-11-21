@@ -161,7 +161,7 @@ func TestDeltaPodsDoNotLoseUpdates(t *testing.T) {
 		assert.EqualValues(t, len(pods)*workers*increments, u.Count, "no increment is lost (F4)")
 		assert.Equal(t, dumpUsers(sch, pods[0].View()), dumpUsers(sch, pod.View()), "every pod has the same state (F25)")
 	}
-	assert.EqualValues(t, len(pods)*workers*increments, latest.Load(), "one version per increment")
+	assert.LessOrEqual(t, latest.Load(), int64(len(pods)*workers*increments), "transactions in one pod may share a commit")
 }
 
 func TestDeltaUniqueAcrossPods(t *testing.T) {
@@ -778,4 +778,110 @@ func TestDeltaStalePodReloads(t *testing.T) {
 	assert.Len(t, dumpUsers(sch, stale.View()), 5)
 	_, err = store.Get(ctx, deltalog.CommitName(1))
 	require.ErrorIs(t, err, objstore.ErrNotFound, "the deleted version was not written again")
+}
+
+func TestDeltaGroupsCommits(t *testing.T) {
+	ctx := context.Background()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	db := openPod(t, store, sch, dOpts("a"))
+
+	// Hold the first commit up, so that the other transactions queue
+	// behind it.
+	release := make(chan struct{})
+	var held atomic.Bool
+	store.BeforeWrite = func(op, name string) error {
+		if isCommitFile(name) && held.CompareAndSwap(false, true) {
+			<-release
+		}
+		return nil
+	}
+	const n = 20
+	errs := make([]error, n)
+	versions := make([]int64, n)
+	var wg sync.WaitGroup
+	start := func(i int, fn func(tx *Tx) error) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			versions[i], errs[i] = db.Update(ctx, fn)
+		}()
+	}
+	start(0, putUser(sch, "first"))
+	require.Eventually(t, held.Load, 5*time.Second, time.Millisecond)
+	for i := 1; i < n; i++ {
+		// Every fifth one takes an address another already has.
+		email := fmt.Sprintf("u%d@example.com", i)
+		if i%5 == 0 {
+			email = "u1@example.com"
+		}
+		start(i, func(tx *Tx) error { return sch.users.Put(tx, dUser{ID: fmt.Sprintf("u%d", i), Email: email}) })
+	}
+	require.Eventually(t, func() bool {
+		db.queueMu.Lock()
+		defer db.queueMu.Unlock()
+		return len(db.queue) == n-1
+	}, 5*time.Second, time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	failed := 0
+	for i, err := range errs {
+		if err != nil {
+			var uerr *UniqueError
+			assert.ErrorAs(t, err, &uerr, "transaction %d", i)
+			failed++
+		}
+	}
+	assert.Equal(t, 3, failed, "each duplicate address fails alone, the rest of its batch commits (F8)")
+	assert.Len(t, dumpUsers(sch, db.View()), n-failed)
+	assert.EqualValues(t, 2, db.View().Index(), "the waiting transactions shared one commit (F15)")
+	commits, txns := db.Batches()
+	assert.EqualValues(t, 2, commits)
+	assert.EqualValues(t, n, txns)
+	for i, err := range errs {
+		if err == nil && i > 0 {
+			assert.EqualValues(t, 2, versions[i])
+		}
+	}
+	fresh := openPod(t, store, sch, dOpts("b"))
+	assert.Equal(t, dumpUsers(sch, db.View()), dumpUsers(sch, fresh.View()))
+}
+
+func TestDeltaGiveUpWhileCommitting(t *testing.T) {
+	ctx := context.Background()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	db := openPod(t, store, sch, dOpts("a"))
+
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err := db.Update(cctx, putUser(sch, "never"))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, objstore.ErrUnknown, "it never started, so nothing changed")
+
+	release := make(chan struct{})
+	var held atomic.Bool
+	store.BeforeWrite = func(op, name string) error {
+		if isCommitFile(name) && held.CompareAndSwap(false, true) {
+			<-release
+		}
+		return nil
+	}
+	cctx, cancel = context.WithCancel(ctx)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := db.Update(cctx, putUser(sch, "late"))
+		result <- err
+	}()
+	require.Eventually(t, held.Load, 5*time.Second, time.Millisecond)
+	cancel()
+	err = <-result
+	require.ErrorIs(t, err, objstore.ErrUnknown, "giving up mid-commit is no failure: the commit may still land (F32)")
+
+	close(release)
+	require.Eventually(t, func() bool { return db.View().Index() == 1 }, 5*time.Second, time.Millisecond)
+	_, ok := sch.users.Get(db.View(), "late")
+	assert.True(t, ok, "and here it did")
 }
