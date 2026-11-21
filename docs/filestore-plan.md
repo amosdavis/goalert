@@ -224,3 +224,11 @@ holder while it is sending.
 - 2026-11-21: Direction changed: Delta Lake tables on GCS and Azure, shared
   by several pods, instead of a local log. The failure modes and this plan
   were rewritten for it, adding Phase 1b and Phase 5.
+- 2026-11-21: Phase 1b: `objstore/` and its in-memory, local-directory, GCS
+  and Azure implementations pass one conformance suite, including the
+  create-if-absent race, against fake-gcs-server and Azurite in CI (Delta
+  backend workflow).
+- 2026-11-21: Phase 1b: `deltalog/` writes and replays the Delta log. It
+  settles an unclear commit by retrying the same commit and reading the
+  version back, and refuses commits from other writers or tables and newer
+  protocols or formats.
