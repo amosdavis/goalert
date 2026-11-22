@@ -186,6 +186,9 @@ func (u User) AsField() nfydest.FieldValue {
 
 // Search performs a paginated search of users with the given options.
 func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]User, error) {
+	if s.delta != nil {
+		return nil, errNotPorted
+	}
 	err := permission.LimitCheckAny(ctx, permission.User)
 	userCheck := permission.User
 	if err != nil {

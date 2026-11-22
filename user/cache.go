@@ -43,6 +43,9 @@ func (c checker) UserExistsUUID(id uuid.UUID) bool { _, ok := c[id]; return ok }
 
 // UserExists returns an ExistanceChecker.
 func (s *Store) UserExists(ctx context.Context) (ExistanceChecker, error) {
+	if s.delta != nil {
+		return nil, errNotPorted
+	}
 	err := permission.LimitCheckAny(ctx)
 	if err != nil {
 		return nil, err

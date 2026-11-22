@@ -398,3 +398,8 @@ holder while it is sending.
   reference to null, or is refused, in the same transaction (F2, F7). A pod
   that adds a child for a parent another pod just deleted fails its check
   once it catches up (F4).
+- 2026-11-21: Phase 3: users partly ported (insert, update, role, find) and
+  favorites ported. Methods not ported yet return an error on the Delta
+  backend. Found an upstream bug: unsetting a favorite schedule, rotation,
+  escalation policy or user deletes it for every user (AND/OR precedence in
+  `UserFavUnset`).

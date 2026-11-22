@@ -935,7 +935,12 @@ Unique:
 - user_favorites_user_id_tgt_user_id_key (index): `(user_id, tgt_user_id)`
 - user_favorites_user_id_tgt_user_id_key: `(user_id, tgt_user_id)`
 
-**Go:** not ported yet.
+**Go:** ported, `user/favorite/delta.go`. The five `(user_id, tgt_...)`
+unique constraints are one unique index of user and target, since a row has one
+target. The foreign keys to users cascade; those to services, schedules,
+rotations and escalation policies come with those tables. Unset removes only the
+user's own favorite: the Postgres query's AND/OR precedence removes everyone's
+favorite of a schedule, rotation, escalation policy or user.
 
 ### user_notification_rules
 
@@ -1022,4 +1027,8 @@ Unique:
 
 - goalert_user_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** partly ported, `user/delta.go`: inserting, updating, setting the
+role and finding users, with the favorite flag from `user_favorites`. Not yet:
+deleting users (which also rewrites rotation participants), auth subjects,
+search, the existence cache, and trg_enforce_status_update_same_user; those
+return an error on the Delta backend.

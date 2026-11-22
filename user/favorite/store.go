@@ -17,7 +17,10 @@ import (
 )
 
 // Store allows the lookup and management of Favorites.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db    *sql.DB
+	delta *deltaFavorites // the Delta backend, if set (delta.go)
+}
 
 // NewStore will create a new Store.
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) { return &Store{db: db}, nil }
@@ -39,6 +42,9 @@ func (s *Store) Set(ctx context.Context, tx txn.Tx, userID string, tgt assignmen
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.set(ctx, tx, userID, tgt)
+	}
 	args := gadb.UserFavSetParams{UserID: uuid.MustParse(userID)}
 	switch tgt.TargetType() {
 	case assignment.TargetTypeService:
@@ -79,6 +85,9 @@ func (s *Store) Unset(ctx context.Context, tx txn.Tx, userID string, tgt assignm
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.unset(ctx, tx, userID, tgt)
+	}
 	args := gadb.UserFavUnsetParams{UserID: uuid.MustParse(userID)}
 	switch tgt.TargetType() {
 	case assignment.TargetTypeService:
@@ -119,6 +128,11 @@ func (s *Store) FindAll(ctx context.Context, tx txn.Tx, userID string, filter []
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAll(ctx, tx, userID, func(t assignment.TargetType) bool {
+			return len(filter) == 0 || slices.Contains(filter, t)
+		})
+	}
 	args := gadb.UserFavFindAllParams{
 		UserID:                  uuid.MustParse(userID),
 		AllowServices:           len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeService),
