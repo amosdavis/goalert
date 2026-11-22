@@ -939,8 +939,9 @@ Unique:
 unique constraints are one unique index of user and target, since a row has one
 target. The foreign keys to users cascade; those to services, schedules,
 rotations and escalation policies come with those tables. Unset removes only the
-user's own favorite: the Postgres query's AND/OR precedence removes everyone's
-favorite of a schedule, rotation, escalation policy or user.
+user's own favorite, on both backends; the Postgres query's AND/OR precedence
+used to remove everyone's favorite of a schedule, rotation, escalation policy or
+user.
 
 ### user_notification_rules
 
