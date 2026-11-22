@@ -192,8 +192,9 @@ Exit:
 
 Port the packages in this order:
 
-1. config, keyring, auth (nonces, sessions)
-2. users, contact methods, notification rules
+1. config, keyring, auth nonces (done)
+2. users, contact methods, notification rules, then auth sessions and
+   subjects, whose queries join users and whose rows cascade from them
 3. services, integration keys, heartbeats, labels
 4. escalation policies
 5. rotations, schedules, rules, overrides
@@ -220,6 +221,12 @@ How a store is ported, in every package:
 - Its tests run the store against an in-memory Delta table, including two
   pods racing wherever the Postgres version relied on a lock or a unique
   index (F4, F8).
+
+Foreign keys (82 in the schema, 75 of them `ON DELETE CASCADE`) are declared
+on the filestore tables rather than written into each store: a child row's
+parent must exist when it is written, and deleting a parent cascades, sets
+the reference to null, or is refused, all in the same transaction (F2, F7).
+This comes before the users store, which most tables reference.
 
 Two pieces of work go with the port:
 
@@ -386,3 +393,8 @@ holder while it is sending.
 - 2026-11-21: Phase 3: `keyring` ported. Two pods setting up a keyring at once
   share its keys, a due rotation happens once, and forced rotations each
   happen (F4).
+- 2026-11-21: Phase 3: foreign keys in filestore. A child row's parent must
+  exist when it is written, and deleting a parent cascades, sets the
+  reference to null, or is refused, in the same transaction (F2, F7). A pod
+  that adds a child for a parent another pod just deleted fails its check
+  once it catches up (F4).

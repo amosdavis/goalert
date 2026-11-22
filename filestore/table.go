@@ -25,8 +25,9 @@ type Schema struct {
 	names    []string // sorted
 	seq      *Table[seqRow]
 	frozen   bool
-	delta    bool  // set up for a Delta table (delta.go)
-	deltaErr error // why that failed
+	delta    bool          // set up for a Delta table (delta.go)
+	deltaErr error         // why that failed
+	fks      []*foreignKey // foreign keys, in declaration order (foreignkey.go)
 }
 
 // seqRow holds the last value handed out by a sequence.
@@ -251,6 +252,9 @@ func (t *Table[V]) Put(tx *Tx, v V) error {
 	if err := checkKey(t.name, "primary", key); err != nil {
 		return err
 	}
+	if err := t.schema.checkReferences(tx, t.name, v2); err != nil {
+		return err
+	}
 	d := tx.writable(t.name).(*typedTable[V])
 	if err := d.put(key, v2); err != nil {
 		return err
@@ -290,9 +294,17 @@ func (t *Table[V]) Delete(tx *Tx, key string) (bool, error) {
 	if _, ok := t.Get(tx, key); !ok {
 		return false, nil
 	}
+	if err := t.schema.checkRestricted(tx, t.name, key); err != nil {
+		return false, err
+	}
 	d := tx.writable(t.name).(*typedTable[V])
 	d.delete(key)
 	tx.muts = append(tx.muts, mutation{op: opDelete, table: t.name, key: key})
+	// The row goes first, so a cycle of cascades ends when it comes back to
+	// a row already deleted. An error leaves the transaction to fail whole.
+	if err := t.schema.cascade(tx, t.name, key); err != nil {
+		return true, err
+	}
 	return true, nil
 }
 
