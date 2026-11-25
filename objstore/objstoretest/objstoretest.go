@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,6 +74,63 @@ func Run(t *testing.T, newStore func(t *testing.T) objstore.Store) {
 		got, err := s.Get(ctx, "_last_checkpoint")
 		require.NoError(t, err)
 		assert.Equal(t, "2", string(got))
+	})
+
+	t.Run("PutReplaceRace", func(t *testing.T) {
+		// A reader always assembles one complete version, even while a writer
+		// replaces the same object repeatedly (F10).
+		s := newStore(t)
+		a := bytes.Repeat([]byte("a"), 64<<10)
+		b := bytes.Repeat([]byte("b"), 64<<10)
+		require.NoError(t, s.Put(ctx, "object", a))
+		done := make(chan struct{})
+		var readers sync.WaitGroup
+		errs := make(chan error, 4)
+		for range 4 {
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					got, err := s.Get(ctx, "object")
+					if err != nil {
+						errs <- err
+						return
+					}
+					if !bytes.Equal(got, a) && !bytes.Equal(got, b) {
+						errs <- fmt.Errorf("reader got a partial or unknown version of %d bytes", len(got))
+						return
+					}
+				}
+			}()
+		}
+		for i := range 10 {
+			data := a
+			if i%2 == 0 {
+				data = b
+			}
+			var err error
+			for range 5 {
+				if err = s.Put(ctx, "object", data); err == nil {
+					break
+				}
+				time.Sleep(time.Second) // services limit writes to one name (F36)
+			}
+			require.NoError(t, err)
+		}
+		close(done)
+		readers.Wait()
+		close(errs)
+		for err := range errs {
+			require.NoError(t, err)
+		}
+		got, err := s.Get(ctx, "object")
+		require.NoError(t, err)
+		assert.True(t, bytes.Equal(a, got), "the last write is the complete final object")
 	})
 
 	t.Run("List", func(t *testing.T) {

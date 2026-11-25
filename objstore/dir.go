@@ -42,7 +42,7 @@ func (d *Dir) Get(ctx context.Context, name string) ([]byte, error) {
 	if err := checkName(name); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(d.path(name))
+	data, err := readWholeFile(d.path(name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
@@ -105,7 +105,7 @@ func (d *Dir) Put(ctx context.Context, name string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, d.path(name)); err != nil {
+	if err := replaceFile(tmp, d.path(name)); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}

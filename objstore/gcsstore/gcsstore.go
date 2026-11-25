@@ -87,16 +87,24 @@ func writeErr(name string, err error) error {
 			return fmt.Errorf("%w: %s", objstore.ErrExists, name)
 		case denied(err):
 			return objstore.Denied(fmt.Errorf("gcsstore: write %s: %w", name, err))
-		case gerr.Code >= 400 && gerr.Code < 500:
+		case rejected(err):
 			return fmt.Errorf("gcsstore: write %s: %w", name, err)
 		}
 	}
 	return objstore.Unknown(fmt.Errorf("gcsstore: write %s: %w", name, err))
 }
 
+// rejected reports whether GCS answered that it did not do a write.
+func rejected(err error) bool {
+	var gerr *googleapi.Error
+	return errors.As(err, &gerr) && gerr.Code >= 400 && gerr.Code < 500 && gerr.Code != http.StatusRequestTimeout
+}
+
 func (s *Store) write(ctx context.Context, obj *storage.ObjectHandle, name string, data []byte) error {
 	w := obj.NewWriter(ctx)
-	w.ChunkSize = 0 // one request, so the object is created whole or not at all
+	// One request, so the object is created whole or not at all. The library
+	// does not retry it, so its error is the write's only outcome (F32).
+	w.ChunkSize = 0
 	if _, err := io.Copy(w, bytes.NewReader(data)); err != nil {
 		_ = w.Close()
 		return writeErr(name, err)

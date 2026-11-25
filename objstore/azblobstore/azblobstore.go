@@ -14,8 +14,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
@@ -91,18 +93,47 @@ func writeErr(name string, err error) error {
 		return objstore.Denied(fmt.Errorf("azblobstore: write %s: %w", name, err))
 	}
 	var rerr *azcore.ResponseError
-	if errors.As(err, &rerr) && rerr.StatusCode >= 400 && rerr.StatusCode < 500 && rerr.StatusCode != http.StatusRequestTimeout {
+	if errors.As(err, &rerr) && rejected(rerr.StatusCode) {
 		return fmt.Errorf("azblobstore: write %s: %w", name, err)
 	}
 	return objstore.Unknown(fmt.Errorf("azblobstore: write %s: %w", name, err))
 }
 
+// rejected reports whether a status means Azure did not do a write.
+func rejected(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusRequestTimeout
+}
+
 func (s *Store) upload(ctx context.Context, name string, data []byte, cond *blob.AccessConditions) error {
+	// The SDK retries on its own. Once an attempt may have been applied, a later
+	// one being refused does not settle it (F32).
+	var unsure atomic.Bool
+	ctx = policy.WithRetryOptions(ctx, policy.RetryOptions{
+		ShouldRetry: func(resp *http.Response, err error) bool {
+			if err != nil {
+				unsure.Store(true)
+				return true
+			}
+			switch resp.StatusCode {
+			case http.StatusTooManyRequests: // was not applied
+				return true
+			case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway,
+				http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+				unsure.Store(true)
+				return true
+			}
+			return false
+		},
+	})
 	_, err := s.c.NewBlockBlobClient(s.prefix+name).Upload(ctx,
 		streaming.NopCloser(bytes.NewReader(data)),
 		&blockblob.UploadOptions{AccessConditions: cond},
 	)
-	return writeErr(name, err)
+	err = writeErr(name, err)
+	if err != nil && unsure.Load() && !errors.Is(err, objstore.ErrExists) && !errors.Is(err, objstore.ErrUnknown) {
+		return objstore.Unknown(fmt.Errorf("azblobstore: write %s: an earlier attempt may have been applied, then: %v", name, err))
+	}
+	return err
 }
 
 func (s *Store) PutIfAbsent(ctx context.Context, name string, data []byte) error {
