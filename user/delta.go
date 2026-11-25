@@ -53,10 +53,11 @@ func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{}
 	t.Users = filestore.NewTable(s, "users", func(u userRow) string { return u.ID })
 	t.byEmail = t.Users.Index("users_lower_email", func(u userRow) []string {
-		if u.Email == "" || len(u.Email) > maxEmailKey {
+		k := strings.ToLower(u.Email)
+		if k == "" || len(k) > maxEmailKey {
 			return nil
 		}
-		return []string{strings.ToLower(u.Email)}
+		return []string{k}
 	})
 	t.defineAuthSubjects(s)
 	return t

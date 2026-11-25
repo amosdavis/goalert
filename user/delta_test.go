@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
+	"github.com/target/goalert/util/sqlutil"
 )
 
 type deltaTestEnv struct {
@@ -69,6 +71,347 @@ func subjectIDs(subjects []AuthSubject) []string {
 		ids[i] = a.SubjectID
 	}
 	return ids
+}
+
+// deltaUserExists reports whether s finds the user.
+func deltaUserExists(t *testing.T, s *Store, id string) bool {
+	t.Helper()
+	_, err := s.FindOne(permission.SystemContext(context.Background(), "test"), id)
+	if !errors.Is(err, sql.ErrNoRows) {
+		require.NoError(t, err)
+	}
+	return err == nil
+}
+
+// constraintName returns the name of the constraint that err says was broken,
+// as the code that turns it into a message for the user sees it.
+func constraintName(err error) string {
+	if e := sqlutil.MapError(err); e != nil {
+		return e.ConstraintName
+	}
+	return ""
+}
+
+// inTx runs fn in a write transaction.
+func inTx(db txn.DB, fn func(tx *filestore.Tx) error) error {
+	return db.Run(context.Background(), nil, func(tx txn.Tx) error {
+		ftx, _ := deltatxn.Unwrap(tx)
+		return fn(ftx)
+	})
+}
+
+// both runs fn n times at once on each of two pods.
+func both(a, b *Store, n int, fn func(s *Store, i int)) {
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, s := range []*Store{a, b} {
+		for i := range n {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				fn(s, i)
+			}()
+		}
+	}
+	close(start)
+	wg.Wait()
+}
+
+// newConstraintEnv has a stand-in for the contact methods, which belong to
+// users, while users and auth subjects refer to them.
+func newConstraintEnv(t *testing.T) (*deltaTestEnv, *filestore.Table[deltaTestContactMethod]) {
+	t.Helper()
+	var cms *filestore.Table[deltaTestContactMethod]
+	e := newDeltaTestEnv(t, func(schema *filestore.Schema, tables *DeltaTables) {
+		cms = filestore.NewTable(schema, "user_contact_methods", func(c deltaTestContactMethod) string { return c.ID })
+		filestore.References(cms, "user_contact_methods_user_id_fkey", tables.Users,
+			func(c deltaTestContactMethod) (string, bool) { return c.UserID, true }, filestore.Cascade, nil)
+		DeclareDeltaForeignKeys(tables, cms, func(r filestore.Reader, id string) (string, bool) {
+			c, ok := cms.Get(r, id)
+			return c.UserID, ok
+		})
+	})
+	return e, cms
+}
+
+func TestDeltaInsertRace(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e := newDeltaTestEnv(t, nil)
+	a, _ := e.pod(t, "a")
+	b, _ := e.pod(t, "b")
+	id := uuid.NewString()
+
+	var inserted, refused atomic.Int32
+	both(a, b, 4, func(s *Store, i int) {
+		_, err := s.Insert(ctx, &User{ID: id, Name: "Alice", Role: permission.RoleUser})
+		if err == nil {
+			inserted.Add(1)
+		} else if assert.Equal(t, "goalert_user_pkey", constraintName(err)) {
+			refused.Add(1)
+		}
+	})
+	assert.EqualValues(t, 1, inserted.Load(), "one insert wins (F8)")
+	assert.EqualValues(t, 7, refused.Load())
+
+	fresh, _ := e.pod(t, "fresh")
+	assert.True(t, deltaUserExists(t, fresh, id))
+}
+
+// TestDeltaAlertStatusTrigger covers trg_enforce_status_update_same_user,
+// which runs on every update of a user, whatever it changes.
+func TestDeltaAlertStatusTrigger(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e, cms := newConstraintEnv(t)
+	s, db := e.pod(t, "a")
+	alice, bob := addDeltaUser(t, s, "Alice", ""), addDeltaUser(t, s, "Bob", "")
+	cm := uuid.NewString()
+	setOwner := func(userID string) {
+		require.NoError(t, inTx(db, func(tx *filestore.Tx) error {
+			return cms.Put(tx, deltaTestContactMethod{ID: cm, UserID: userID})
+		}))
+	}
+	setOwner(alice)
+	require.NoError(t, inTx(db, func(tx *filestore.Tx) error {
+		row, _ := e.tables.Users.Get(tx, alice)
+		row.AlertStatusCMID = &cm
+		return e.tables.PutUser(tx, row)
+	}))
+
+	writes := func(name string) map[string]error {
+		return map[string]error{
+			"update": s.UpdateTx(ctx, nil, &User{ID: alice, Name: name, Role: permission.RoleUser}),
+			"role":   s.SetUserRoleTx(ctx, nil, alice, permission.RoleAdmin),
+			"profile": inTx(db, func(tx *filestore.Tx) error {
+				return e.tables.UpdateProfile(tx, alice, name+" too", "")
+			}),
+		}
+	}
+	for what, err := range writes("Alice B") {
+		require.NoError(t, err, what)
+	}
+	require.NoError(t, deltatxn.Read(ctx, db, nil, func(s deltatxn.Scope) error {
+		row, _ := e.tables.Users.Get(s.Reader, alice)
+		assert.Equal(t, "Alice B too", row.Name)
+		require.NotNil(t, row.AlertStatusCMID, "other changes keep the contact method")
+		assert.Equal(t, cm, *row.AlertStatusCMID)
+		return nil
+	}))
+	u, err := s.FindOne(ctx, alice)
+	require.NoError(t, err)
+	assert.Empty(t, u.AlertStatusCMID, "which the Postgres store doesn't read")
+
+	setOwner(bob)
+	for what, err := range writes("Alice C") {
+		assert.Equal(t, "alert_status_user_id_match", constraintName(err), what)
+	}
+	require.NoError(t, s.SetUserRoleTx(ctx, nil, bob, permission.RoleAdmin), "bob has no status contact method")
+
+	// A schema without contact methods can't check the rule, so it refuses.
+	plain := newDeltaTestEnv(t, nil)
+	_, pdb := plain.pod(t, "plain")
+	err = inTx(pdb, func(tx *filestore.Tx) error {
+		return plain.tables.PutUser(tx, userRow{ID: uuid.NewString(), Name: "X", AlertStatusCMID: &cm})
+	})
+	require.ErrorContains(t, err, "DeclareDeltaForeignKeys")
+}
+
+func TestDeltaUpdateProfile(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e := newDeltaTestEnv(t, nil)
+	s, db := e.pod(t, "a")
+	alice := addDeltaUser(t, s, "Alice", "alice@example.com")
+	version := func() uint64 { return db.(deltatxn.DB).DB.View().Index() }
+	update := func(id, name, email string) error {
+		return inTx(db, func(tx *filestore.Tx) error { return e.tables.UpdateProfile(tx, id, name, email) })
+	}
+
+	before := version()
+	require.NoError(t, update(alice, "", ""))
+	require.NoError(t, update(alice, "Alice", "alice@example.com"))
+	require.NoError(t, update(uuid.NewString(), "Nobody", ""), "an UPDATE of no rows")
+	assert.Equal(t, before, version(), "nothing changed, so there is no commit (F15)")
+	require.Error(t, update("not-a-uuid", "X", ""))
+
+	require.NoError(t, update(alice, "", "new@example.com"))
+	u, err := s.FindOne(ctx, alice)
+	require.NoError(t, err)
+	assert.Equal(t, "Alice", u.Name)
+	assert.Equal(t, "new@example.com", u.Email)
+	for email, want := range map[string][]string{"alice@example.com": {}, "new@example.com": {alice}} {
+		users, err := s.Search(ctx, &SearchOptions{Search: "email=" + email})
+		require.NoError(t, err)
+		assert.Equal(t, want, userIDs(users), "the email index follows the change")
+	}
+}
+
+// TestDeltaDeleteUserCascade deletes a user who refers to a contact method
+// that refers to them.
+func TestDeltaDeleteUserCascade(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e, cms := newConstraintEnv(t)
+	s, db := e.pod(t, "a", WithRotations(func(tx *filestore.Tx, userID string) error {
+		if _, ok := e.tables.Users.Get(tx, userID); !ok {
+			return nil // so if the user were deleted first, the row below would stay
+		}
+		_, err := cms.Delete(tx, "in-a-rotation/"+userID)
+		return err
+	}))
+	alice, bob := addDeltaUser(t, s, "Alice", ""), addDeltaUser(t, s, "Bob", "")
+	cmA, cmB := uuid.NewString(), uuid.NewString()
+	require.NoError(t, inTx(db, func(tx *filestore.Tx) error {
+		for id, owner := range map[string]string{cmA: alice, cmB: bob} {
+			if err := cms.Put(tx, deltaTestContactMethod{ID: id, UserID: owner}); err != nil {
+				return err
+			}
+			row, _ := e.tables.Users.Get(tx, owner)
+			row.AlertStatusCMID = &id
+			if err := e.tables.PutUser(tx, row); err != nil {
+				return err
+			}
+		}
+		// Not alice's, so only leaving rotations removes it.
+		if err := cms.Put(tx, deltaTestContactMethod{ID: "in-a-rotation/" + alice, UserID: bob}); err != nil {
+			return err
+		}
+		for _, a := range []AuthSubject{
+			{ProviderID: "p", SubjectID: "a", UserID: alice},
+			{ProviderID: "p", SubjectID: "b", UserID: bob},
+			{ProviderID: "p", SubjectID: "b through alice", UserID: bob},
+		} {
+			if err := e.tables.InsertAuthSubject(tx, a); err != nil {
+				return err
+			}
+		}
+		row, _ := e.tables.AuthSubjects.Get(tx, AuthSubjectKey("p", "b through alice"))
+		row.CMID = &cmA
+		return e.tables.AuthSubjects.Put(tx, row)
+	}))
+
+	require.Error(t, s.DeleteManyTx(ctx, nil, []string{bob, "not-a-uuid"}), "an id Postgres refuses")
+	require.True(t, deltaUserExists(t, s, bob))
+	require.NoError(t, s.DeleteManyTx(ctx, nil, []string{alice, strings.ToUpper(alice), uuid.NewString()}),
+		"each user once, and one that doesn't exist is a DELETE of no rows")
+
+	fresh, fdb := e.pod(t, "fresh")
+	assert.False(t, deltaUserExists(t, fresh, alice))
+	subjects, err := fresh.FindAllAuthSubjectsForUser(ctx, bob)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b"}, subjectIDs(subjects), "a subject goes with its contact method too")
+	subjects, err = fresh.FindAllAuthSubjectsForUser(ctx, alice)
+	require.NoError(t, err)
+	assert.Nil(t, subjects)
+	require.NoError(t, deltatxn.Read(ctx, fdb, nil, func(s deltatxn.Scope) error {
+		var left []string
+		cms.Ascend(s.Reader, func(c deltaTestContactMethod) bool {
+			left = append(left, c.ID)
+			return true
+		})
+		assert.Equal(t, []string{cmB}, left)
+		row, ok := e.tables.Users.Get(s.Reader, bob)
+		require.True(t, ok)
+		require.NotNil(t, row.AlertStatusCMID, "bob's stays")
+		assert.Equal(t, cmB, *row.AlertStatusCMID)
+		return nil
+	}))
+}
+
+func TestDeltaTransaction(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e := newDeltaTestEnv(t, nil)
+	s, db := e.pod(t, "a", WithRotations(func(*filestore.Tx, string) error { return nil }))
+
+	// What the first login of a user does, in one transaction.
+	create := func(tx txn.Tx, name string) (*User, error) {
+		u, err := s.InsertTx(ctx, tx, &User{Name: name, Role: permission.RoleUser})
+		if err != nil {
+			return nil, err
+		}
+		err = s.AddAuthSubjectTx(ctx, tx, &AuthSubject{ProviderID: "p", SubjectID: name, UserID: u.ID})
+		if err != nil {
+			return nil, err
+		}
+		return s.FindOneTx(ctx, tx, u.ID, true)
+	}
+	var alice *User
+	require.NoError(t, db.Run(ctx, nil, func(tx txn.Tx) error {
+		var err error
+		alice, err = create(tx, "alice")
+		return err
+	}))
+	u, err := s.FindOneBySubject(ctx, "p", "alice")
+	require.NoError(t, err)
+	assert.Equal(t, alice, u)
+
+	boom := errors.New("boom")
+	err = db.Run(ctx, nil, func(tx txn.Tx) error {
+		if _, err := create(tx, "bob"); err != nil {
+			return err
+		}
+		if err := s.DeleteAuthSubjectTx(ctx, tx, &AuthSubject{ProviderID: "p", SubjectID: "alice", UserID: alice.ID}); err != nil {
+			return err
+		}
+		if err := s.DeleteManyTx(ctx, tx, []string{alice.ID}); err != nil {
+			return err
+		}
+		return boom
+	})
+	require.ErrorIs(t, err, boom)
+
+	fresh, _ := e.pod(t, "fresh")
+	u, err = fresh.FindOneBySubject(ctx, "p", "alice")
+	require.NoError(t, err)
+	assert.Equal(t, alice, u, "a failed transaction changes nothing")
+	users, err := fresh.Search(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{alice.ID}, userIDs(users))
+
+	require.ErrorIs(t, db.Run(ctx, &txn.Options{ReadOnly: true}, func(tx txn.Tx) error {
+		return s.DeleteManyTx(ctx, tx, []string{alice.ID})
+	}), deltatxn.ErrReadOnly)
+}
+
+func TestDeltaUserPermissions(t *testing.T) {
+	sys := permission.SystemContext(context.Background(), "test")
+	e := newDeltaTestEnv(t, nil)
+	s, _ := e.pod(t, "a", WithRotations(func(*filestore.Tx, string) error { return nil }))
+	alice, bob := addDeltaUser(t, s, "Alice", ""), addDeltaUser(t, s, "Bob", "")
+	require.NoError(t, s.AddAuthSubjectTx(sys, nil, &AuthSubject{ProviderID: "p", SubjectID: "a", UserID: alice}))
+	asAlice := permission.UserContext(context.Background(), alice, permission.RoleUser)
+
+	subjects, err := s.FindAllAuthSubjectsForUser(asAlice, alice)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a"}, subjectIDs(subjects), "a user sees their own subjects")
+	_, err = s.Search(asAlice, &SearchOptions{FavoritesUserID: alice, FavoritesFirst: true})
+	require.NoError(t, err)
+
+	_, oneErr := s.FindOneBySubject(asAlice, "p", "a")
+	_, someErr := s.FindSomeAuthSubjectsForProvider(asAlice, 1, "", "p")
+	_, searchErr := s.Search(asAlice, &SearchOptions{FavoritesUserID: bob})
+	_, allErr := s.FindAllAuthSubjectsForUser(asAlice, bob)
+	_, existErr := s.UserExists(context.Background())
+	for name, err := range map[string]error{
+		"FindOneBySubject":                oneErr,
+		"FindSomeAuthSubjectsForProvider": someErr,
+		"Search":                          searchErr,
+		"FindAllAuthSubjectsForUser":      allErr,
+		"UserExists":                      existErr,
+		"SetAuthSubject":                  s.SetAuthSubject(asAlice, "p", "a", bob),
+		"DeleteManyTx":                    s.DeleteManyTx(asAlice, nil, []string{bob}),
+		"AddAuthSubjectTx":                s.AddAuthSubjectTx(asAlice, nil, &AuthSubject{ProviderID: "p", SubjectID: "b", UserID: bob}),
+		"DeleteAuthSubjectTx":             s.DeleteAuthSubjectTx(asAlice, nil, &AuthSubject{ProviderID: "p", SubjectID: "a", UserID: alice}),
+		"AuthSubjectsFunc":                s.AuthSubjectsFunc(asAlice, "p", nil, func(AuthSubject) error { return nil }),
+		"WithoutAuthProviderFunc":         s.WithoutAuthProviderFunc(asAlice, "p", func(User) error { return nil }),
+	} {
+		assert.True(t, permission.IsPermissionError(err), "%s: %v", name, err)
+	}
+
+	// Validation is shared with Postgres too.
+	assert.Error(t, s.SetAuthSubject(sys, "", "a", alice))
+	assert.Error(t, s.SetAuthSubject(sys, "p", "zero\x00byte", alice))
+	assert.Error(t, s.DeleteManyTx(sys, nil, make([]string, 101)))
+	_, err = s.FindSomeAuthSubjectsForProvider(sys, 9001, "", "p")
+	assert.Error(t, err)
 }
 
 func TestDeltaUserCRUD(t *testing.T) {
