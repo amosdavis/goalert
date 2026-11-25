@@ -13,7 +13,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaMetrics // the Delta backend, if set (delta.go)
 
 	findMetrics *sql.Stmt
 }
@@ -42,6 +43,9 @@ func (s *Store) FindMetrics(ctx context.Context, alertIDs []int) ([]Metric, erro
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findMetrics(ctx, alertIDs)
+	}
 	rows, err := s.findMetrics.QueryContext(ctx, sqlutil.IntArray(alertIDs))
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)

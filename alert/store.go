@@ -11,6 +11,7 @@ import (
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/deltatxn"
 	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
@@ -26,6 +27,7 @@ const maxBatch = 500
 type Store struct {
 	db    *sql.DB
 	logDB *alertlog.Store
+	delta *deltaAlerts // the Delta backend, if set (delta.go)
 
 	insert       *sql.Stmt
 	update       *sql.Stmt
@@ -189,6 +191,9 @@ func (s *Store) ServiceInfo(ctx context.Context, serviceID string) (string, int,
 		return "", 0, err
 	}
 
+	if s.delta != nil {
+		return s.delta.serviceInfo(ctx, canonicalID(serviceID))
+	}
 	var name string
 	var count int
 	err = s.svcInfo.QueryRowContext(ctx, serviceID).Scan(&name, &count)
@@ -205,6 +210,9 @@ func (s *Store) EPID(ctx context.Context, alertID int) (string, error) {
 		return "", err
 	}
 
+	if s.delta != nil {
+		return s.delta.epID(ctx, alertID)
+	}
 	epID, err := gadb.New(s.db).Alert_GetEscalationPolicyID(ctx, int64(alertID))
 	if err != nil {
 		return "", err
@@ -241,6 +249,9 @@ func (s *Store) EscalateAsOf(ctx context.Context, id int, t time.Time) error {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.escalateAsOf(ctx, id, t)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -354,16 +365,19 @@ func (s *Store) UpdateStatusByService(ctx context.Context, serviceID string, sta
 		return err
 	}
 
+	t := alertlog.TypeAcknowledged
+	if status == StatusClosed {
+		t = alertlog.TypeClosed
+	}
+
+	if s.delta != nil {
+		return s.delta.updateStatusByService(ctx, serviceID, status, t)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer sqlutil.Rollback(ctx, "alert: update status by service", tx)
-
-	t := alertlog.TypeAcknowledged
-	if status == StatusClosed {
-		t = alertlog.TypeClosed
-	}
 
 	err = s.logDB.LogServiceTx(ctx, tx, serviceID, t, nil)
 	if err != nil {
@@ -409,6 +423,14 @@ func (s *Store) UpdateManyAlertStatus(ctx context.Context, status Status, alertI
 		return nil, err
 	}
 
+	t := alertlog.TypeAcknowledged
+	if status == StatusClosed {
+		t = alertlog.TypeClosed
+	}
+
+	if s.delta != nil {
+		return s.delta.updateMany(ctx, status, alertIDs, t, logMeta)
+	}
 	ids := make([]int64, len(alertIDs))
 	for i, id := range alertIDs {
 		ids[i] = int64(id)
@@ -419,11 +441,6 @@ func (s *Store) UpdateManyAlertStatus(ctx context.Context, status Status, alertI
 		return nil, err
 	}
 	defer sqlutil.Rollback(ctx, "alert: update status", tx)
-
-	t := alertlog.TypeAcknowledged
-	if status == StatusClosed {
-		t = alertlog.TypeClosed
-	}
 
 	var updatedIDs []int
 
@@ -462,7 +479,6 @@ func (s *Store) UpdateManyAlertStatus(ctx context.Context, status Status, alertI
 }
 
 func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Alert, error) {
-	stx := sqltxn.Unwrap(tx)
 	n, err := a.Normalize() // validation
 	if err != nil {
 		return nil, err
@@ -481,6 +497,15 @@ func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Alert, erro
 		return nil, err
 	}
 
+	if s.delta != nil {
+		n, err = s.delta.create(ctx, tx, *n)
+		if err != nil {
+			return nil, err
+		}
+		logCreated(ctx, n)
+		return n, nil
+	}
+	stx := sqltxn.Unwrap(tx)
 	err = gadb.New(stx).Alert_LockService(ctx, uuid.MustParse(a.ServiceID))
 	if err != nil {
 		return nil, err
@@ -493,11 +518,15 @@ func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Alert, erro
 
 	s.logDB.MustLogTx(ctx, stx, n.ID, alertlog.TypeCreated, meta)
 
-	ctx = log.WithFields(ctx, log.Fields{"AlertID": n.ID, "ServiceID": n.ServiceID})
-	log.Logf(ctx, "Alert created.")
-	metricCreatedTotal.WithLabelValues(n.ServiceID).Inc()
+	logCreated(ctx, n)
 
 	return n, nil
+}
+
+func logCreated(ctx context.Context, a *Alert) {
+	ctx = log.WithFields(ctx, log.Fields{"AlertID": a.ID, "ServiceID": a.ServiceID})
+	log.Logf(ctx, "Alert created.")
+	metricCreatedTotal.WithLabelValues(a.ServiceID).Inc()
 }
 
 func (s *Store) _create(ctx context.Context, tx txn.Tx, a Alert) (*Alert, *alertlog.CreatedMetaData, error) {
@@ -521,7 +550,6 @@ func (s *Store) _create(ctx context.Context, tx txn.Tx, a Alert) (*Alert, *alert
 // CreateOrUpdateTx returns `isNew` to indicate if the returned alert was a new one.
 // It is the caller's responsibility to log alert creation if the transaction is committed (and isNew is true).
 func (s *Store) CreateOrUpdateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Alert, bool, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx,
 		permission.System,
 		permission.Admin,
@@ -547,6 +575,10 @@ func (s *Store) CreateOrUpdateTx(ctx context.Context, tx txn.Tx, a *Alert) (*Ale
 		return nil, false, err
 	}
 
+	if s.delta != nil {
+		return s.delta.createOrUpdate(ctx, tx, *n)
+	}
+	stx := sqltxn.Unwrap(tx)
 	err = gadb.New(stx).Alert_LockService(ctx, uuid.MustParse(n.ServiceID))
 	if err != nil {
 		return nil, false, err
@@ -625,26 +657,22 @@ func (s *Store) createOrUpdate(ctx context.Context, a *Alert, meta map[string]st
 		return nil, false, err
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	defer sqlutil.Rollback(ctx, "alert: upsert", tx)
-
-	n, isNew, err := s.CreateOrUpdateTx(ctx, tx, a)
-	if err != nil {
-		return nil, false, err
-	}
-
-	// Set metadata only if meta is not nil and isNew is true
-	if meta != nil && isNew {
-		err = s.SetMetadataTx(ctx, tx, n.ID, meta)
+	// On the Delta backend, the function can run more than once.
+	var n *Alert
+	var isNew bool
+	err = s.runTx(ctx, "alert: upsert", func(tx txn.Tx) error {
+		var err error
+		n, isNew, err = s.CreateOrUpdateTx(ctx, tx, a)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
-	}
 
-	err = tx.Commit()
+		// Set metadata only if meta is not nil and isNew is true
+		if meta != nil && isNew {
+			return s.SetMetadataTx(ctx, tx, n.ID, meta)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
@@ -653,15 +681,34 @@ func (s *Store) createOrUpdate(ctx context.Context, a *Alert, meta map[string]st
 		return nil, false, nil
 	}
 	if isNew {
-		ctx = log.WithFields(ctx, log.Fields{"AlertID": n.ID, "ServiceID": n.ServiceID})
-		log.Logf(ctx, "Alert created.")
-		metricCreatedTotal.WithLabelValues(n.ServiceID).Inc()
+		logCreated(ctx, n)
 	}
 
 	return n, isNew, nil
 }
 
+// runTx runs fn in a transaction.
+func (s *Store) runTx(ctx context.Context, name string, fn func(tx txn.Tx) error) error {
+	if s.delta != nil {
+		s.logDB.Prepare(ctx)
+		return s.delta.db.Run(ctx, nil, fn)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer sqlutil.Rollback(ctx, name, tx)
+	err = fn(tx)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpdateStatusTx(ctx context.Context, tx txn.Tx, id int, stat Status) error {
+	if s.delta != nil {
+		return s.delta.updateStatus(ctx, tx, id, stat)
+	}
 	stx := sqltxn.Unwrap(tx)
 	var _stat gadb.EnumAlertStatus
 	_stat, err := gadb.New(stx).Alert_GetStatusAndLockService(ctx, int64(id))
@@ -708,6 +755,15 @@ func (s *Store) UpdateStatus(ctx context.Context, id int, stat Status) error {
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.run(ctx, nil, func(tx txn.Tx, sc deltatxn.Scope) error {
+			err := s.delta.canTouch(ctx, sc.Reader, id)
+			if err != nil {
+				return err
+			}
+			return s.delta.updateStatus(ctx, tx, id, stat)
+		})
+	}
 	err = s.canTouchAlert(ctx, id)
 	if err != nil {
 		return err
@@ -751,6 +807,9 @@ func (s *Store) FindMany(ctx context.Context, alertIDs []int) ([]Alert, error) {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findMany(ctx, alertIDs)
+	}
 	rows, err := s.findMany.QueryContext(ctx, sqlutil.IntArray(alertIDs))
 	if err != nil {
 		return nil, err
@@ -782,6 +841,9 @@ func (s *Store) State(ctx context.Context, alertIDs []int) ([]State, error) {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.state(ctx, alertIDs)
+	}
 	var t sqlutil.NullTime
 	rows, err := s.epState.QueryContext(ctx, sqlutil.IntArray(alertIDs))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -818,6 +880,9 @@ func (s *Store) Feedback(ctx context.Context, alertIDs []int) ([]Feedback, error
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findFeedback(ctx, alertIDs)
+	}
 	ids := make([]int32, 0, len(alertIDs))
 	for _, id := range alertIDs {
 		ids = append(ids, int32(id))
@@ -852,6 +917,9 @@ func (s Store) UpdateManyAlertFeedback(ctx context.Context, noiseReason string, 
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.setFeedback(ctx, noiseReason, alertIDs...)
+	}
 	// GraphQL generates type of int[], while sqlc
 	// expects an int64[] as a result of the unnest function
 	ids := make([]int64, len(alertIDs))
@@ -887,6 +955,10 @@ func (s Store) UpdateFeedback(ctx context.Context, feedback *Feedback) error {
 		return err
 	}
 
+	if s.delta != nil {
+		_, err = s.delta.setFeedback(ctx, feedback.NoiseReason, feedback.ID)
+		return err
+	}
 	err = gadb.New(s.db).Alert_SetAlertFeedback(ctx, gadb.Alert_SetAlertFeedbackParams{
 		AlertID:     int64(feedback.ID),
 		NoiseReason: feedback.NoiseReason,

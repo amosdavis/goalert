@@ -23,7 +23,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaLogs // the Delta backend, if set (delta.go)
 
 	findAll       *sql.Stmt
 	findAllByType *sql.Stmt
@@ -128,10 +129,21 @@ func (s *Store) MustLog(ctx context.Context, alertID int, _type Type, meta inter
 }
 
 func (s *Store) MustLogTx(ctx context.Context, tx txn.Tx, alertID int, _type Type, meta interface{}) {
-	stx :=
-		// suppress duplicate duplicate-suppression logs since they aren't actionable and just add noise
-		sqltxn.Unwrap(tx)
+	// suppress duplicate duplicate-suppression logs since they aren't actionable and just add noise
+	if s.delta != nil {
+		var err error
+		if _type == TypeDuplicateSupressed {
+			err = s.logDeltaDuplicate(ctx, tx, alertID, meta)
+		} else {
+			err = s.LogTx(ctx, tx, alertID, _type, meta)
+		}
+		if err != nil {
+			log.Log(ctx, errors.Wrap(err, "append alert log"))
+		}
+		return
+	}
 
+	stx := sqltxn.Unwrap(tx)
 	if _type == TypeDuplicateSupressed {
 		hasRecent, err := gadb.New(stx).AlertLog_HasRecentDuplicate(ctx, int64(alertID))
 		if err != nil {
@@ -151,8 +163,25 @@ func (s *Store) MustLogTx(ctx context.Context, tx txn.Tx, alertID int, _type Typ
 	}
 }
 
+func (s *Store) logDeltaDuplicate(ctx context.Context, tx txn.Tx, alertID int, meta interface{}) error {
+	err := permission.LimitCheckAny(ctx, permission.All)
+	if err != nil {
+		return err
+	}
+	return s.delta.logDuplicate(ctx, tx, alertID, meta)
+}
+
+// Prepare gets ready to add log entries on behalf of ctx's source. Call it
+// before a transaction that does, unless it is the log's own: naming the
+// source's destination type can call its provider, and a transaction on the
+// Delta backend must do no I/O (F3). On Postgres it does nothing.
+func (s *Store) Prepare(ctx context.Context) {
+	if s.delta != nil {
+		s.delta.prepare(ctx)
+	}
+}
+
 func (s *Store) LogEPTx(ctx context.Context, tx txn.Tx, epID string, _type Type, meta *EscalationMetaData) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -163,7 +192,11 @@ func (s *Store) LogEPTx(ctx context.Context, tx txn.Tx, epID string, _type Type,
 		return err
 	}
 
-	e, err := s.logEntry(ctx, stx, _type, meta)
+	if s.delta != nil {
+		return s.delta.logEP(ctx, tx, uuid.MustParse(epID), _type, meta)
+	}
+	stx := sqltxn.Unwrap(tx)
+	e, err := logEntry(ctx, sqlSubjects{s, stx}, _type, meta)
 	if err != nil {
 		return err
 	}
@@ -184,7 +217,6 @@ func (s *Store) LogEPTx(ctx context.Context, tx txn.Tx, epID string, _type Type,
 }
 
 func (s *Store) LogServiceTx(ctx context.Context, tx txn.Tx, serviceID string, _type Type, meta interface{}) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -201,7 +233,11 @@ func (s *Store) LogServiceTx(ctx context.Context, tx txn.Tx, serviceID string, _
 	case TypeClosed:
 		t = _TypeCloseAll
 	}
-	e, err := s.logEntry(ctx, stx, t, meta)
+	if s.delta != nil {
+		return s.delta.logService(ctx, tx, uuid.MustParse(serviceID), t, meta)
+	}
+	stx := sqltxn.Unwrap(tx)
+	e, err := logEntry(ctx, sqlSubjects{s, stx}, t, meta)
 	if err != nil {
 		return err
 	}
@@ -223,13 +259,16 @@ func (s *Store) LogServiceTx(ctx context.Context, tx txn.Tx, serviceID string, _
 }
 
 func (s *Store) LogManyTx(ctx context.Context, tx txn.Tx, alertIDs []int, _type Type, meta interface{}) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
 	}
 
-	e, err := s.logEntry(ctx, stx, _type, meta)
+	if s.delta != nil {
+		return s.delta.logMany(ctx, tx, alertIDs, _type, meta)
+	}
+	stx := sqltxn.Unwrap(tx)
+	e, err := logEntry(ctx, sqlSubjects{s, stx}, _type, meta)
 	if err != nil {
 		return err
 	}
@@ -264,8 +303,7 @@ func (s *Store) queries(tx txn.Tx) *gadb.Queries {
 }
 
 func (s *Store) LogTx(ctx context.Context, tx txn.Tx, alertID int, _type Type, meta interface{}) error {
-	stx := sqltxn.Unwrap(tx)
-	return s.LogManyTx(ctx, stx, []int{alertID}, _type, meta)
+	return s.LogManyTx(ctx, tx, []int{alertID}, _type, meta)
 }
 
 func txWrap(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
@@ -276,8 +314,54 @@ func txWrap(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
 	return stx.StmtContext(ctx, stmt)
 }
 
-func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interface{}) (*Entry, error) {
-	stx := sqltxn.Unwrap(tx)
+// subjects looks up what describes the subject of a new log entry.
+type subjects interface {
+	channelDest(ctx context.Context, id uuid.UUID) (gadb.NullDestV1, error)
+	contactMethodDest(ctx context.Context, id uuid.UUID) (gadb.NullDestV1, error)
+	messageDest(ctx context.Context, id uuid.UUID) (gadb.NullDestV1, error)
+	heartbeatMinutes(ctx context.Context, id uuid.UUID) (int32, error)
+	integrationKeyType(ctx context.Context, id string) (integrationkey.Type, error)
+
+	// typeName returns the name of a destination type.
+	typeName(ctx context.Context, destType string) (string, error)
+}
+
+// sqlSubjects looks up subjects in Postgres, in tx if it isn't nil.
+type sqlSubjects struct {
+	s  *Store
+	tx *sql.Tx
+}
+
+func (q sqlSubjects) channelDest(ctx context.Context, id uuid.UUID) (gadb.NullDestV1, error) {
+	return q.s.queries(q.tx).AlertLog_LookupNCDest(ctx, id)
+}
+
+func (q sqlSubjects) contactMethodDest(ctx context.Context, id uuid.UUID) (gadb.NullDestV1, error) {
+	return q.s.queries(q.tx).AlertLog_LookupCMDest(ctx, id)
+}
+
+func (q sqlSubjects) messageDest(ctx context.Context, id uuid.UUID) (gadb.NullDestV1, error) {
+	return q.s.queries(q.tx).AlertLog_LookupCallbackDest(ctx, id)
+}
+
+func (q sqlSubjects) heartbeatMinutes(ctx context.Context, id uuid.UUID) (int32, error) {
+	return q.s.queries(q.tx).AlertLog_HBIntervalMinutes(ctx, id)
+}
+
+func (q sqlSubjects) integrationKeyType(ctx context.Context, id string) (typ integrationkey.Type, err error) {
+	err = txWrap(ctx, q.tx, q.s.lookupIKeyType).QueryRowContext(ctx, id).Scan(&typ)
+	return typ, err
+}
+
+func (q sqlSubjects) typeName(ctx context.Context, destType string) (string, error) {
+	info, err := q.s.reg.TypeInfo(ctx, destType)
+	if err != nil {
+		return "", err
+	}
+	return info.Name, nil
+}
+
+func logEntry(ctx context.Context, look subjects, _type Type, meta interface{}) (*Entry, error) {
 	var classExtras []string
 	switch _type {
 	case _TypeAcknowledgeAll:
@@ -299,11 +383,6 @@ func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interf
 	}
 
 	src := permission.Source(ctx)
-	gdb := gadb.New(s.db)
-	if stx != nil {
-		gdb = gdb.WithTx(stx)
-	}
-
 	if src != nil {
 		switch src.Type {
 		case permission.SourceTypeNotificationChannel:
@@ -312,15 +391,14 @@ func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interf
 			if err != nil {
 				return nil, errors.Wrap(err, "parse channel ID")
 			}
-			dest, err := gdb.AlertLog_LookupNCDest(ctx, id)
+			dest, err := look.channelDest(ctx, id)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup notification channel destination")
 			}
-			info, err := s.reg.TypeInfo(ctx, dest.DestV1.Type)
+			r.subject.classifier, err = look.typeName(ctx, dest.DestV1.Type)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup notification channel destination type")
 			}
-			r.subject.classifier = info.Name
 
 			r.subject.channelID.UUID = id
 			r.subject.channelID.Valid = true
@@ -336,15 +414,14 @@ func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interf
 				r.subject.classifier = "no immediate rule"
 				break
 			}
-			dest, err := s.queries(stx).AlertLog_LookupCMDest(ctx, uuid.MustParse(src.ID))
+			dest, err := look.contactMethodDest(ctx, uuid.MustParse(src.ID))
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup contact method type for callback ID")
 			}
-			info, err := s.reg.TypeInfo(ctx, dest.DestV1.Type)
+			r.subject.classifier, err = look.typeName(ctx, dest.DestV1.Type)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup contact method type")
 			}
-			r.subject.classifier = info.Name
 
 		case permission.SourceTypeNotificationCallback:
 			r.subject._type = SubjectTypeUser
@@ -354,19 +431,18 @@ func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interf
 			if err != nil {
 				return nil, errors.Wrap(err, "parse channel ID")
 			}
-			dest, err := gdb.AlertLog_LookupCallbackDest(ctx, id)
+			dest, err := look.messageDest(ctx, id)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup notification callback type")
 			}
 
-			info, err := s.reg.TypeInfo(ctx, dest.DestV1.Type)
+			r.subject.classifier, err = look.typeName(ctx, dest.DestV1.Type)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup notification channel destination type")
 			}
-			r.subject.classifier = info.Name
 		case permission.SourceTypeHeartbeat:
 			r.subject._type = SubjectTypeHeartbeatMonitor
-			minutes, err := s.queries(stx).AlertLog_HBIntervalMinutes(ctx, uuid.MustParse(src.ID))
+			minutes, err := look.heartbeatMinutes(ctx, uuid.MustParse(src.ID))
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup heartbeat monitor interval by ID")
 			}
@@ -384,8 +460,7 @@ func (s *Store) logEntry(ctx context.Context, tx txn.Tx, _type Type, meta interf
 			r.subject.heartbeatMonitorID.UUID = uuid.MustParse(src.ID)
 		case permission.SourceTypeIntegrationKey:
 			r.subject._type = SubjectTypeIntegrationKey
-			var ikeyType integrationkey.Type
-			err = txWrap(ctx, stx, s.lookupIKeyType).QueryRowContext(ctx, src.ID).Scan(&ikeyType)
+			ikeyType, err := look.integrationKeyType(ctx, src.ID)
 			if err != nil {
 				return nil, errors.Wrap(err, "lookup integration key type by ID")
 			}
@@ -418,6 +493,9 @@ func (s *Store) FindOne(ctx context.Context, logID int) (*Entry, error) {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOne(ctx, logID)
+	}
 	var e Entry
 	row := s.findOne.QueryRowContext(ctx, logID)
 	err = e.scanWith(row.Scan)
@@ -433,6 +511,9 @@ func (s *Store) FindLatestByType(ctx context.Context, alertID int, status Type) 
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
+	}
+	if s.delta != nil {
+		return s.delta.findLatestByType(ctx, alertID, status)
 	}
 	var e Entry
 	row := s.findAllByType.QueryRowContext(ctx, alertID, status)

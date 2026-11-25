@@ -273,6 +273,9 @@ func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]Alert, error
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.search(ctx, data)
+	}
 	err = s.serviceNameSearch(ctx, data)
 	if err != nil {
 		return nil, err

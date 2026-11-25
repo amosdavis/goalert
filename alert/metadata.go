@@ -24,12 +24,22 @@ type metadataDBFormat struct {
 
 // Metadata returns the metadata for a single alert. If err == nil, meta is guaranteed to be non-nil. If the alert has no metadata, an empty map is returned.
 func (s *Store) Metadata(ctx context.Context, tx txn.Tx, alertID int) (meta map[string]string, err error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err = permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		rows, err := s.delta.findMetadata(ctx, tx, []int{alertID})
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 || rows[0].Metadata == nil {
+			return map[string]string{}, nil
+		}
+		return parseMetadata(rows[0].Metadata)
+	}
+	db := sqltxn.DBTX(s.db, tx)
 	md, err := gadb.New(db).Alert_GetAlertMetadata(ctx, int64(alertID))
 	if errors.Is(err, sql.ErrNoRows) || !md.Valid {
 		return map[string]string{}, nil
@@ -38,8 +48,12 @@ func (s *Store) Metadata(ctx context.Context, tx txn.Tx, alertID int) (meta map[
 		return nil, err
 	}
 
+	return parseMetadata(md.RawMessage)
+}
+
+func parseMetadata(md json.RawMessage) (map[string]string, error) {
 	var doc metadataDBFormat
-	err = json.Unmarshal(md.RawMessage, &doc)
+	err := json.Unmarshal(md, &doc)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +72,6 @@ type MetadataAlertID struct {
 }
 
 func (s Store) FindManyMetadata(ctx context.Context, tx txn.Tx, alertIDs []int) ([]MetadataAlertID, error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
@@ -68,6 +81,22 @@ func (s Store) FindManyMetadata(ctx context.Context, tx txn.Tx, alertIDs []int) 
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		rows, err := s.delta.findMetadata(ctx, tx, alertIDs)
+		if err != nil {
+			return nil, err
+		}
+		res := make([]MetadataAlertID, len(rows))
+		for i, r := range rows {
+			res[i].ID = r.AlertID
+			res[i].Meta, err = parseMetadata(r.Metadata)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return res, nil
+	}
+	db := sqltxn.DBTX(s.db, tx)
 	ids := make([]int64, len(alertIDs))
 	for i, id := range alertIDs {
 		ids[i] = int64(id)
@@ -83,19 +112,14 @@ func (s Store) FindManyMetadata(ctx context.Context, tx txn.Tx, alertIDs []int) 
 
 	res := make([]MetadataAlertID, len(rows))
 	for i, r := range rows {
-		var doc metadataDBFormat
-		err = json.Unmarshal(r.Metadata.RawMessage, &doc)
+		meta, err := parseMetadata(r.Metadata.RawMessage)
 		if err != nil {
 			return nil, err
 		}
 
-		if doc.Type != metaV1 || doc.AlertMetaV1 == nil {
-			return nil, errors.New("unsupported metadata type")
-		}
-
 		res[i] = MetadataAlertID{
 			ID:   r.AlertID,
-			Meta: doc.AlertMetaV1,
+			Meta: meta,
 		}
 	}
 
@@ -103,7 +127,6 @@ func (s Store) FindManyMetadata(ctx context.Context, tx txn.Tx, alertIDs []int) 
 }
 
 func (s Store) SetMetadataTx(ctx context.Context, tx txn.Tx, alertID int, meta map[string]string) error {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Service)
 	if err != nil {
 		return err
@@ -123,6 +146,17 @@ func (s Store) SetMetadataTx(ctx context.Context, tx txn.Tx, alertID int, meta m
 		return err
 	}
 
+	if s.delta != nil {
+		ok, err := s.delta.setMetadata(ctx, tx, alertID, md)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return permission.NewAccessDenied("alert closed, invalid, or wrong service")
+		}
+		return nil
+	}
+	db := sqltxn.DBTX(s.db, tx)
 	rowCount, err := gadb.New(db).Alert_SetAlertMetadata(ctx, gadb.Alert_SetAlertMetadataParams{
 		ID:        int64(alertID),
 		ServiceID: permission.ServiceNullUUID(ctx), // only provide service_id restriction if request is from a service
