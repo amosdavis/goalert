@@ -21,7 +21,8 @@ import (
 var ErrNoState = errors.New("no state available")
 
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaRotations // the Delta backend, if set (delta.go)
 
 	createRotation        *sql.Stmt
 	updateRotation        *sql.Stmt
@@ -145,7 +146,6 @@ func (s *Store) State(ctx context.Context, id string) (*State, error) {
 }
 
 func (s *Store) StateTx(ctx context.Context, tx txn.Tx, id string) (*State, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("RotationID", id)
 	if err != nil {
 		return nil, err
@@ -154,6 +154,10 @@ func (s *Store) StateTx(ctx context.Context, tx txn.Tx, id string) (*State, erro
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.state(ctx, tx, id)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.state
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -175,7 +179,6 @@ func (s *Store) StateTx(ctx context.Context, tx txn.Tx, id string) (*State, erro
 }
 
 func (s *Store) CreateRotationTx(ctx context.Context, tx txn.Tx, r *Rotation) (*Rotation, error) {
-	stx := sqltxn.Unwrap(tx)
 	n, err := r.Normalize()
 	if err != nil {
 		return nil, err
@@ -186,12 +189,19 @@ func (s *Store) CreateRotationTx(ctx context.Context, tx txn.Tx, r *Rotation) (*
 		return nil, err
 	}
 
+	n.ID = uuid.New().String()
+
+	if s.delta != nil {
+		if err := s.delta.create(ctx, tx, n); err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.createRotation
 	if stx != nil {
 		stmt = stx.Stmt(stmt)
 	}
-
-	n.ID = uuid.New().String()
 
 	_, err = stmt.ExecContext(ctx, n.ID, n.Name, n.Description, n.Type, n.Start, n.ShiftLength, n.Start.Location().String())
 	if err != nil {
@@ -201,7 +211,6 @@ func (s *Store) CreateRotationTx(ctx context.Context, tx txn.Tx, r *Rotation) (*
 }
 
 func (s *Store) UpdateRotationTx(ctx context.Context, tx txn.Tx, r *Rotation) error {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("RotationID", r.ID)
 	if err != nil {
 		return err
@@ -216,6 +225,10 @@ func (s *Store) UpdateRotationTx(ctx context.Context, tx txn.Tx, r *Rotation) er
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, n)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.updateRotation
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -235,6 +248,9 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Rotation, error) 
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findMany(ctx, ids)
+	}
 	rows, err := s.findMany.QueryContext(ctx, sqlutil.UUIDArray(ids), permission.UserNullUUID(ctx))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -273,6 +289,9 @@ func (s *Store) FindRotation(ctx context.Context, id string) (*Rotation, error) 
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.find(ctx, nil, id, false)
+	}
 	row := s.findRotation.QueryRowContext(ctx, id, permission.UserNullUUID(ctx))
 	var r Rotation
 	var tz string
@@ -299,6 +318,9 @@ func (s *Store) FindParticipantCount(ctx context.Context, id string) (int, error
 		return -1, err
 	}
 
+	if s.delta != nil {
+		return s.delta.participantCount(ctx, id)
+	}
 	row := s.findPartCount.QueryRowContext(ctx, id)
 	var count int
 	err = row.Scan(&count)
@@ -310,7 +332,6 @@ func (s *Store) FindParticipantCount(ctx context.Context, id string) (int, error
 }
 
 func (s *Store) FindRotationForUpdateTx(ctx context.Context, tx txn.Tx, rotationID string) (*Rotation, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -321,6 +342,10 @@ func (s *Store) FindRotationForUpdateTx(ctx context.Context, tx txn.Tx, rotation
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.find(ctx, tx, rotationID, true)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findRotationForUpdate
 	if stx != nil {
 		_, err = stx.StmtContext(ctx, s.lockPart).ExecContext(ctx)
@@ -347,7 +372,6 @@ func (s *Store) FindRotationForUpdateTx(ctx context.Context, tx txn.Tx, rotation
 }
 
 func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -357,6 +381,10 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.deleteMany(ctx, tx, ids)
+	}
+	stx := sqltxn.Unwrap(tx)
 	return s.withTxLock(ctx, stx, func(tx *sql.Tx) error {
 		_, err := tx.StmtContext(ctx, s.deleteRotation).ExecContext(ctx, sqlutil.UUIDArray(ids))
 		return err
@@ -364,7 +392,6 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error
 }
 
 func (s *Store) FindAllParticipantsTx(ctx context.Context, tx txn.Tx, rotationID string) ([]Participant, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("RotationID", rotationID)
 	if err != nil {
 		return nil, err
@@ -374,6 +401,10 @@ func (s *Store) FindAllParticipantsTx(ctx context.Context, tx txn.Tx, rotationID
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllParticipants(ctx, tx, rotationID)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findAllParticipants
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -436,7 +467,6 @@ func (s *Store) withTxLock(ctx context.Context, tx txn.Tx, f func(*sql.Tx) error
 }
 
 func (s *Store) SetActiveIndexTx(ctx context.Context, tx txn.Tx, rotID string, position int) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -449,6 +479,10 @@ func (s *Store) SetActiveIndexTx(ctx context.Context, tx txn.Tx, rotID string, p
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.setActiveIndex(ctx, tx, rotID, position)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.setActiveIndex
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -475,6 +509,9 @@ func (s *Store) FindParticipant(ctx context.Context, id string) (*Participant, e
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findParticipant(ctx, id)
+	}
 	row := s.findParticipant.QueryRowContext(ctx, id)
 	var p Participant
 	p.ID = id
@@ -488,7 +525,6 @@ func (s *Store) FindParticipant(ctx context.Context, id string) (*Participant, e
 }
 
 func (s *Store) AddRotationUsersTx(ctx context.Context, tx txn.Tx, rotationID string, userIDs []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -499,6 +535,10 @@ func (s *Store) AddRotationUsersTx(ctx context.Context, tx txn.Tx, rotationID st
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.addUsers(ctx, tx, rotationID, userIDs)
+	}
+	stx := sqltxn.Unwrap(tx)
 	err = s.withTxLock(ctx, stx, func(tx *sql.Tx) error {
 		stmt := tx.StmtContext(ctx, s.addParticipant)
 		for _, userID := range userIDs {
@@ -515,7 +555,6 @@ func (s *Store) AddRotationUsersTx(ctx context.Context, tx txn.Tx, rotationID st
 }
 
 func (s *Store) DeleteRotationParticipantsTx(ctx context.Context, tx txn.Tx, partIDs []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -526,6 +565,10 @@ func (s *Store) DeleteRotationParticipantsTx(ctx context.Context, tx txn.Tx, par
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.deleteParticipants(ctx, tx, partIDs)
+	}
+	stx := sqltxn.Unwrap(tx)
 	return s.withTxLock(ctx, stx, func(tx *sql.Tx) error {
 		_, err := tx.StmtContext(ctx, s.deleteParticipants).ExecContext(ctx, sqlutil.UUIDArray(partIDs))
 		return err
@@ -533,7 +576,6 @@ func (s *Store) DeleteRotationParticipantsTx(ctx context.Context, tx txn.Tx, par
 }
 
 func (s *Store) UpdateParticipantUserIDTx(ctx context.Context, tx txn.Tx, partID, userID string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -547,6 +589,10 @@ func (s *Store) UpdateParticipantUserIDTx(ctx context.Context, tx txn.Tx, partID
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.updateParticipantUserID(ctx, tx, partID, userID)
+	}
+	stx := sqltxn.Unwrap(tx)
 	return s.withTxLock(ctx, stx, func(tx *sql.Tx) error {
 		_, err := tx.StmtContext(ctx, s.updateParticipantUserID).ExecContext(ctx, partID, userID)
 		return err
@@ -554,7 +600,6 @@ func (s *Store) UpdateParticipantUserIDTx(ctx context.Context, tx txn.Tx, partID
 }
 
 func (s *Store) DeleteStateTx(ctx context.Context, tx txn.Tx, rotationID string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -564,6 +609,10 @@ func (s *Store) DeleteStateTx(ctx context.Context, tx txn.Tx, rotationID string)
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.deleteState(ctx, tx, rotationID)
+	}
+	stx := sqltxn.Unwrap(tx)
 	return s.withTxLock(ctx, stx, func(tx *sql.Tx) error {
 		_, err := tx.StmtContext(ctx, s.rmState).ExecContext(ctx, rotationID)
 		return err

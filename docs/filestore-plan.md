@@ -448,3 +448,8 @@ holder while it is sending.
   monitors need a short group delay; and a new key or token can be refused by a
   pod that has not caught up (F29), so a miss should be retried at the latest
   version.
+- 2026-11-25: Phase 3: schedules, schedule rules, the on-call tables, rotations
+  and overrides. Deleting a user keeps the right participant on call (F5). Open
+  for phase 4: a commit's time can equal the previous one's when another pod's
+  clock was ahead (F13), so ending a shift at its exact start would break
+  `schedule_on_call_users_check` until the clock passes it.

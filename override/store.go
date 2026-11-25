@@ -19,7 +19,8 @@ import (
 
 // Store is used to manage active overrides.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaOverrides // the Delta backend, if set (delta.go)
 
 	findUO    *sql.Stmt
 	createUO  *sql.Stmt
@@ -134,7 +135,6 @@ func (s *Store) execContext(ctx context.Context, tx txn.Tx, stmt *sql.Stmt, args
 }
 
 func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx txn.Tx, id string, forUpdate bool) (*UserOverride, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -144,6 +144,10 @@ func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx txn.Tx, id string,
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOne(ctx, tx, id)
+	}
+	stx := sqltxn.Unwrap(tx)
 	var o UserOverride
 	var add, rem, schedTgt sql.NullString
 	err = s.withTx(ctx, stx, func(tx *sql.Tx) error {
@@ -173,7 +177,6 @@ func (s *Store) FindOneUserOverrideTx(ctx context.Context, tx txn.Tx, id string,
 
 // UpdateUserOverrideTx updates an existing UserOverride, inside an optional transaction.
 func (s *Store) UpdateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOverride) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -189,6 +192,10 @@ func (s *Store) UpdateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOver
 	if !n.End.After(time.Now()) {
 		return validation.NewFieldError("End", "must be in the future")
 	}
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, n)
+	}
+	stx := sqltxn.Unwrap(tx)
 	var add, rem sql.NullString
 	if n.AddUserID != "" {
 		add.Valid = true
@@ -213,7 +220,6 @@ func (s *Store) UpdateUserOverride(ctx context.Context, o *UserOverride) error {
 
 // CreateUserOverrideTx adds a UserOverride to the DB with a new ID.
 func (s *Store) CreateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOverride) (*UserOverride, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -226,6 +232,13 @@ func (s *Store) CreateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOver
 		return nil, validation.NewFieldError("End", "must be in the future")
 	}
 	n.ID = uuid.New().String()
+	if s.delta != nil {
+		if err := s.delta.create(ctx, tx, n); err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+	stx := sqltxn.Unwrap(tx)
 	var add, rem sql.NullString
 	if n.AddUserID != "" {
 		add.Valid = true
@@ -250,7 +263,6 @@ func (s *Store) CreateUserOverrideTx(ctx context.Context, tx txn.Tx, o *UserOver
 
 // DeleteUserOverride removes a UserOverride from the DB matching the given ID.
 func (s *Store) DeleteUserOverrideTx(ctx context.Context, tx txn.Tx, ids ...string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -263,6 +275,10 @@ func (s *Store) DeleteUserOverrideTx(ctx context.Context, tx txn.Tx, ids ...stri
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.delete(ctx, tx, ids)
+	}
+	stx := sqltxn.Unwrap(tx)
 	return s.execContext(ctx, stx, s.deleteUO, sqlutil.UUIDArray(ids))
 }
 
@@ -280,6 +296,9 @@ func (s *Store) FindAllUserOverrides(ctx context.Context, start, end time.Time, 
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAll(ctx, start, end, t)
+	}
 	var schedTgt sql.NullString
 	if t.TargetType() == assignment.TargetTypeSchedule {
 		schedTgt.Valid = true

@@ -253,7 +253,8 @@ Unique:
 - ep_step_on_call_users_uniq_id: `(id)`
 - idx_ep_step_on_call (index): `(user_id, ep_step_id) WHERE (end_time IS NULL)`
 
-**Go:** not ported yet.
+**Go:** defined, `oncall/delta.go`, which reads it. The engine, which writes it, is a
+later phase.
 
 ### escalation_policies
 
@@ -679,7 +680,14 @@ Unique:
 - rotation_participants_rotation_id_position_key (index): `(rotation_id, "position")`
 - rotation_participants_rotation_id_position_key: `(rotation_id, "position") DEFERRABLE INITIALLY DEFERRED`
 
-**Go:** not ported yet.
+**Go:** ported, `schedule/rotation/delta.go`. The insert triggers are in
+`addParticipant`, the delete triggers in `deleteParticipant`, the reorder
+trigger in `updateParticipant`, the no-gap rule, which Postgres checks at
+commit, in `checkNoGaps` at the end of each change, and
+`trg_track_rotation_part_updates` is the `ChangedFunc` hook. The user foreign
+key restricts here, because a cascade would run none of that (F5): the user
+store calls `RemoveUserDelta` first. The SQL functions
+`move_rotation_position` and `remove_rotation_participant` have no callers.
 
 ### rotation_state
 
@@ -699,7 +707,9 @@ Unique:
 - rotation_state_uniq_id (index): `(id)`
 - rotation_state_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `schedule/rotation/delta.go`. `trg_set_rot_state_pos_on_active_change`
+is `setActive`, and `trg_track_rotation_state_updates` is the `ChangedFunc`
+hook.
 
 ### rotations
 
@@ -718,7 +728,8 @@ Unique:
 - rotations_name_unique: `(name)`
 - rotations_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `schedule/rotation/delta.go`. `trg_track_rotation_updates` calls the
+`ChangedFunc` hook, whose job is a later phase.
 
 ### schedule_data
 
@@ -732,7 +743,8 @@ Unique:
 - schedule_data_id_key: `(id)`
 - schedule_data_pkey (index): `(schedule_id)`
 
-**Go:** not ported yet.
+**Go:** ported, `schedule/delta.go`. The JSON document is read and written in one
+transaction, and fields that `Data` does not have are kept.
 
 ### schedule_on_call_users
 
@@ -751,7 +763,9 @@ Unique:
 - schedule_on_call_users_uniq_id (index): `(id)`
 - schedule_on_call_users_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** defined, `oncall/delta.go`, which reads it. The check is in
+`PutScheduleOnCall`: writing the table directly bypasses it. The engine, which
+writes it, is a later phase.
 
 ### schedule_rules
 
@@ -774,7 +788,8 @@ Unique:
 
 - schedule_rules_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `schedule/rule/delta.go`. Both limit triggers run on insert, as on
+Postgres. Times of day are "HH:MM:SS" text.
 
 ### schedules
 
@@ -785,7 +800,7 @@ Unique:
 - schedules_name_key: `(name)`
 - schedules_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `schedule/delta.go` and `schedule/deltasearch.go`.
 
 ### services
 
@@ -1005,7 +1020,10 @@ Unique:
 
 - user_overrides_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `override/delta.go`. The conflict rule and the limit are in
+`checkConflict` and `checkLimit`. If another pod commits a conflicting override
+first, the transaction runs again and finds it, which replaces the table lock
+(F4).
 
 ### user_slack_data
 

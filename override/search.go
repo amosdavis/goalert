@@ -40,7 +40,6 @@ type SearchCursor struct {
 }
 
 func (s *Store) Search(ctx context.Context, tx txn.Tx, opts *SearchOptions) ([]UserOverride, error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
@@ -91,7 +90,10 @@ func (s *Store) Search(ctx context.Context, tx txn.Tx, opts *SearchOptions) ([]U
 		arg.AfterID = uuid.NullUUID{UUID: id, Valid: true}
 	}
 
-	rows, err := gadb.New(db).OverrideSearch(ctx, arg)
+	if s.delta != nil {
+		return s.delta.search(ctx, tx, arg, opts.Limit)
+	}
+	rows, err := gadb.New(sqltxn.DBTX(s.db, tx)).OverrideSearch(ctx, arg)
 	if err != nil {
 		return nil, err
 	}
