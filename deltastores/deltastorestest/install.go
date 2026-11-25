@@ -48,6 +48,8 @@ type Install struct {
 
 	// Options are the pods'. The clock is the install's.
 	Options filestore.DeltaOptions
+	// Wrap, if set, is what a pod sees of the store.
+	Wrap func(objstore.Store) objstore.Store
 
 	pods int
 }
@@ -75,7 +77,11 @@ func (in *Install) options() filestore.DeltaOptions {
 
 // Backend is the table's storage, as a pod sees it.
 func (in *Install) Backend(writer string) *storagebackend.Backend {
-	return &storagebackend.Backend{Store: in.Store, Log: deltalog.New(in.Store, writer)}
+	store := objstore.Store(in.Store)
+	if in.Wrap != nil {
+		store = in.Wrap(store)
+	}
+	return &storagebackend.Backend{Store: store, Log: deltalog.New(store, writer)}
 }
 
 // Pod is a pod's stores.
