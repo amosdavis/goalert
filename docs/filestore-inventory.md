@@ -237,7 +237,9 @@ Unique:
 
 - engine_processing_versions_pkey (index): `(type_id)`
 
-**Go:** not ported yet.
+**Go:** gone: `engine/enginetables` has `engine_state` for what a module remembers.
+The versions that kept pods of different releases apart are GoAlert's format
+version (F30).
 
 ### entity_updates
 
@@ -245,7 +247,7 @@ Unique:
 
 - entity_updates_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** gone: only a migration used it.
 
 ### ep_step_on_call_users
 
@@ -371,7 +373,7 @@ Unique:
 
 - gorp_migrations_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** gone with the migrations (F24).
 
 ### gql_api_key_usage
 
@@ -524,9 +526,8 @@ Unique:
 
 - notification_policy_cycles_pkey (index): `(id)`
 
-**Go:** ported, `engine/enginetables/tables.go`, with `InsertCycle`. The engine's
-lease and module state use the new `engine_lease` and `engine_state` tables;
-`engine_processing_versions` is superseded by `engine_state`.
+**Go:** ported, `engine/enginetables/tables.go`, with `InsertCycle`. The columns
+`checked` and `repeat_count`, which nothing used, are gone.
 
 ### outgoing_messages
 
@@ -601,7 +602,7 @@ Unique:
 - region_ids_id_key: `(id)`
 - region_ids_pkey (index): `(name)`
 
-**Go:** not ported yet.
+**Go:** gone: nothing used a region but to give messages to it.
 
 ### river_client
 
@@ -613,7 +614,7 @@ Unique:
 
 - river_client_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** gone with River (F52).
 
 ### river_client_queue
 
@@ -633,7 +634,7 @@ Unique:
 - river_client_queue_id_key: `(id)`
 - river_client_queue_pkey (index): `(river_client_id, name)`
 
-**Go:** not ported yet.
+**Go:** gone with River (F52).
 
 ### river_job
 
@@ -650,7 +651,8 @@ Unique:
 - river_job_pkey (index): `(id)`
 - river_job_unique_idx (index): `(unique_key) WHERE ((unique_key IS NOT NULL) AND (unique_states IS NOT NULL) AND river_job_state_in_bitmask(unique_states, state))`
 
-**Go:** not ported yet.
+**Go:** gone with River (F52): what needs to be done is found in the rows that say
+so, every cycle.
 
 ### river_leader
 
@@ -665,7 +667,7 @@ Unique:
 - river_leader_id_key: `(id)`
 - river_leader_pkey (index): `(name)`
 
-**Go:** not ported yet.
+**Go:** gone with River: the engine's lease is `engine_lease`.
 
 ### river_queue
 
@@ -675,7 +677,7 @@ Unique:
 - river_queue_id_key: `(id)`
 - river_queue_pkey (index): `(name)`
 
-**Go:** not ported yet.
+**Go:** gone with River (F52).
 
 ### rotation_participants
 
@@ -854,7 +856,7 @@ Unique:
 
 - switchover_log_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** gone with switchover (F24).
 
 ### switchover_state
 
@@ -866,7 +868,7 @@ Unique:
 
 - switchover_state_pkey (index): `(ok)`
 
-**Go:** not ported yet.
+**Go:** gone with switchover (F24).
 
 ### twilio_sms_callbacks
 
