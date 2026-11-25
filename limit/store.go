@@ -14,6 +14,8 @@ import (
 
 // A Store allows getting and setting system limits.
 type Store struct {
+	delta *deltaLimits // set when the store runs on the Delta backend
+
 	update   *sql.Stmt
 	findAll  *sql.Stmt
 	findOne  *sql.Stmt
@@ -40,11 +42,14 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 
 // UpdateLimitsTx updates all configurable limits.
 func (s *Store) UpdateLimitsTx(ctx context.Context, tx txn.Tx, id string, max int) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, id, max)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.update
 	if stx != nil {
 		stmt = stx.Stmt(stmt)
@@ -62,6 +67,9 @@ func (s *Store) ResetAll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.resetAll(ctx)
+	}
 	_, err = s.resetAll.ExecContext(ctx)
 	return err
 }
@@ -75,6 +83,9 @@ func (s *Store) Max(ctx context.Context, id ID) (int, error) {
 	err = id.Valid()
 	if err != nil {
 		return 0, err
+	}
+	if s.delta != nil {
+		return s.delta.max(ctx, id)
 	}
 	var max int
 	err = s.findOne.QueryRowContext(ctx, id).Scan(&max)
@@ -92,6 +103,9 @@ func (s *Store) All(ctx context.Context) (Limits, error) {
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return nil, err
+	}
+	if s.delta != nil {
+		return s.delta.all(ctx)
 	}
 	rows, err := s.findAll.QueryContext(ctx)
 	if err != nil {
@@ -120,6 +134,9 @@ func (s *Store) SetMax(ctx context.Context, id ID, max int) error {
 	err = validate.Many(id.Valid(), validate.Range("Max", max, -1, 9000))
 	if err != nil {
 		return err
+	}
+	if s.delta != nil {
+		return s.delta.set(ctx, id, max)
 	}
 
 	_, err = s.setOne.ExecContext(ctx, id, max)

@@ -17,6 +17,8 @@ import (
 )
 
 type Store struct {
+	delta *deltaChannels // set when the store runs on the Delta backend
+
 	db  *sql.DB
 	reg *nfydest.Registry
 }
@@ -41,6 +43,10 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Channel, error) {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findMany(ctx, uuids)
+	}
+
 	rows, err := gadb.New(s.db).NotifChanFindMany(ctx, uuids)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -58,11 +64,14 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Channel, error) {
 }
 
 func (s *Store) FindDestByID(ctx context.Context, tx txn.Tx, id uuid.UUID) (gadb.DestV1, error) {
-	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return gadb.DestV1{}, err
 	}
+	if s.delta != nil {
+		return s.delta.findDest(ctx, tx, id)
+	}
+	dbtx := sqltxn.DBTX(s.db, tx)
 
 	row, err := gadb.New(dbtx).NotifChanFindOne(ctx, id)
 	if err != nil {
@@ -73,26 +82,65 @@ func (s *Store) FindDestByID(ctx context.Context, tx txn.Tx, id uuid.UUID) (gadb
 }
 
 func (s *Store) LookupDestID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return uuid.UUID{}, err
 	}
+	if s.delta != nil {
+		return s.delta.lookupDestID(ctx, tx, d)
+	}
+	stx := sqltxn.Unwrap(tx)
 
 	return gadb.New(stx).NotifChanFindDestID(ctx, gadb.NullDestV1{Valid: true, DestV1: d})
 }
 
+// ResolveDests validates destinations and looks up their names, which can call
+// a provider's API, such as Slack's. A caller that uses MapDestToID in a
+// transaction resolves the destinations before it starts, and runs it with the
+// returned context.
+//
+// On Postgres, MapDestToID does this itself, and the context is returned
+// unchanged.
+func (s *Store) ResolveDests(ctx context.Context, dests ...gadb.DestV1) (context.Context, error) {
+	err := permission.LimitCheckAny(ctx, permission.User)
+	if err != nil {
+		return ctx, err
+	}
+	if s.delta == nil {
+		return ctx, nil
+	}
+
+	return s.delta.resolveDests(ctx, dests)
+}
+
+// destName validates d and returns its display name.
+func destName(ctx context.Context, reg *nfydest.Registry, d gadb.DestV1) (string, error) {
+	err := reg.ValidateDest(ctx, d)
+	if err != nil {
+		return "", err
+	}
+	info, err := reg.DisplayInfo(ctx, d)
+	if err != nil {
+		return "", err
+	}
+
+	return info.Text, nil
+}
+
+// MapDestToID returns the ID of the channel with the given destination, adding
+// it if there is none, and updates its name. On the Delta backend, a
+// destination mapped in a transaction must be resolved with ResolveDests
+// first.
 func (s *Store) MapDestToID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error) {
-	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return uuid.UUID{}, err
 	}
-	err = s.reg.ValidateDest(ctx, d)
-	if err != nil {
-		return uuid.UUID{}, err
+	if s.delta != nil {
+		return s.delta.mapDestToID(ctx, tx, d)
 	}
-	info, err := s.reg.DisplayInfo(ctx, d)
+	dbtx := sqltxn.DBTX(s.db, tx)
+	name, err := destName(ctx, s.reg, d)
 	if err != nil {
 		return uuid.UUID{}, err
 	}
@@ -100,12 +148,11 @@ func (s *Store) MapDestToID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid
 	return gadb.New(dbtx).NotifChanUpsertDest(ctx, gadb.NotifChanUpsertDestParams{
 		ID:   uuid.New(),
 		Dest: gadb.NullDestV1{Valid: true, DestV1: d},
-		Name: info.Text,
+		Name: name,
 	})
 }
 
 func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return err
@@ -115,6 +162,10 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.deleteMany(ctx, tx, uuids)
+	}
+	stx := sqltxn.Unwrap(tx)
 
 	db := gadb.New(s.db)
 	if stx != nil {
@@ -128,6 +179,10 @@ func (s *Store) FindOne(ctx context.Context, id uuid.UUID) (*Channel, error) {
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.delta != nil {
+		return s.delta.findOne(ctx, id)
 	}
 
 	var c Channel
