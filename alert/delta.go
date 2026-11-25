@@ -690,15 +690,21 @@ func (d *deltaAlerts) updateStatusByService(ctx context.Context, serviceID strin
 	})
 }
 
+// DeltaCloseMany closes alerts in a transaction, if they are not, and logs it.
+func (s *Store) DeltaCloseMany(ctx context.Context, tx txn.Tx, alertIDs []int, logMeta any) error {
+	_, err := s.delta.updateMany(ctx, tx, StatusClosed, alertIDs, alertlog.TypeClosed, logMeta)
+	return err
+}
+
 // updateMany returns the IDs of the alerts it changed, lowest first. Those
 // include alerts that were acknowledged again on a multi-ack step, as in
 // updateStatusByService.
-func (d *deltaAlerts) updateMany(ctx context.Context, status Status, alertIDs []int, t alertlog.Type, logMeta any) ([]int, error) {
+func (d *deltaAlerts) updateMany(ctx context.Context, tx txn.Tx, status Status, alertIDs []int, t alertlog.Type, logMeta any) ([]int, error) {
 	if d.MultiAck == nil {
 		return nil, deltatxn.ErrNotPorted
 	}
 	var updated []int
-	err := d.run(ctx, nil, func(tx txn.Tx, s deltatxn.Scope) error {
+	err := d.run(ctx, tx, func(tx txn.Tx, s deltatxn.Scope) error {
 		updated = nil
 		for _, id := range sortedIDs(alertIDs) {
 			a, ok := d.get(s.Reader, id)

@@ -429,7 +429,7 @@ func (s *Store) UpdateManyAlertStatus(ctx context.Context, status Status, alertI
 	}
 
 	if s.delta != nil {
-		return s.delta.updateMany(ctx, status, alertIDs, t, logMeta)
+		return s.delta.updateMany(ctx, nil, status, alertIDs, t, logMeta)
 	}
 	ids := make([]int64, len(alertIDs))
 	for i, id := range alertIDs {

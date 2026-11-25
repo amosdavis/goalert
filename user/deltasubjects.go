@@ -107,6 +107,37 @@ func (t *DeltaTables) SetAuthSubject(tx *filestore.Tx, a AuthSubject) error {
 	return t.AuthSubjects.Put(tx, row)
 }
 
+// EachWithoutMethod calls fn, in r, for each auth subject without a contact
+// method (cm_id) of the providers whose ids have a prefix, which must not have
+// characters that keys escape, until it returns false.
+func (t *DeltaTables) EachWithoutMethod(r filestore.Reader, providerPrefix string, fn func(a AuthSubject) bool) {
+	t.AuthSubjects.AscendFrom(r, providerPrefix, func(row authSubjectRow) bool {
+		if !strings.HasPrefix(row.ProviderID, providerPrefix) {
+			return false
+		}
+		return row.CMID != nil || fn(row.subject())
+	})
+}
+
+// SetAuthSubjectContactMethod adds an auth subject, or updates its user and
+// contact method (cm_id), as the engine's compatibility manager does.
+func (t *DeltaTables) SetAuthSubjectContactMethod(tx *filestore.Tx, a AuthSubject, cmID string) error {
+	userID, err := userKey(a.UserID)
+	if err != nil {
+		return err
+	}
+	row, ok := t.AuthSubjects.Get(tx, AuthSubjectKey(a.ProviderID, a.SubjectID))
+	if !ok {
+		id, err := tx.NextID("auth_subjects_id_seq")
+		if err != nil {
+			return err
+		}
+		return t.AuthSubjects.Insert(tx, authSubjectRow{ID: id, ProviderID: a.ProviderID, SubjectID: a.SubjectID, UserID: userID, CMID: &cmID}, "auth_subjects_pkey")
+	}
+	row.UserID, row.CMID = userID, &cmID
+	return t.AuthSubjects.Put(tx, row)
+}
+
 func (d *deltaUsers) setAuthSubject(ctx context.Context, a AuthSubject) error {
 	return deltatxn.Write(ctx, d.db, nil, func(s deltatxn.Scope) error {
 		return d.SetAuthSubject(s.Tx, a)

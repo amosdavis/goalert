@@ -163,6 +163,7 @@ type DeltaTables struct {
 	Methods *filestore.Table[Row]
 	ByUser  *filestore.Index[Row] // by user_id
 
+	byType      *filestore.Index[Row]
 	byDestArgs  *filestore.Index[Row]
 	byTypeValue *filestore.Unique[Row]
 	byDest      *filestore.Unique[Row]
@@ -173,6 +174,7 @@ type DeltaTables struct {
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{Methods: filestore.NewTable(s, "user_contact_methods", func(r Row) string { return r.ID })}
 	t.ByUser = t.Methods.Index("idx_contact_method_users", func(r Row) []string { return []string{r.UserID} })
+	t.byType = t.Methods.Index("user_contact_methods_type", func(r Row) []string { return []string{r.Type} })
 	t.byDestArgs = t.Methods.Index("user_contact_methods_dest_args", func(r Row) []string {
 		d, err := r.DestV1()
 		if err != nil {
@@ -287,6 +289,12 @@ func (t *DeltaTables) FindByDest(r filestore.Reader, dest gadb.DestV1) (Row, boo
 // FindByTypeValue returns, in r, the contact method with a type and value.
 func (t *DeltaTables) FindByTypeValue(r filestore.Reader, typ, value string) (Row, bool) {
 	return t.byTypeValue.Get(r, typeValueKey(typ, value))
+}
+
+// EachOfType calls fn, in r, for each contact method of a type, until it returns
+// false.
+func (t *DeltaTables) EachOfType(r filestore.Reader, typ string, fn func(Row) bool) {
+	t.byType.Ascend(r, typ, fn)
 }
 
 // FindByDestArgs returns, in r, the contact methods whose destination has
