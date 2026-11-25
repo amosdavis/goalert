@@ -29,12 +29,14 @@ func (app *App) _Run(ctx context.Context) error {
 		}
 	}()
 
-	err := app.RiverUI.Start(ctx)
-	if err != nil {
-		app.Logger.ErrorContext(ctx, "Failed to start River UI.", slog.Any("error", err))
-	}
+	if app.storage == nil {
+		err := app.RiverUI.Start(ctx)
+		if err != nil {
+			app.Logger.ErrorContext(ctx, "Failed to start River UI.", slog.Any("error", err))
+		}
 
-	go app.events.Run(ctx)
+		go app.events.Run(ctx)
+	}
 
 	if app.sysAPISrv != nil {
 		app.Logger.InfoContext(ctx, "System API server started.",
@@ -61,7 +63,7 @@ func (app *App) _Run(ctx context.Context) error {
 		slog.String("address", app.l.Addr().String()),
 		slog.String("url", app.ConfigStore.Config().PublicURL()),
 	)
-	err = app.srv.Serve(app.l)
+	err := app.srv.Serve(app.l)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return errors.Wrap(err, "serve HTTP")
 	}

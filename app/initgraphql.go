@@ -4,12 +4,18 @@ import (
 	"context"
 
 	"github.com/target/goalert/graphql2/graphqlapp"
+	"github.com/target/goalert/keyring"
+	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/sqltxn"
 )
 
 func (app *App) initGraphQL(ctx context.Context) error {
+	var db txn.DB = sqltxn.DB{DB: app.db}
+	if app.storage != nil {
+		db = app.stores.DB
+	}
 	app.graphql2 = &graphqlapp.App{
-		DB:                  sqltxn.DB{DB: app.db},
+		DB:                  db,
 		AuthBasicStore:      app.AuthBasicStore,
 		UserStore:           app.UserStore,
 		CMStore:             app.ContactMethodStore,
@@ -43,7 +49,12 @@ func (app *App) initGraphQL(ctx context.Context) error {
 		SWO:                 app.cfg.SWO,
 		APIKeyStore:         app.APIKeyStore,
 		DestReg:             app.DestRegistry,
-		EncryptionKeys:      app.cfg.EncryptionKeys,
+		ReEncryptAll: func(ctx context.Context) error {
+			if app.storage != nil {
+				return app.storage.Tables.ReEncryptAll(ctx, db, app.cfg.EncryptionKeys)
+			}
+			return keyring.ReEncryptAll(ctx, db, app.cfg.EncryptionKeys)
+		},
 	}
 
 	return nil

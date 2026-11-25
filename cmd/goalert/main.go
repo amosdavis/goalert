@@ -6,6 +6,7 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/target/goalert/app"
+	_ "github.com/target/goalert/storagebackend/all"
 	"github.com/target/goalert/util/log"
 )
 

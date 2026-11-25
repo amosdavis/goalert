@@ -1,12 +1,14 @@
 package app
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/app/lifecycle"
 	"github.com/target/goalert/util/errutil"
+	"github.com/target/goalert/util/log"
 )
 
 func (app *App) healthCheck(w http.ResponseWriter, req *http.Request) {
@@ -16,6 +18,12 @@ func (app *App) healthCheck(w http.ResponseWriter, req *http.Request) {
 	}
 	if app.mgr.Status() == lifecycle.StatusStarting {
 		http.Error(w, "server starting", http.StatusInternalServerError)
+		return
+	}
+
+	if err := app.Health(); err != nil {
+		log.Log(req.Context(), fmt.Errorf("health check: %w", err))
+		http.Error(w, "not healthy", http.StatusInternalServerError)
 		return
 	}
 

@@ -17,7 +17,11 @@ func (app *App) initTwilio(ctx context.Context) error {
 	}
 
 	var err error
-	app.twilioSMS, err = twilio.NewSMS(ctx, app.db, app.twilioConfig)
+	if app.storage != nil {
+		app.twilioSMS = app.stores.NewTwilioSMS(app.twilioConfig)
+	} else {
+		app.twilioSMS, err = twilio.NewSMS(ctx, app.db, app.twilioConfig)
+	}
 	if err != nil {
 		return errors.Wrap(err, "init TwilioSMS")
 	}

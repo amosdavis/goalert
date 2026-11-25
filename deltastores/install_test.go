@@ -17,6 +17,7 @@ import (
 	"github.com/target/goalert/deltastores/deltastorestest"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/heartbeat"
+	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
 	"github.com/target/goalert/objstore"
@@ -157,4 +158,22 @@ func TestStores(t *testing.T) {
 	u, err := url.Parse(b.Config.Config().PublicURL())
 	require.NoError(t, err)
 	assert.Equal(t, "localhost", u.Host)
+}
+
+// TestReEncryptAll checks that a new key replaces the old one, all at once.
+func TestReEncryptAll(t *testing.T) {
+	in := deltastorestest.New(t)
+	p := in.Pod(t)
+	require.NoError(t, p.Config.SetConfig(p.Ctx(), p.Config.Config()))
+	newKeys := keyring.Keys{[]byte("new"), []byte("key")}
+	require.True(t, permission.IsPermissionError(p.Tables.ReEncryptAll(context.Background(), p.DB, newKeys)))
+	require.Error(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, nil))
+	before := p.Delta.View().Index()
+	require.Error(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, keyring.Keys{[]byte("wrong")}))
+	assert.Equal(t, before, p.Delta.View().Index())
+	require.NoError(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, newKeys))
+	assert.Equal(t, before+1, p.Delta.View().Index())
+	// The old key alone does not do any more, and the new one does.
+	require.Error(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, keyring.Keys{[]byte("key")}))
+	require.NoError(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, keyring.Keys{[]byte("new")}))
 }

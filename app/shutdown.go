@@ -17,7 +17,9 @@ func (app *App) Shutdown(ctx context.Context) error {
 
 func (app *App) _Shutdown(ctx context.Context) error {
 	defer close(app.doneCh)
-	defer app.db.Close()
+	if app.db != nil {
+		defer app.db.Close()
+	}
 	var errs []error
 	if app.hSrv != nil {
 		app.hSrv.Shutdown()
@@ -30,7 +32,7 @@ func (app *App) _Shutdown(ctx context.Context) error {
 			return
 		}
 		t := reflect.TypeOf(sh)
-		if reflect.ValueOf(sh) == reflect.Zero(t) {
+		if t.Kind() == reflect.Pointer && reflect.ValueOf(sh) == reflect.Zero(t) {
 			// check for nil pointer
 			return
 		}
@@ -64,6 +66,16 @@ func (app *App) _Shutdown(ctx context.Context) error {
 		// The engine stops River, the pool's only user.
 		app.riverTimePool.Close()
 	}
+	if app.storage != nil {
+		// Both write what they have not written yet.
+		shut(app.AuthHandler, "auth handler")
+		if app.stores != nil {
+			shut(shutdownFunc(app.stores.Close), "stores")
+		}
+		shut(shutdownFunc(func(context.Context) error { return app.storage.Close() }), "storage")
+		return shutdownErr(errs)
+	}
+
 	shut(app.events, "event listener")
 	shut(app.SessionKeyring, "session keyring")
 	shut(app.OAuthKeyring, "oauth keyring")
@@ -77,6 +89,14 @@ func (app *App) _Shutdown(ctx context.Context) error {
 		errs = append(errs, errors.Wrap(err, "close database"))
 	}
 
+	return shutdownErr(errs)
+}
+
+type shutdownFunc func(context.Context) error
+
+func (fn shutdownFunc) Shutdown(ctx context.Context) error { return fn(ctx) }
+
+func shutdownErr(errs []error) error {
 	if len(errs) == 1 {
 		return errs[0]
 	}

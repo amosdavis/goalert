@@ -11,6 +11,10 @@ import (
 )
 
 func (app *App) initEngine(ctx context.Context) error {
+	if app.storage != nil {
+		return app.initStorageEngine(ctx)
+	}
+
 	var regionIndex int
 	err := app.db.QueryRowContext(ctx, `SELECT id FROM region_ids WHERE name = $1`, app.cfg.RegionName).Scan(&regionIndex)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -28,7 +32,18 @@ func (app *App) initEngine(ctx context.Context) error {
 		return errors.Wrap(err, "get region index")
 	}
 	app.notificationManager = notification.NewManager(app.DestRegistry)
-	app.Engine, err = engine.NewEngine(ctx, app.db, &engine.Config{
+	cfg := app.engineConfig()
+	cfg.River, cfg.RiverDBSQL, cfg.RiverWorkers = app.River, app.RiverDBSQL, app.RiverWorkers
+	app.Engine, err = engine.NewEngine(ctx, app.db, cfg)
+	if err != nil {
+		return errors.Wrap(err, "init engine")
+	}
+
+	return nil
+}
+
+func (app *App) engineConfig() *engine.Config {
+	return &engine.Config{
 		AlertStore:          app.AlertStore,
 		AlertLogStore:       app.AlertLogStore,
 		ContactMethodStore:  app.ContactMethodStore,
@@ -50,14 +65,6 @@ func (app *App) initEngine(ctx context.Context) error {
 
 		DisableCycle: app.cfg.APIOnly,
 		LogCycles:    app.cfg.LogEngine,
-		River:        app.River,
-		RiverDBSQL:   app.RiverDBSQL,
-		RiverWorkers: app.RiverWorkers,
 		Logger:       app.Logger,
-	})
-	if err != nil {
-		return errors.Wrap(err, "init engine")
 	}
-
-	return nil
 }

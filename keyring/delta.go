@@ -3,6 +3,7 @@ package keyring
 import (
 	"context"
 	"crypto/ecdsa"
+	"fmt"
 	"time"
 
 	"github.com/pkg/errors"
@@ -44,6 +45,38 @@ func NewDeltaDB(ctx context.Context, logger *log.Logger, db txn.DB, tables *Delt
 	}
 	d.txdb, d.delta = db, tables
 	return d.start(ctx)
+}
+
+// ReEncrypt encrypts the secrets of every keyring with the first of keys. The
+// others can decrypt them too.
+func (t *DeltaTables) ReEncrypt(tx *filestore.Tx, keys Keys) error {
+	var rows []keyringRow
+	t.keyrings.Ascend(tx, func(r keyringRow) bool { rows = append(rows, r); return true })
+	for _, r := range rows {
+		var err error
+		if r.SigningKey, err = keys.reEncrypt(r.SigningKey); err != nil {
+			return fmt.Errorf("signing key for '%s': %w", r.ID, err)
+		}
+		if r.NextKey, err = keys.reEncrypt(r.NextKey); err != nil {
+			return fmt.Errorf("next key for '%s': %w", r.ID, err)
+		}
+		if err := t.keyrings.Put(tx, r); err != nil {
+			return fmt.Errorf("update keyring secrets for '%s': %w", r.ID, err)
+		}
+	}
+	return nil
+}
+
+func (k Keys) reEncrypt(data []byte) ([]byte, error) {
+	dec, label, err := k.Decrypt(data)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt: %w", err)
+	}
+	enc, err := k.Encrypt(label, dec)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt: %w", err)
+	}
+	return enc, nil
 }
 
 // nextRotation is when a keyring set up or rotated at now rotates next.

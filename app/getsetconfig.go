@@ -8,6 +8,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"github.com/target/goalert/config"
+	"github.com/target/goalert/deltastores"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/sqlutil"
@@ -30,12 +31,31 @@ func getSetConfig(ctx context.Context, setCfg bool, data []byte) error {
 	if err != nil {
 		return err
 	}
+	ctx = permission.SystemContext(ctx, "SetConfig")
+	if c.StorageObjects != "" {
+		return withStorage(ctx, c, func(ctx context.Context, s *deltastores.Stores) error {
+			if setCfg {
+				id, err := s.Config.SetConfigData(ctx, nil, data)
+				if err != nil {
+					return errors.Wrap(err, "save config")
+				}
+				log.Logf(ctx, "Saved config version %d", id)
+				return nil
+			}
+			_, _, data, err := s.Config.ConfigData(ctx, nil)
+			if err != nil {
+				return errors.Wrap(err, "read config")
+			}
+			_, err = os.Stdout.Write(data)
+			return err
+		})
+	}
+
 	db, err := sql.Open("pgx", c.DBURL)
 	if err != nil {
 		return errors.Wrap(err, "connect to postgres")
 	}
 	defer db.Close()
-	ctx = permission.SystemContext(ctx, "SetConfig")
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return errors.Wrap(err, "start transaction")

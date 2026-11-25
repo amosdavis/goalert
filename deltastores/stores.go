@@ -33,6 +33,7 @@ import (
 	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/oncall"
 	"github.com/target/goalert/override"
+	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/schedule/rule"
@@ -249,6 +250,23 @@ func New(ctx context.Context, delta *filestore.DeltaDB, t *Tables, opts Options)
 		MaxPerUser:   limits(limit.CalendarSubscriptionsPerUser),
 	})
 	return s, nil
+}
+
+// ReEncryptAll encrypts the keyrings and the configuration with the first of
+// keys. The others can decrypt them too. If any can't be, nothing is changed.
+func (t *Tables) ReEncryptAll(ctx context.Context, db txn.DB, keys keyring.Keys) error {
+	if err := permission.LimitCheckAny(ctx, permission.Admin); err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return errors.New("no keys provided")
+	}
+	return deltatxn.Write(ctx, db, nil, func(s deltatxn.Scope) error {
+		if err := t.Keyring.ReEncrypt(s.Tx, keys); err != nil {
+			return err
+		}
+		return t.Config.ReEncrypt(s.Tx, keys)
+	})
 }
 
 // NewAuthHandler returns the auth handler on the Delta backend.

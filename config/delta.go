@@ -2,9 +2,11 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/target/goalert/filestore"
+	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
 )
@@ -30,6 +32,26 @@ func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	return &DeltaTables{
 		config: filestore.NewTable(s, "config", func(r configRow) string { return filestore.IntKey(r.ID) }),
 	}
+}
+
+// ReEncrypt encrypts every config with the first of keys. The others can decrypt
+// them too.
+func (t *DeltaTables) ReEncrypt(tx *filestore.Tx, keys keyring.Keys) error {
+	var rows []configRow
+	t.config.Ascend(tx, func(r configRow) bool { rows = append(rows, r); return true })
+	for _, r := range rows {
+		dec, label, err := keys.Decrypt(r.Data)
+		if err != nil {
+			return fmt.Errorf("decrypt config payload for config #%d: %w", r.ID, err)
+		}
+		if r.Data, err = keys.Encrypt(label, dec); err != nil {
+			return fmt.Errorf("encrypt config payload for #%d: %w", r.ID, err)
+		}
+		if err := t.config.Put(tx, r); err != nil {
+			return fmt.Errorf("update config payload for #%d: %w", r.ID, err)
+		}
+	}
+	return nil
 }
 
 // NewDeltaStore returns a config store on the Delta backend; cfg.DB is not

@@ -228,6 +228,10 @@ func (app *App) initHTTP(ctx context.Context) error {
 	mux.Handle("GET /api/graphql/explore", webH)
 	mux.Handle("GET /api/graphql/explore/", webH)
 
+	if app.storage != nil {
+		return app.setHTTPServer(mux, middleware)
+	}
+
 	mux.HandleFunc("GET /admin/riverui/", func(w http.ResponseWriter, r *http.Request) {
 		err := permission.LimitCheckAny(r.Context(), permission.Admin)
 		if permission.IsUnauthorized(err) {
@@ -250,6 +254,10 @@ func (app *App) initHTTP(ctx context.Context) error {
 		app.RiverUI.ServeHTTP(w, r)
 	})
 
+	return app.setHTTPServer(mux, middleware)
+}
+
+func (app *App) setHTTPServer(mux *http.ServeMux, middleware []func(http.Handler) http.Handler) error {
 	app.srv = &http.Server{
 		Handler: applyMiddleware(mux, middleware...),
 

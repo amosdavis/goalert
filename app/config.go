@@ -64,6 +64,13 @@ type Config struct {
 	DBURL     string
 	DBURLNext string
 
+	// StorageObjects and StorageLog are where GoAlert's data is
+	// (storagebackend.Config), instead of in DBURL.
+	StorageObjects string
+	StorageLog     string
+	// PodName, if set, names this pod in the commits it writes.
+	PodName string
+
 	StatusAddr string
 
 	EngineCycleTime time.Duration

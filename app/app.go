@@ -25,6 +25,7 @@ import (
 	"github.com/target/goalert/auth/nonce"
 	"github.com/target/goalert/calsub"
 	"github.com/target/goalert/config"
+	"github.com/target/goalert/deltastores"
 	"github.com/target/goalert/engine"
 	"github.com/target/goalert/escalation"
 	"github.com/target/goalert/graphql2/graphqlapp"
@@ -67,6 +68,10 @@ type App struct {
 	Logger *slog.Logger
 
 	mgr *lifecycle.Manager
+
+	// storage and the stores on it, instead of db.
+	storage *Storage
+	stores  *deltastores.Stores
 
 	db     *sql.DB
 	pgx    *pgxpool.Pool
@@ -157,11 +162,6 @@ func NewApp(c Config, pool *pgxpool.Pool) (*App, error) {
 	}
 
 	var err error
-	httpClient, err := newHTTPClient()
-	if err != nil {
-		return nil, errors.Wrap(err, "init http client")
-	}
-
 	db := stdlib.OpenDBFromPool(pool)
 	permission.SudoContext(context.Background(), func(ctx context.Context) {
 		c.Logger.DebugContext(ctx, "checking switchover_state table")
@@ -187,6 +187,25 @@ func NewApp(c Config, pool *pgxpool.Pool) (*App, error) {
 		return nil, err
 	}
 
+	app, err := newApp(c)
+	if err != nil {
+		return nil, err
+	}
+	app.db, app.pgx = db, pool
+	return app, app.start()
+}
+
+// newApp returns an App that has no data yet, and binds the listening socket.
+func newApp(c Config) (*App, error) {
+	if c.Logger == nil {
+		return nil, errors.New("Logger is required")
+	}
+
+	httpClient, err := newHTTPClient()
+	if err != nil {
+		return nil, errors.Wrap(err, "init http client")
+	}
+
 	l, err := net.Listen("tcp", c.ListenAddr)
 	if err != nil {
 		return nil, errors.Wrapf(err, "bind address %s", c.ListenAddr)
@@ -208,31 +227,27 @@ func NewApp(c Config, pool *pgxpool.Pool) (*App, error) {
 		return ctx
 	})
 
-	app := &App{
+	return &App{
 		l:          l,
-		db:         db,
-		pgx:        pool,
 		cfg:        c,
 		doneCh:     make(chan struct{}),
 		Logger:     c.Logger,
 		httpClient: httpClient,
-	}
+	}, nil
+}
 
-	if c.StatusAddr != "" {
-		err = listenStatus(c.StatusAddr, app.doneCh)
+// start prepares an App that has its data to be run.
+func (app *App) start() error {
+	if app.cfg.StatusAddr != "" {
+		err := listenStatus(app.cfg.StatusAddr, app.doneCh)
 		if err != nil {
-			return nil, errors.Wrap(err, "start status listener")
+			return errors.Wrap(err, "start status listener")
 		}
 	}
 
-	c.Logger.Debug("starting app")
+	app.Logger.Debug("starting app")
 	app.mgr = lifecycle.NewManager(app._Run, app._Shutdown)
-	err = app.mgr.SetStartupFunc(app.startup)
-	if err != nil {
-		return nil, err
-	}
-
-	return app, nil
+	return app.mgr.SetStartupFunc(app.startup)
 }
 
 // WaitForStartup will wait until the startup sequence is completed or the context is expired.

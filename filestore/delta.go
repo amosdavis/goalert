@@ -396,6 +396,9 @@ type DeltaDB struct {
 	// storage works for it again (F33).
 	denied        error
 	deniedOnWrite bool
+	// When this pod last read the log to its end, and why it has not since.
+	lastRead time.Time
+	readErr  error
 
 	stop chan struct{}
 	wg   sync.WaitGroup // the follower and checkpoints
@@ -478,6 +481,7 @@ func openBackend(ctx context.Context, store objstore.Store, log tablelog.Log, sc
 	if err := db.load(ctx); err != nil {
 		return nil, err
 	}
+	db.noteRead(nil)
 	if opts.PollInterval > 0 {
 		db.wg.Add(1)
 		go db.follow()
@@ -679,15 +683,33 @@ func (db *DeltaDB) View() *View { return db.view.Load() }
 // Conflicts returns how many commits this pod lost to other pods (F40).
 func (db *DeltaDB) Conflicts() int64 { return db.conflicts.Load() }
 
-// Health returns why the store refuses writes (F21), or why storage refuses
-// this pod's credentials (F33), if either is the case.
+// healthGrace is how long the log may be unreadable before that is a problem.
+const healthGrace = time.Minute
+
+// Health returns why the store refuses writes (F21), why storage refuses this
+// pod's credentials (F33), or why it can't be reached (F31), if any is the case.
 func (db *DeltaDB) Health() error {
 	if err := db.writeErr(); err != nil {
 		return err
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.denied
+	if db.denied != nil {
+		return db.denied
+	}
+	if db.readErr != nil && time.Since(db.lastRead) > max(healthGrace, 3*db.opts.MaxPollInterval) {
+		return fmt.Errorf("filestore: the log could not be read since %s: %w", db.lastRead.Format(time.RFC3339), db.readErr)
+	}
+	return nil
+}
+
+// noteRead records whether the log could be read to its end.
+func (db *DeltaDB) noteRead(err error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.readErr = err; err == nil {
+		db.lastRead = time.Now()
+	}
 }
 
 // noteStorage keeps Health red while storage refuses this pod's
@@ -1182,7 +1204,8 @@ func (db *DeltaDB) replaceFiles(change fileChange) {
 // catchUp applies every commit after this pod's version. A commit it cannot
 // apply, such as one from another writer (F11) or a newer version (F30),
 // stops writes.
-func (db *DeltaDB) catchUp(ctx context.Context) error {
+func (db *DeltaDB) catchUp(ctx context.Context) (err error) {
+	defer func() { db.noteRead(err) }()
 	if db.stale() {
 		// The commits after this pod's version may have been cleaned up, so
 		// reading on could take a missing one for the end of the log, and

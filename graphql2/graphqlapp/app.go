@@ -29,7 +29,6 @@ import (
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/heartbeat"
 	"github.com/target/goalert/integrationkey"
-	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
 	"github.com/target/goalert/notice"
@@ -99,7 +98,8 @@ type App struct {
 
 	TimeZoneStore *timezone.Store
 
-	EncryptionKeys keyring.Keys
+	// ReEncryptAll encrypts all that is secret with the newest key.
+	ReEncryptAll func(ctx context.Context) error
 
 	SWO *swo.Manager
 

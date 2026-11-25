@@ -24,19 +24,22 @@ import (
 	"github.com/spf13/viper"
 	"github.com/target/goalert/auth/basic"
 	"github.com/target/goalert/config"
+	"github.com/target/goalert/deltastores"
 	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/migrate"
+	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/remotemonitor"
 	"github.com/target/goalert/swo"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/txn/deltatxn"
 	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/calllimiter"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/sqldrv"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/version"
 	"github.com/target/goalert/web"
@@ -45,8 +48,8 @@ import (
 
 var shutdownSignalCh = make(chan os.Signal, 2)
 
-// ErrDBRequired is returned when the DB URL is unset.
-var ErrDBRequired = validation.NewFieldError("db-url", "is required")
+// ErrDBRequired is returned when neither the storage nor the DB URL is set.
+var ErrDBRequired = validation.NewFieldError("storage-objects", "is required")
 
 func init() {
 	if testing.Testing() {
@@ -122,6 +125,10 @@ Available Flags:
 
 		// Config is loaded, so don't print usage anymore on future errors.
 		cmd.SilenceUsage = true
+
+		if cfg.StorageObjects != "" {
+			return runStorageApp(ctx, cfg)
+		}
 
 		doMigrations := func(ctx context.Context, url string) error {
 			if cfg.APIOnly {
@@ -236,6 +243,43 @@ Available Flags:
 	},
 }
 
+// runStorageApp runs GoAlert on the storage that cfg names.
+func runStorageApp(ctx context.Context, cfg Config) error {
+	var early sync.WaitGroup
+	earlyCtx, stop := context.WithCancel(log.WithLogger(ctx, cfg.LegacyLogger))
+	early.Go(func() {
+		select {
+		case <-shutdownSignalCh:
+			cfg.Logger.Warn("Received shutdown signal during startup.")
+			stop()
+		case <-earlyCtx.Done():
+		}
+	})
+	st, err := OpenStorage(earlyCtx, cfg)
+	stop()
+	early.Wait()
+	if err != nil {
+		return err
+	}
+	app, err := NewStorageApp(cfg, st)
+	if err != nil {
+		return errors.Wrap(firstErr(err, st.Close()), "init app")
+	}
+
+	go handleShutdown(ctx, app.Shutdown)
+
+	// trigger engine cycles by process signal
+	trigCh := make(chan os.Signal, 1)
+	signal.Notify(trigCh, triggerSignals...)
+	go func() {
+		for range trigCh {
+			app.Trigger()
+		}
+	}()
+
+	return errors.Wrap(app.Run(ctx), "run app")
+}
+
 func handleShutdown(ctx context.Context, fn func(ctx context.Context) error) {
 	<-shutdownSignalCh
 	log.Logf(ctx, "Application attempting graceful shutdown.")
@@ -337,6 +381,12 @@ Migration: %s (#%d)
 			}
 			if cf.DBURL != "" && !offlineOnly {
 				result("DB", loadConfigDB())
+			}
+			if cf.StorageObjects != "" && !offlineOnly {
+				result("Storage", withStorage(cmd.Context(), cf, func(ctx context.Context, s *deltastores.Stores) error {
+					cfg = s.Config.Config()
+					return nil
+				}))
 			}
 
 			type service struct {
@@ -485,13 +535,18 @@ Migration: %s (#%d)
 				return validation.NewFieldError("data-encryption-key", "Must not be empty, or set --allow-empty-data-encryption-key")
 			}
 
+			ctx = permission.SystemContext(ctx, "ReEncryptAll")
+			if c.StorageObjects != "" {
+				return withStorageDB(ctx, c, func(st *Storage) error {
+					return st.Tables.ReEncryptAll(ctx, deltatxn.DB{DB: st.DB}, c.EncryptionKeys)
+				})
+			}
+
 			db, err := sql.Open("pgx", c.DBURL)
 			if err != nil {
 				return errors.Wrap(err, "connect to postgres")
 			}
 			defer db.Close()
-
-			ctx = permission.SystemContext(ctx, "ReEncryptAll")
 
 			return keyring.ReEncryptAll(ctx, sqltxn.DB{DB: db}, c.EncryptionKeys)
 		},
@@ -568,6 +623,38 @@ Migration: %s (#%d)
 		},
 	}
 
+	createStorageCmd = &cobra.Command{
+		Use:   "create-storage",
+		Short: "Creates a new GoAlert in the storage at --storage-objects, then exits. Nothing else creates one.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			l := log.FromContext(cmd.Context())
+			if viper.GetBool("verbose") {
+				l.EnableDebug()
+			}
+
+			err := viper.ReadInConfig()
+			// ignore file not found error
+			if err != nil && !isCfgNotFound(err) {
+				return errors.Wrap(err, "read config")
+			}
+
+			ctx := cmd.Context()
+			c, err := getConfig(ctx)
+			if err != nil {
+				return err
+			}
+			if c.StorageObjects == "" {
+				return ErrDBRequired
+			}
+			cmd.SilenceUsage = true
+			if err := CreateStorage(ctx, c); err != nil {
+				return err
+			}
+			log.Logf(ctx, "Storage created.")
+			return nil
+		},
+	}
+
 	setConfigCmd = &cobra.Command{
 		Use:   "set-config",
 		Short: "Sets current config values in the DB from stdin.",
@@ -633,80 +720,103 @@ Migration: %s (#%d)
 			if err != nil {
 				return err
 			}
+			ctx := permission.SystemContext(cmd.Context(), "AddUser")
+			if c.StorageObjects != "" {
+				return withStorage(ctx, c, func(ctx context.Context, s *deltastores.Stores) error {
+					return addUser(ctx, cmd, s.DB, s.AuthBasic, s.User)
+				})
+			}
+
 			db, err := sql.Open("pgx", c.DBURL)
 			if err != nil {
 				return errors.Wrap(err, "connect to postgres")
 			}
 			defer db.Close()
 
-			ctx := permission.SystemContext(cmd.Context(), "AddUser")
-
 			basicStore, err := basic.NewStore(ctx, db)
 			if err != nil {
 				return errors.Wrap(err, "init basic auth store")
 			}
 
-			pass := cmd.Flag("pass").Value.String()
-			id := cmd.Flag("user-id").Value.String()
-			username := cmd.Flag("user").Value.String()
-
-			tx, err := db.BeginTx(ctx, nil)
+			userStore, err := user.NewStore(ctx, db)
 			if err != nil {
-				return errors.Wrap(err, "begin tx")
+				return errors.Wrap(err, "init user store")
 			}
-			defer sqlutil.Rollback(ctx, "add-user", tx)
-
-			if id == "" {
-				u := &user.User{
-					Name:  username,
-					Email: cmd.Flag("email").Value.String(),
-					Role:  permission.RoleUser,
-				}
-				if cmd.Flag("admin").Value.String() == "true" {
-					u.Role = permission.RoleAdmin
-				}
-				userStore, err := user.NewStore(ctx, db)
-				if err != nil {
-					return errors.Wrap(err, "init user store")
-				}
-				u, err = userStore.InsertTx(ctx, tx, u)
-				if err != nil {
-					return errors.Wrap(err, "create user")
-				}
-				id = u.ID
-			}
-
-			if pass == "" {
-				fmt.Fprint(os.Stderr, "New Password: ")
-				p, err := term.ReadPassword(int(os.Stdin.Fd()))
-				if err != nil {
-					return errors.Wrap(err, "get password")
-				}
-				pass = string(p)
-				fmt.Fprintln(os.Stderr)
-			}
-
-			pw, err := basicStore.NewHashedPassword(ctx, pass)
-			if err != nil {
-				return errors.Wrap(err, "hash password")
-			}
-
-			err = basicStore.CreateTx(ctx, tx, id, username, pw)
-			if err != nil {
-				return errors.Wrap(err, "add basic auth entry")
-			}
-
-			err = tx.Commit()
-			if err != nil {
-				return errors.Wrap(err, "commit tx")
-			}
-
-			log.Logf(ctx, "Username '%s' added.", username)
-
-			return nil
+			return addUser(ctx, cmd, sqltxn.DB{DB: db}, basicStore, userStore)
 		},
 	}
 )
+
+// addUser adds a user for basic authentication, or a login for one there is.
+func addUser(ctx context.Context, cmd *cobra.Command, db txn.DB, basicStore *basic.Store, userStore *user.Store) error {
+	pass := cmd.Flag("pass").Value.String()
+	userID := cmd.Flag("user-id").Value.String()
+	username := cmd.Flag("user").Value.String()
+
+	// The transaction can run more than once, so this comes before it (F3).
+	if pass == "" {
+		fmt.Fprint(os.Stderr, "New Password: ")
+		p, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return errors.Wrap(err, "get password")
+		}
+		pass = string(p)
+		fmt.Fprintln(os.Stderr)
+	}
+	pw, err := basicStore.NewHashedPassword(ctx, pass)
+	if err != nil {
+		return errors.Wrap(err, "hash password")
+	}
+
+	err = db.Run(ctx, nil, func(tx txn.Tx) error {
+		id := userID
+		if id == "" {
+			u := &user.User{
+				Name:  username,
+				Email: cmd.Flag("email").Value.String(),
+				Role:  permission.RoleUser,
+			}
+			if cmd.Flag("admin").Value.String() == "true" {
+				u.Role = permission.RoleAdmin
+			}
+			u, err := userStore.InsertTx(ctx, tx, u)
+			if err != nil {
+				return errors.Wrap(err, "create user")
+			}
+			id = u.ID
+		}
+		return errors.Wrap(basicStore.CreateTx(ctx, tx, id, username, pw), "add basic auth entry")
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Logf(ctx, "Username '%s' added.", username)
+	return nil
+}
+
+// withStorageDB opens the storage that cfg names for a command.
+func withStorageDB(ctx context.Context, cfg Config, fn func(st *Storage) error) error {
+	st, err := OpenStorage(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	return firstErr(fn(st), st.Close())
+}
+
+// withStorage is withStorageDB, for a command that needs the stores.
+func withStorage(ctx context.Context, cfg Config, fn func(ctx context.Context, s *deltastores.Stores) error) error {
+	return withStorageDB(ctx, cfg, func(st *Storage) error {
+		s, err := deltastores.New(ctx, st.DB, st.Tables, deltastores.Options{
+			Logger: cfg.LegacyLogger, Registry: nfydest.NewRegistry(),
+			Config: config.StoreConfig{Keys: cfg.EncryptionKeys},
+		})
+		if err != nil {
+			return errors.Wrap(err, "init stores")
+		}
+		return firstErr(fn(ctx, s), s.Close(ctx))
+	})
+}
 
 // getConfig will load the current configuration from viper
 func getConfig(ctx context.Context) (Config, error) {
@@ -755,6 +865,10 @@ func getConfig(ctx context.Context) (Config, error) {
 
 		DBURL:     viper.GetString("db-url"),
 		DBURLNext: viper.GetString("db-url-next"),
+
+		StorageObjects: viper.GetString("storage-objects"),
+		StorageLog:     viper.GetString("storage-log"),
+		PodName:        viper.GetString("pod-name"),
 
 		StatusAddr: viper.GetString("status-addr"),
 
@@ -813,8 +927,11 @@ func getConfig(ctx context.Context) (Config, error) {
 		cfg.HTTPPrefix = u.Path
 	}
 
-	if cfg.DBURL == "" {
+	if cfg.DBURL == "" && cfg.StorageObjects == "" {
 		return cfg, ErrDBRequired
+	}
+	if cfg.DBURL != "" && cfg.StorageObjects != "" {
+		return cfg, validation.NewFieldError("storage-objects", "can't be used together with --db-url") // F23
 	}
 
 	var err error
@@ -904,6 +1021,10 @@ func init() {
 
 	RootCmd.Flags().String("region-name", def.RegionName, "Name of region for message processing (case sensitive). Only one instance per-region-name will process outgoing messages.")
 
+	RootCmd.PersistentFlags().String("storage-objects", "", "Where GoAlert keeps its data: the URL of an object store, such as gs://BUCKET/PREFIX (see docs/storage-backends.md).")
+	RootCmd.PersistentFlags().String("storage-log", "", "What decides commits: empty for the Delta log in the object store, or the URL of a log (see docs/storage-backends.md).")
+	RootCmd.PersistentFlags().String("pod-name", "", "Names this instance in the commits it writes (default is the host's name).")
+
 	RootCmd.PersistentFlags().String("db-url", def.DBURL, "Connection string for Postgres.")
 	RootCmd.PersistentFlags().String("db-url-next", def.DBURLNext, "Connection string for the *next* Postgres server (enables DB switchover mode).")
 
@@ -965,7 +1086,7 @@ func init() {
 
 	monitorCmd.Flags().StringP("config-file", "f", "", "Configuration file for monitoring (required).")
 	initCertCommands()
-	RootCmd.AddCommand(versionCmd, testCmd, migrateCmd, exportCmd, monitorCmd, addUserCmd, getConfigCmd, setConfigCmd, genCerts, reEncryptCmd)
+	RootCmd.AddCommand(versionCmd, testCmd, createStorageCmd, migrateCmd, exportCmd, monitorCmd, addUserCmd, getConfigCmd, setConfigCmd, genCerts, reEncryptCmd)
 
 	err := viper.BindPFlags(RootCmd.Flags())
 	if err != nil {

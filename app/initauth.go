@@ -13,14 +13,19 @@ import (
 func (app *App) initAuth(ctx context.Context) error {
 
 	var err error
-	app.AuthHandler, err = auth.NewHandler(ctx, app.db, auth.HandlerConfig{
+	cfgAuth := auth.HandlerConfig{
 		UserStore:      app.UserStore,
 		SessionKeyring: app.SessionKeyring,
 		IntKeyStore:    app.IntegrationKeyStore,
 		CalSubStore:    app.CalSubStore,
 		APIKeyring:     app.APIKeyring,
 		APIKeyStore:    app.APIKeyStore,
-	})
+	}
+	if app.storage != nil {
+		app.AuthHandler = app.stores.NewAuthHandler(cfgAuth)
+	} else {
+		app.AuthHandler, err = auth.NewHandler(ctx, app.db, cfgAuth)
+	}
 	if err != nil {
 		return errors.Wrap(err, "init auth handler")
 	}
