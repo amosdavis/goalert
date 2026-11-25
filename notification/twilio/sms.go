@@ -60,14 +60,16 @@ func NewSMS(ctx context.Context, db *sql.DB, c *Config) (*SMS, error) {
 		return nil, err
 	}
 
-	s := &SMS{
+	return newSMS(b, c), nil
+}
+
+func newSMS(b *dbSMS, c *Config) *SMS {
+	return &SMS{
 		b: b,
 		c: c,
 
 		limit: newReplyLimiter(),
 	}
-
-	return s, nil
 }
 
 // SetReceiver sets the notification.Receiver for incoming messages and status updates.

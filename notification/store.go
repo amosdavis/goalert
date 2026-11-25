@@ -36,6 +36,8 @@ type Store struct {
 	sendTestLock                 *sql.Stmt
 
 	rand *rand.Rand
+
+	delta *deltaStore // set on the Delta backend, instead of everything else
 }
 
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -124,6 +126,10 @@ func (s *Store) OriginalMessageStatus(ctx context.Context, alertID int, dstID De
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.originalMessageStatus(ctx, alertID, dstID)
+	}
+
 	row, err := gadb.New(s.db).NfyOriginalMessageStatus(ctx, gadb.NfyOriginalMessageStatusParams{
 		AlertID:         sql.NullInt64{Valid: true, Int64: int64(alertID)},
 		ContactMethodID: dstID.CMID,
@@ -182,7 +188,11 @@ func (s *Store) cmUserID(ctx context.Context, id string) (string, error) {
 	}
 
 	var userID string
-	err = s.getCMUserID.QueryRowContext(ctx, id).Scan(&userID)
+	if s.delta != nil {
+		userID, err = s.delta.methodOwner(ctx, id)
+	} else {
+		err = s.getCMUserID.QueryRowContext(ctx, id).Scan(&userID)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", validation.NewFieldError("ContactMethodID", "does not exist")
 	}
@@ -209,6 +219,10 @@ func (s *Store) Code(ctx context.Context, id string) (int, error) {
 		return 0, err
 	}
 
+	if s.delta != nil {
+		return s.delta.code(ctx, id)
+	}
+
 	var code int
 	err = s.getCode.QueryRowContext(ctx, id).Scan(&code)
 	return code, err
@@ -225,6 +239,10 @@ func (s *Store) SendContactMethodTest(ctx context.Context, id string) error {
 	err = permission.LimitCheckAny(ctx, permission.MatchUser(cmUserID))
 	if err != nil {
 		return err
+	}
+
+	if s.delta != nil {
+		return s.delta.sendTest(ctx, id)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -276,6 +294,10 @@ func (s *Store) SendContactMethodVerification(ctx context.Context, cmID string) 
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.sendVerification(ctx, cmID)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -310,20 +332,30 @@ func (s *Store) VerifyContactMethod(ctx context.Context, cmID string, code int) 
 		return err
 	}
 
-	res, err := s.verifyAndEnableContactMethod.ExecContext(ctx, cmID, code)
-	if errors.Is(err, sql.ErrNoRows) {
-		return validation.NewFieldError("code", "invalid code")
-	}
-	if err != nil {
-		return err
-	}
+	if s.delta != nil {
+		ok, err := s.delta.verify(ctx, cmID, code)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return validation.NewFieldError("code", "invalid code")
+		}
+	} else {
+		res, err := s.verifyAndEnableContactMethod.ExecContext(ctx, cmID, code)
+		if errors.Is(err, sql.ErrNoRows) {
+			return validation.NewFieldError("code", "invalid code")
+		}
+		if err != nil {
+			return err
+		}
 
-	num, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if num != 1 {
-		return validation.NewFieldError("code", "invalid code")
+		num, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if num != 1 {
+			return validation.NewFieldError("code", "invalid code")
+		}
 	}
 
 	// NOTE: maintain a record of consent/dissent
@@ -374,6 +406,10 @@ func (s *Store) FindManyMessageStatuses(ctx context.Context, strIDs []string) ([
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findManyMessageStatuses(ctx, ids)
+	}
+
 	rows, err := gadb.New(s.db).NfyManyMessageStatus(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -402,6 +438,10 @@ func (s *Store) LastMessageStatus(ctx context.Context, typ gadb.EnumOutgoingMess
 	cmID, err := validate.ParseUUID("Contact Method ID", cmIDStr)
 	if err != nil {
 		return nil, time.Time{}, err
+	}
+
+	if s.delta != nil {
+		return s.delta.lastMessageStatus(ctx, typ, cmID, from)
 	}
 
 	row, err := gadb.New(s.db).NfyLastMessageStatus(ctx, gadb.NfyLastMessageStatusParams{

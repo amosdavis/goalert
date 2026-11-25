@@ -22,6 +22,8 @@ type dbSMS struct {
 	lookupSvcByCode *sql.Stmt
 
 	getInUse *sql.Stmt
+
+	delta *deltaSMS // set on the Delta backend, instead of everything else
 }
 
 func newDB(ctx context.Context, db *sql.DB) (*dbSMS, error) {
@@ -87,6 +89,10 @@ func newDB(ctx context.Context, db *sql.DB) (*dbSMS, error) {
 }
 
 func (db *dbSMS) insertDB(ctx context.Context, phoneNumber, callbackID string, alertID int, serviceID string) (int, error) {
+	if db.delta != nil {
+		return db.delta.insert(ctx, phoneNumber, callbackID, alertID, serviceID)
+	}
+
 	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -172,6 +178,10 @@ func (c *codeInfo) scanFrom(row *sql.Row) error {
 }
 
 func (db *dbSMS) LookupByCode(ctx context.Context, phoneNumber string, code int) (*codeInfo, error) {
+	if db.delta != nil {
+		return db.delta.lookupByCode(ctx, phoneNumber, code)
+	}
+
 	var row *sql.Row
 	if code != 0 {
 		row = db.lookupByCode.QueryRowContext(ctx, phoneNumber, code)
@@ -185,6 +195,10 @@ func (db *dbSMS) LookupByCode(ctx context.Context, phoneNumber string, code int)
 }
 
 func (db *dbSMS) LookupByAlertID(ctx context.Context, phoneNumber string, searchID int) (*codeInfo, error) {
+	if db.delta != nil {
+		return db.delta.lookupByAlertID(ctx, phoneNumber, searchID)
+	}
+
 	row := db.lookupByAlert.QueryRowContext(ctx, phoneNumber, searchID)
 
 	info := &codeInfo{}
@@ -193,6 +207,10 @@ func (db *dbSMS) LookupByAlertID(ctx context.Context, phoneNumber string, search
 }
 
 func (db *dbSMS) LookupSvcByCode(ctx context.Context, phoneNumber string, code int) (*codeInfo, error) {
+	if db.delta != nil {
+		return db.delta.lookupSvcByCode(ctx, phoneNumber, code)
+	}
+
 	row := db.lookupSvcByCode.QueryRowContext(ctx, phoneNumber, code)
 
 	info := &codeInfo{}
