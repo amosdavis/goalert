@@ -284,10 +284,13 @@ the switchover system (`swo/`), and River.
 - **F38 Slow pod start.** A new pod reads the checkpoint and every active data
   file before it can serve. *Rule:* readiness waits until the pod has caught
   up, the checkpoint interval bounds replay, and files are fetched in parallel.
-- **F39 Write amplification.** Updating one row rewrites its whole bucket file.
-  *Rule:* the bucket count per table keeps files small. Append-only tables
-  (alert logs, message history) only append, and are compacted later. Both
-  are benchmarked.
+- **F39 Write amplification.** A commit rewrites rows it does not change, and
+  the more rows a table has, the slower every commit gets. *Rule:* a commit writes
+  the rows it adds or changes and the rest of the files that held them, and a file
+  has a limited number of rows. Files no larger than a commit's are merged into
+  it, so a bucket has few, and a row is rewritten only as often as their sizes
+  double. Tests and a benchmark check that adding a row costs the same however
+  many there are.
 - **F40 Commit storms.** Pods that keep conflicting retry each other into a
   standstill. *Rule:* only the lease holder runs the engine. Other writes
   retry with backoff and a cap, and conflicts are counted in metrics. A retry
@@ -364,3 +367,32 @@ the switchover system (`swo/`), and River.
   Delta log. At startup a pod checks that a used ID is refused (F33). A refusal
   by quota is told from one of permission, and tried again. Nobody may be
   allowed to delete job metadata.
+
+### J. Assembly and the engine
+
+- **F51 The assembly leaves something out.** A store that is built without a
+  limit, a lookup or a foreign key works, and silently enforces less (F7, F8),
+  and a table missing from the schema can't be added later without a migration.
+  *Rule:* one package defines the whole schema and builds every store. Tests
+  compare its tables and foreign keys with the Postgres schema's, and fail if
+  any lookup is missing.
+- **F52 Engine work depends on a queue.** A job that is lost, stuck, duplicated
+  or piled up leaves a rotation that never advances or a status update that is
+  never sent, while the data says otherwise. *Rule:* there is no job queue. What
+  has to be done is found in the data itself every cycle, through indexes (F15),
+  so a crash, a lost lease or a skipped cycle loses nothing. The plan's queue was
+  dropped for this.
+- **F53 One bad row stops all paging.** A schedule with an unknown time zone, a
+  rotation in an impossible state or a panic in one module ends the cycle, every
+  cycle. *Rule:* each module's work is a transaction of its own, so one that
+  fails leaves the others' alone. A module skips a row it can't handle and says
+  so, and messages are sent whatever the other modules did.
+- **F54 A late result overwrites a newer claim.** A pod that paused reports how
+  a send went after its claim expired and another pod sent the message again.
+  *Rule:* a result counts only for the claim it belongs to. A claim that expired
+  is retried like any send whose outcome is unknown (F3), up to the same limit.
+- **F55 The engine stops and nobody notices.** Every pod thinks another one holds
+  the lease, or the holder's cycles fail. *Rule:* a lease is taken over once it
+  has expired, by any pod that runs an engine, and given back on a clean stop. A
+  pod that can't hold or see a current lease, or whose cycles keep failing, says
+  so in its health and metrics.

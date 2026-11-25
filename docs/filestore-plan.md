@@ -14,8 +14,8 @@ location (`gs://bucket/prefix`, or a container and prefix in an Azure storage
 account). A Delta commit is atomic only within one table, so this is what
 makes each GoAlert transaction atomic (F2).
 
-- Partition columns `tbl` (the GoAlert table) and `bucket` (a hash of the
-  row's key, modulo a per-table bucket count) keep files small (F39).
+- Partition columns are `tbl` (the GoAlert table) and `bucket` (a hash of the
+  row's key, modulo a per-table bucket count).
 - Each row has a `key` and one struct column per GoAlert table, and only that
   table's column is set. Spark reads a table as
   `SELECT alerts.* FROM goalert WHERE tbl = 'alerts'`, and GoAlert ships those
@@ -25,10 +25,11 @@ makes each GoAlert transaction atomic (F2).
 
 **Commits.** A GoAlert transaction becomes one Delta commit:
 
-- For each bucket it changes, a new Parquet file holds the bucket's rows after
-  the change, and the old file is removed.
-- Append-only tables (alert logs, message history) only add files with the
-  new rows, and are compacted later.
+- For each bucket it changes, a new Parquet file holds the rows it added or
+  changed, with what else was in the files that held them, which are removed.
+- Files no larger than the new one are merged into it, up to a limit, so a bucket
+  has few files and adding a row to a large table costs no more than to a small
+  one (F39).
 - Data files are uploaded first. Then the commit file `_delta_log/<N>.json` is
   written create-if-absent, so only one writer can create version N (F6). Its
   `commitInfo` names the writer, the store ID, GoAlert's format version and a
@@ -281,12 +282,19 @@ on the new backend (F5, F7, F8, F23).
 
 - Each engine module's SQL becomes Go over the in-memory indexes. A cycle-time
   budget and a large-dataset benchmark guard against slowdowns (F15, F17).
-- The engine lease replaces the processing locks and advisory locks (F28).
+- A cycle's modules run in order, each as a transaction of its own (F53), and
+  share one commit (`DeltaDB.UpdateEach`).
+- The engine lease replaces the processing locks and advisory locks. It is a row,
+  and every transaction of the engine checks in the same commit that its pod
+  still holds it (F28, F55).
 - Outgoing messages are claimed by a commit before they are sent, and keep
-  today's status semantics otherwise (F3).
-- River (14 job kinds, 2 clients) is replaced by a small job queue whose jobs are
-  rows in the same table, so a job commits together with the change that
-  created it.
+  today's status semantics otherwise (F3). A claim that expires is retried, where
+  Postgres gave up on the message.
+- River (14 job kinds, 2 clients) goes away without a replacement. Each job only
+  said that some row needs attention, and the rows say so themselves (F52): a
+  rotation whose shift has ended, a subscription whose status differs from its
+  alert's, a signal without a message. The periodic cleanups run on the pod with
+  the lease.
 
 Exit: all smoke tests pass on the new backend.
 
@@ -491,5 +499,5 @@ holder while it is sending.
   with Iceberg is now `managedlog`: staging a commit, having an arbiter decide,
   and copying it into the Delta log, with one suite for arbiters. Breaking
   managedlog and bigquerylog on purpose in 27 places made a test fail in all but
-  one, where the arbiter refuses anyway. An Iceberg table refuses a data file that does not say how many
-  rows it has, which Iceberg readers would skip (F47).
+  one, where the arbiter refuses anyway. An Iceberg table refuses a data file that
+  does not say how many rows it has, which Iceberg readers would skip (F47).
