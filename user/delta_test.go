@@ -216,6 +216,30 @@ func TestDeltaAlertStatusTrigger(t *testing.T) {
 	require.ErrorContains(t, err, "DeclareDeltaForeignKeys")
 }
 
+func TestDeltaPutUser(t *testing.T) {
+	ctx := permission.SystemContext(context.Background(), "test")
+	e := newDeltaTestEnv(t, nil)
+	s, db := e.pod(t, "a")
+	id := uuid.NewString()
+	put := func(u userRow) error {
+		return inTx(db, func(tx *filestore.Tx) error { return e.tables.PutUser(tx, u) })
+	}
+	require.NoError(t, put(userRow{ID: strings.ToUpper(id), Name: "Alice", Bio: "about her"}))
+	require.Error(t, put(userRow{ID: uuid.NewString(), Name: "X", Role: "boss"}), "not in enum_user_role")
+	require.Error(t, put(userRow{ID: "not-a-uuid", Name: "X"}))
+
+	u, err := s.FindOne(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, permission.RoleUnknown, u.Role, "the column's default")
+	require.NoError(t, s.UpdateTx(ctx, nil, &User{ID: id, Name: "Alice B", Role: permission.RoleUser}))
+	require.NoError(t, deltatxn.Read(ctx, db, nil, func(s deltatxn.Scope) error {
+		assert.Equal(t, 1, e.tables.Users.Len(s.Reader))
+		row, _ := e.tables.Users.Get(s.Reader, id)
+		assert.Equal(t, userRow{ID: id, Name: "Alice B", Bio: "about her", Role: "unknown"}, row, "columns the store doesn't use are kept")
+		return nil
+	}))
+}
+
 func TestDeltaUpdateProfile(t *testing.T) {
 	ctx := permission.SystemContext(context.Background(), "test")
 	e := newDeltaTestEnv(t, nil)

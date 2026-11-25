@@ -80,11 +80,24 @@ func DeclareDeltaForeignKeys[C any](t *DeltaTables, contactMethods *filestore.Ta
 		func(a authSubjectRow) (string, bool) { return filestore.Ref(a.CMID) }, filestore.Cascade, nil)
 }
 
-// PutUser inserts or replaces a user. Like the trigger
+// PutUser inserts or replaces a user, with the role's default if it has none,
+// and only with an id and a role their Postgres types allow. Like the trigger
 // trg_enforce_status_update_same_user, it refuses an alert status contact
 // method of another user. One that doesn't exist is left to the foreign key,
 // as there.
 func (t *DeltaTables) PutUser(tx *filestore.Tx, u userRow) error {
+	id, err := userKey(u.ID)
+	if err != nil {
+		return err
+	}
+	u.ID = id
+	switch permission.Role(u.Role) {
+	case permission.RoleUnknown, permission.RoleUser, permission.RoleAdmin:
+	case "":
+		u.Role = string(permission.RoleUnknown)
+	default:
+		return fmt.Errorf("user: invalid role %q", u.Role)
+	}
 	if u.AlertStatusCMID != nil {
 		if t.cmOwner == nil {
 			return errors.New("user: an alert status contact method was set, but DeclareDeltaForeignKeys was not called")
