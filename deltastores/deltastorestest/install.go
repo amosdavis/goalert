@@ -222,8 +222,7 @@ func (p *Pod) AddStep(policyID string, delay int, dests ...gadb.DestV1) string {
 	p.T.Helper()
 	step, err := p.Escalation.CreateStepTx(p.Admin(), nil, &escalation.Step{PolicyID: policyID, DelayMinutes: delay})
 	require.NoError(p.T, err)
-	ctx, err := p.NotificationChannel.ResolveDests(p.Admin(), dests...)
-	require.NoError(p.T, err)
+	ctx := p.NotificationChannel.ResolveDests(p.Admin(), dests...)
 	for _, d := range dests {
 		require.NoError(p.T, p.Escalation.AddStepActionTx(ctx, nil, step.ID, d))
 	}

@@ -138,8 +138,7 @@ func TestDeltaNotify(t *testing.T) {
 	sched := p.AddSchedule("sched")
 	p.AddScheduleRule(sched, assignment.UserTarget(alice))
 	channel := func(name string) uuid.UUID {
-		ctx, err := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest(name))
-		require.NoError(t, err)
+		ctx := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest(name))
 		id, err := p.NotificationChannel.MapDestToID(ctx, nil, deltastorestest.Dest(name))
 		require.NoError(t, err)
 		return id

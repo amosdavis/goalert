@@ -3,6 +3,7 @@ package graphqlapp
 import (
 	context "context"
 	"net/url"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/config"
@@ -99,6 +100,20 @@ func (key *IntegrationKey) TokenInfo(ctx context.Context, raw *integrationkey.In
 }
 
 func (m *Mutation) UpdateKeyConfig(ctx context.Context, input graphql2.UpdateKeyConfigInput) (bool, error) {
+	actions := slices.Clone(input.DefaultActions)
+	for _, r := range input.Rules {
+		actions = append(actions, r.Actions...)
+	}
+	if input.SetRule != nil {
+		actions = append(actions, input.SetRule.Actions...)
+	}
+	if input.SetRuleActions != nil {
+		actions = append(actions, input.SetRuleActions.Actions...)
+	}
+	for _, act := range actions {
+		ctx = (*App)(m).resolveDests(ctx, act.Dest)
+	}
+
 	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		id, err := validate.ParseUUID("IntegrationKey.ID", input.KeyID)
 		if err != nil {

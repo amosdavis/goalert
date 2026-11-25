@@ -100,6 +100,9 @@ func (a *Mutation) SetScheduleOnCallNotificationRules(ctx context.Context, input
 		return false, err
 	}
 
+	for _, r := range input.Rules {
+		ctx = (*App)(a).resolveDests(ctx, r.Dest)
+	}
 	err = withContextTx(ctx, a.DB, func(ctx context.Context, tx txn.Tx) error {
 		rules := make([]schedule.OnCallNotificationRule, 0, len(input.Rules))
 		for _, r := range input.Rules {

@@ -25,8 +25,7 @@ func TestDeltaSignals(t *testing.T) {
 	p.AddStep(pol, 5)
 	svc, other := p.AddService("service", pol), p.AddService("other", pol)
 	channel := func(name string) uuid.UUID {
-		ctx, err := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest(name))
-		require.NoError(t, err)
+		ctx := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest(name))
 		id, err := p.NotificationChannel.MapDestToID(ctx, nil, deltastorestest.Dest(name))
 		require.NoError(t, err)
 		return id

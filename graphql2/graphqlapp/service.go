@@ -206,6 +206,11 @@ func (m *Mutation) CreateService(ctx context.Context, input graphql2.CreateServi
 		return nil, validation.NewFieldError("newEscalationPolicy", "cannot be used with `escalationPolicyID`.")
 	}
 
+	if input.NewEscalationPolicy != nil {
+		for _, step := range input.NewEscalationPolicy.Steps {
+			ctx = (*App)(m).resolveDests(ctx, step.Actions...)
+		}
+	}
 	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		svc := &service.Service{
 			Name: input.Name,

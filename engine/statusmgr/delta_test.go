@@ -72,8 +72,7 @@ func TestDeltaUpdates(t *testing.T) {
 	e := newEnv(t)
 	p := e.p
 	alice, aliceCM := p.AddNotifiedUser("alice")
-	ctx, err := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest("channel"))
-	require.NoError(t, err)
+	ctx := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest("channel"))
 	channel, err := p.NotificationChannel.MapDestToID(ctx, nil, deltastorestest.Dest("channel"))
 	require.NoError(t, err)
 	al := p.AddAlert(e.svc, "down")
@@ -100,6 +99,7 @@ func TestDeltaUpdates(t *testing.T) {
 	e.update()
 	_, n = e.newest()
 	require.Equal(t, 2, n, "it was subscribed when it was triggered")
+	e.in.Clock.Advance(time.Second) // the clock is stopped: this makes the next message the newest
 	require.NoError(t, p.Alert.UpdateStatus(p.As(alice, permission.RoleUser), int(al), alert.StatusClosed))
 	e.update()
 	m, n = e.newest()

@@ -97,17 +97,13 @@ func (s *Store) LookupDestID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uui
 // ResolveDests validates destinations and looks up their names, which can call
 // a provider's API, such as Slack's. A caller that uses MapDestToID in a
 // transaction resolves the destinations before it starts, and runs it with the
-// returned context.
+// returned context. If one can't be resolved, MapDestToID returns why.
 //
 // On Postgres, MapDestToID does this itself, and the context is returned
 // unchanged.
-func (s *Store) ResolveDests(ctx context.Context, dests ...gadb.DestV1) (context.Context, error) {
-	err := permission.LimitCheckAny(ctx, permission.User)
-	if err != nil {
-		return ctx, err
-	}
-	if s.delta == nil {
-		return ctx, nil
+func (s *Store) ResolveDests(ctx context.Context, dests ...gadb.DestV1) context.Context {
+	if s.delta == nil || permission.LimitCheckAny(ctx, permission.User) != nil {
+		return ctx
 	}
 
 	return s.delta.resolveDests(ctx, dests)
@@ -130,7 +126,7 @@ func destName(ctx context.Context, reg *nfydest.Registry, d gadb.DestV1) (string
 // MapDestToID returns the ID of the channel with the given destination, adding
 // it if there is none, and updates its name. On the Delta backend, a
 // destination mapped in a transaction must be resolved with ResolveDests
-// first.
+// first, unless it has a channel already, whose name then stays.
 func (s *Store) MapDestToID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error) {
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {

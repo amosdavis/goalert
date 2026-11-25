@@ -70,6 +70,23 @@ func (a *UpdateEscalationPolicyStepInput) Targets(ctx context.Context, input *gr
 	return nil
 }
 
+// resolveDests looks up destinations that a mutation may need a channel for,
+// before its transaction, which must not wait for their providers (F3).
+func (a *App) resolveDests(ctx context.Context, dests ...gadb.DestV1) context.Context {
+	var list []gadb.DestV1
+	for _, d := range dests {
+		switch d.Type {
+		case user.DestTypeUser, schedule.DestTypeSchedule, rotation.DestTypeRotation:
+		default:
+			list = append(list, d)
+		}
+	}
+	if len(list) == 0 {
+		return ctx
+	}
+	return a.NCStore.ResolveDests(ctx, list...)
+}
+
 func contains(ids []string, id string) bool {
 	for _, x := range ids {
 		if x == id {
@@ -109,6 +126,7 @@ func (m *Mutation) CreateEscalationPolicyStep(ctx context.Context, input graphql
 		)
 	}
 
+	ctx = (*App)(m).resolveDests(ctx, input.Actions...)
 	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		s := &escalation.Step{
 			DelayMinutes: input.DelayMinutes,
@@ -167,6 +185,9 @@ func (m *Mutation) CreateEscalationPolicyStep(ctx context.Context, input graphql
 }
 
 func (m *Mutation) CreateEscalationPolicy(ctx context.Context, input graphql2.CreateEscalationPolicyInput) (pol *escalation.Policy, err error) {
+	for _, step := range input.Steps {
+		ctx = (*App)(m).resolveDests(ctx, step.Actions...)
+	}
 	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		p := &escalation.Policy{
 			Name: input.Name,
@@ -283,6 +304,7 @@ func (m *Mutation) UpdateEscalationPolicy(ctx context.Context, input graphql2.Up
 }
 
 func (m *Mutation) UpdateEscalationPolicyStep(ctx context.Context, input graphql2.UpdateEscalationPolicyStepInput) (bool, error) {
+	ctx = (*App)(m).resolveDests(ctx, input.Actions...)
 	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		step, err := m.PolicyStore.FindOneStepForUpdateTx(ctx, tx, input.ID) // get delay
 		if err != nil {

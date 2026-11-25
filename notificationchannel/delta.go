@@ -21,7 +21,7 @@ import (
 )
 
 // ErrNotResolved is what MapDestToID returns on the Delta backend, inside a
-// transaction, for a destination that ResolveDests has not looked up.
+// transaction, for a new destination that ResolveDests has not looked up.
 var ErrNotResolved = errors.New("notificationchannel: a destination must be resolved with ResolveDests before the transaction that maps it")
 
 // Row is a notification_channels row on the Delta backend.
@@ -228,14 +228,19 @@ type deltaChannels struct {
 	*DeltaTables
 }
 
-// resolvedDests are the names of destinations that were validated, by
-// destKey. They travel in the context, through the stores that call
-// MapDestToID in a transaction.
-type resolvedDests map[string]string
+// resolvedDests are the names of destinations that were validated, or why they
+// could not be, by destKey. They travel in the context, through the stores that
+// call MapDestToID in a transaction.
+type resolvedDests map[string]resolvedDest
+
+type resolvedDest struct {
+	name string
+	err  error
+}
 
 type resolvedDestsKey struct{}
 
-func (d *deltaChannels) resolveDests(ctx context.Context, dests []gadb.DestV1) (context.Context, error) {
+func (d *deltaChannels) resolveDests(ctx context.Context, dests []gadb.DestV1) context.Context {
 	resolved, _ := ctx.Value(resolvedDestsKey{}).(resolvedDests)
 	resolved = maps.Clone(resolved)
 	if resolved == nil {
@@ -247,12 +252,9 @@ func (d *deltaChannels) resolveDests(ctx context.Context, dests []gadb.DestV1) (
 			continue
 		}
 		name, err := destName(ctx, d.reg, dest)
-		if err != nil {
-			return ctx, err
-		}
-		resolved[key] = name
+		resolved[key] = resolvedDest{name, err}
 	}
-	return context.WithValue(ctx, resolvedDestsKey{}, resolved), nil
+	return context.WithValue(ctx, resolvedDestsKey{}, resolved)
 }
 
 // mapDestToID looks a destination up before its own transaction. In a
@@ -261,30 +263,30 @@ func (d *deltaChannels) resolveDests(ctx context.Context, dests []gadb.DestV1) (
 // commit loses runs again and finds it (F4).
 func (d *deltaChannels) mapDestToID(ctx context.Context, tx txn.Tx, dest gadb.DestV1) (uuid.UUID, error) {
 	resolved, _ := ctx.Value(resolvedDestsKey{}).(resolvedDests)
-	name, ok := resolved[destKey(dest)]
-	if !ok {
-		if tx != nil {
-			return uuid.Nil, ErrNotResolved
-		}
-		var err error
-		name, err = destName(ctx, d.reg, dest)
-		if err != nil {
-			return uuid.Nil, err
-		}
+	r, ok := resolved[destKey(dest)]
+	if !ok && tx == nil {
+		r.name, r.err = destName(ctx, d.reg, dest)
+		ok = true
+	}
+	if r.err != nil {
+		return uuid.Nil, r.err
 	}
 
 	newID := uuid.New()
 	var id uuid.UUID
 	err := deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) (err error) {
-		row, ok := d.FindByDest(s.Reader, dest)
-		if !ok {
-			id = newID
-			return d.Insert(s.Tx, Row{ID: newID.String(), Dest: destJSON(dest), Name: name})
+		row, exists := d.FindByDest(s.Reader, dest)
+		if !exists && !ok {
+			return ErrNotResolved
 		}
-		if id, err = row.uuid(); err != nil || row.Name == name {
+		if !exists {
+			id = newID
+			return d.Insert(s.Tx, Row{ID: newID.String(), Dest: destJSON(dest), Name: r.name})
+		}
+		if id, err = row.uuid(); err != nil || !ok || row.Name == r.name {
 			return err
 		}
-		row.Name = name
+		row.Name = r.name
 		return d.Channels.Put(s.Tx, row)
 	})
 	if err != nil {

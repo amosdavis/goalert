@@ -237,8 +237,7 @@ func TestDeltaChannelsInvalid(t *testing.T) {
 	for _, ctx := range []context.Context{context.Background(), permission.ServiceContext(context.Background(), uuid.NewString())} {
 		_, err := p.MapDestToID(ctx, nil, slack("C1"))
 		assert.True(t, permission.IsPermissionError(err))
-		_, err = p.ResolveDests(ctx, slack("C1"))
-		assert.True(t, permission.IsPermissionError(err))
+		assert.Equal(t, ctx, p.ResolveDests(ctx, slack("C1")))
 		_, err = p.LookupDestID(ctx, nil, slack("C1"))
 		assert.True(t, permission.IsPermissionError(err))
 		_, err = p.FindDestByID(ctx, nil, uuid.New())
@@ -256,9 +255,15 @@ func TestDeltaChannelsInvalid(t *testing.T) {
 	assert.True(t, validation.IsValidationError(p.DeleteManyTx(ctx, nil, []string{"x"})))
 
 	mapBoth := func(d gadb.DestV1) error {
-		_, err := p.ResolveDests(ctx, d)
+		_, err := p.MapDestToID(ctx, nil, d)
 		require.Error(t, err)
-		_, err2 := p.MapDestToID(ctx, nil, d)
+		_, err2 := p.MapDestToID(p.ResolveDests(ctx, d), nil, d)
+		assert.EqualError(t, err2, err.Error())
+		rctx := p.ResolveDests(ctx, d)
+		err2 = p.db.Run(ctx, nil, func(tx txn.Tx) error {
+			_, err := p.MapDestToID(rctx, tx, d)
+			return err
+		})
 		assert.EqualError(t, err2, err.Error())
 		return err
 	}
@@ -395,28 +400,27 @@ func TestDeltaChannelsNoIO(t *testing.T) {
 
 	require.ErrorIs(t, mapInTx(ctx, slack("C1")), ErrNotResolved)
 
-	rctx, err := p.ResolveDests(ctx, slack("C1"), slack("C2"))
-	require.NoError(t, err)
+	rctx := p.ResolveDests(ctx, slack("C1"), slack("C2"))
 	assert.EqualValues(t, 4, e.calls.Load(), "a validation and a name each")
 	require.NoError(t, mapInTx(rctx, slack("C1")))
 	assert.Equal(t, "#general", e.row(t, id).Name)
 	require.NoError(t, mapInTx(rctx, slack("C2")))
 	require.ErrorIs(t, mapInTx(rctx, slack("C3")), ErrNotResolved, "another destination than the resolved ones")
-	require.ErrorIs(t, mapInTx(ctx, slack("C1")), ErrNotResolved, "an existing channel too, so a caller that doesn't resolve is found out")
+	require.NoError(t, mapInTx(ctx, slack("C1")), "an existing channel needs no lookup")
+	assert.Equal(t, "#general", e.row(t, id).Name)
 
 	// Resolving more keeps what was resolved, and leaves the old context
 	// alone.
 	e.calls.Store(0)
-	rctx2, err := p.ResolveDests(rctx, slack("C1"), slack("C3"))
-	require.NoError(t, err)
+	rctx2 := p.ResolveDests(rctx, slack("C1"), slack("C3"))
 	assert.EqualValues(t, 2, e.calls.Load(), "only C3 is looked up")
+	require.ErrorIs(t, mapInTx(rctx, slack("C3")), ErrNotResolved)
 	require.NoError(t, mapInTx(rctx2, slack("C1")))
 	require.NoError(t, mapInTx(rctx2, slack("C3")))
-	require.ErrorIs(t, mapInTx(rctx, slack("C3")), ErrNotResolved)
 
 	// Out of a transaction, MapDestToID looks up before its own.
 	e.calls.Store(0)
-	_, err = p.MapDestToID(ctx, nil, slack("C4"))
+	_, err := p.MapDestToID(ctx, nil, slack("C4"))
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, e.calls.Load())
 }
@@ -425,11 +429,10 @@ func TestDeltaChannelsTx(t *testing.T) {
 	ctx := userCtx()
 	e := newDeltaEnv(t)
 	p := e.pod(t, "a")
-	rctx, err := p.ResolveDests(ctx, slack("C1"))
-	require.NoError(t, err)
+	rctx := p.ResolveDests(ctx, slack("C1"))
 
 	errUndo := errors.New("undo")
-	err = p.db.Run(ctx, nil, func(tx txn.Tx) error {
+	err := p.db.Run(ctx, nil, func(tx txn.Tx) error {
 		if _, err := p.MapDestToID(rctx, tx, slack("C1")); err != nil {
 			return err
 		}
