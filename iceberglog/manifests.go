@@ -22,6 +22,7 @@ import (
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/table"
+	"github.com/target/goalert/managedlog"
 	"github.com/target/goalert/objstore"
 	"github.com/target/goalert/tablelog"
 )
@@ -52,13 +53,13 @@ func shardOf(dataFile string) int {
 }
 
 // uri is where Iceberg readers find an object.
-func (l *Log) uri(name string) string { return l.location + "/" + name }
+func (a *arbiter) uri(name string) string { return a.location + "/" + name }
 
 // name is the object at a URI.
-func (l *Log) name(uri string) (string, error) {
-	name, ok := strings.CutPrefix(uri, l.location+"/")
+func (a *arbiter) name(uri string) (string, error) {
+	name, ok := strings.CutPrefix(uri, a.location+"/")
 	if !ok {
-		return "", fmt.Errorf("%w: the Iceberg table has the file %s, which is not under %s", tablelog.ErrForeign, uri, l.location)
+		return "", fmt.Errorf("%w: the Iceberg table has the file %s, which is not under %s", tablelog.ErrForeign, uri, a.location)
 	}
 	return name, nil
 }
@@ -74,37 +75,37 @@ func checkDataFile(name string) error {
 }
 
 // metadataFile reads an immutable metadata file.
-func (l *Log) metadataFile(ctx context.Context, uri string) ([]byte, error) {
-	name, err := l.name(uri)
+func (a *arbiter) metadataFile(ctx context.Context, uri string) ([]byte, error) {
+	name, err := a.name(uri)
 	if err != nil {
 		return nil, err
 	}
-	l.mu.Lock()
-	data, ok := l.files[name]
-	l.mu.Unlock()
+	a.mu.Lock()
+	data, ok := a.files[name]
+	a.mu.Unlock()
 	if ok {
 		return data, nil
 	}
-	data, err = l.cfg.Store.Get(ctx, name)
+	data, err = a.cfg.Store.Get(ctx, name)
 	if errors.Is(err, objstore.ErrNotFound) {
 		return nil, fmt.Errorf("%w: the Iceberg table's %s is missing (F6)", tablelog.ErrCorrupt, name)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("iceberglog: read %s: %w", name, err)
 	}
-	l.mu.Lock()
-	l.files[name] = data
-	l.mu.Unlock()
+	a.mu.Lock()
+	a.files[name] = data
+	a.mu.Unlock()
 	return data, nil
 }
 
 // manifests returns a snapshot's manifests by shard.
-func (l *Log) manifests(ctx context.Context, snap *table.Snapshot) (map[int]iceberg.ManifestFile, error) {
+func (a *arbiter) manifests(ctx context.Context, snap *table.Snapshot) (map[int]iceberg.ManifestFile, error) {
 	out := make(map[int]iceberg.ManifestFile)
 	if snap == nil {
 		return out, nil
 	}
-	data, err := l.metadataFile(ctx, snap.ManifestList)
+	data, err := a.metadataFile(ctx, snap.ManifestList)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +114,7 @@ func (l *Log) manifests(ctx context.Context, snap *table.Snapshot) (map[int]iceb
 		return nil, fmt.Errorf("%w: manifest list %s: %v", tablelog.ErrCorrupt, snap.ManifestList, err)
 	}
 	for _, m := range list {
-		name, err := l.name(m.FilePath())
+		name, err := a.name(m.FilePath())
 		if err != nil {
 			return nil, err
 		}
@@ -131,8 +132,8 @@ func (l *Log) manifests(ctx context.Context, snap *table.Snapshot) (map[int]iceb
 }
 
 // entries returns the data files a manifest lists.
-func (l *Log) entries(ctx context.Context, m iceberg.ManifestFile) ([]iceberg.ManifestEntry, error) {
-	data, err := l.metadataFile(ctx, m.FilePath())
+func (a *arbiter) entries(ctx context.Context, m iceberg.ManifestFile) ([]iceberg.ManifestEntry, error) {
+	data, err := a.metadataFile(ctx, m.FilePath())
 	if err != nil {
 		return nil, err
 	}
@@ -168,15 +169,15 @@ func each[T any](ctx context.Context, items []T, fn func(ctx context.Context, i 
 
 // verify checks that a snapshot lists exactly the data files of GoAlert's
 // state, so that what Iceberg readers see is what GoAlert has (F47).
-func (l *Log) verify(ctx context.Context, h *head, s *tablelog.Snapshot) error {
-	byShard, err := l.manifests(ctx, h.snapshot)
+func (a *arbiter) verify(ctx context.Context, h *head, s *tablelog.Snapshot) error {
+	byShard, err := a.manifests(ctx, h.snapshot)
 	if err != nil {
 		return err
 	}
 	ms := slices.Collect(maps.Values(byShard))
 	entries := make([][]iceberg.ManifestEntry, len(ms))
 	err = each(ctx, ms, func(ctx context.Context, i int, m iceberg.ManifestFile) (err error) {
-		entries[i], err = l.entries(ctx, m)
+		entries[i], err = a.entries(ctx, m)
 		return err
 	})
 	if err != nil {
@@ -185,7 +186,7 @@ func (l *Log) verify(ctx context.Context, h *head, s *tablelog.Snapshot) error {
 	n := 0
 	for _, es := range entries {
 		for _, e := range es {
-			name, err := l.name(e.DataFile().FilePath())
+			name, err := a.name(e.DataFile().FilePath())
 			if err != nil {
 				return err
 			}
@@ -205,29 +206,30 @@ func (l *Log) verify(ctx context.Context, h *head, s *tablelog.Snapshot) error {
 	return nil
 }
 
-// stage stores everything a commit needs before the catalog is asked to make
-// it: the commit itself, the manifests of the shards it changes, and the list
-// of all manifests. It returns the snapshot to add, and its metadata files.
-func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, version int64, actions []tablelog.Action, data []byte) (*table.Snapshot, map[string][]byte, error) {
+// stage stores what a snapshot needs: the manifests of the shards a commit
+// changes, and the list of all manifests. It returns the snapshot to add, and
+// its metadata files.
+func (a *arbiter) stage(ctx context.Context, h *head, p managedlog.Proposal) (*table.Snapshot, map[string][]byte, error) {
+	info := p.Info
 	// What the commit leaves of each file it names: nil if it removes it.
 	changed := make(map[string]*tablelog.Add)
 	added := make(map[string]bool)
-	for _, a := range actions {
+	for _, act := range p.Actions {
 		switch {
-		case a.Add != nil:
-			if err := checkDataFile(a.Add.Path); err != nil {
+		case act.Add != nil:
+			if err := checkDataFile(act.Add.Path); err != nil {
 				return nil, nil, err
 			}
-			changed[a.Add.Path], added[a.Add.Path] = a.Add, true
-		case a.Remove != nil:
-			changed[a.Remove.Path] = nil
+			changed[act.Add.Path], added[act.Add.Path] = act.Add, true
+		case act.Remove != nil:
+			changed[act.Remove.Path] = nil
 		}
 	}
 	byShard := make(map[int][]string)
 	for _, name := range slices.Sorted(maps.Keys(changed)) {
 		byShard[shardOf(name)] = append(byShard[shardOf(name)], name)
 	}
-	prior, err := l.manifests(ctx, h.snapshot)
+	prior, err := a.manifests(ctx, h.snapshot)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -252,7 +254,7 @@ func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, vers
 		name string
 		data []byte
 	}
-	files := []file{{stagedName(version, info.GoAlertCommitID), data}}
+	var files []file
 	kept := make(map[string][]byte)
 	prefix := fmt.Sprintf("%s%013d-%s", metadataPrefix, time.UnixMicro(info.GoAlertTime).UnixMilli(), info.GoAlertCommitID)
 
@@ -265,7 +267,7 @@ func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, vers
 	}
 	for _, shard := range slices.Sorted(maps.Keys(byShard)) {
 		name := fmt.Sprintf("%s-m%02d.avro", prefix, shard)
-		m, err := l.manifest(ctx, h, prior[shard], snap.SnapshotID, byShard[shard], changed, added)
+		m, err := a.manifest(ctx, h, prior[shard], snap.SnapshotID, byShard[shard], changed, added)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -274,7 +276,7 @@ func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, vers
 		if m.writer == nil {
 			continue
 		}
-		mf, err := m.writer.ToManifestFile(l.uri(name), int64(len(m.data)))
+		mf, err := m.writer.ToManifestFile(a.uri(name), int64(len(m.data)))
 		if err != nil {
 			return nil, nil, fmt.Errorf("iceberglog: write a manifest: %w", err)
 		}
@@ -282,7 +284,9 @@ func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, vers
 		files = append(files, file{name, m.data})
 		kept[name] = m.data
 	}
-	err = each(ctx, files, func(ctx context.Context, _ int, f file) error { return l.putNew(ctx, f.name, f.data) })
+	err = each(ctx, files, func(ctx context.Context, _ int, f file) error {
+		return p.Put(ctx, f.name, f.data)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -292,20 +296,20 @@ func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, vers
 		return nil, nil, fmt.Errorf("iceberglog: write the manifest list: %w", err)
 	}
 	name := prefix + "-list.avro"
-	if err := l.putNew(ctx, name, buf.Bytes()); err != nil {
+	if err := p.Put(ctx, name, buf.Bytes()); err != nil {
 		return nil, nil, err
 	}
 	kept[name] = buf.Bytes()
-	snap.ManifestList = l.uri(name)
+	snap.ManifestList = a.uri(name)
 
 	// Keep what the next commit will read, of the manifests that stay.
-	l.mu.Lock()
+	a.mu.Lock()
 	for _, m := range list {
-		if name, err := l.name(m.FilePath()); err == nil && l.files[name] != nil {
-			kept[name] = l.files[name]
+		if name, err := a.name(m.FilePath()); err == nil && a.files[name] != nil {
+			kept[name] = a.files[name]
 		}
 	}
-	l.mu.Unlock()
+	a.mu.Unlock()
 
 	op := table.OpAppend
 	if removedFiles > 0 {
@@ -317,7 +321,7 @@ func (l *Log) stage(ctx context.Context, h *head, info tablelog.CommitInfo, vers
 		totalRows += m.AddedRows() + m.ExistingRows()
 	}
 	snap.Summary = &table.Summary{Operation: op, Properties: iceberg.Properties{
-		sumVersion:  strconv.FormatInt(version, 10),
+		sumVersion:  strconv.FormatInt(p.Version, 10),
 		sumCommitID: info.GoAlertCommitID,
 		sumStoreID:  info.GoAlertStoreID,
 		sumWriterID: info.GoAlertWriterID,
@@ -338,7 +342,7 @@ type builtManifest struct {
 }
 
 // manifest rewrites one shard's manifest.
-func (l *Log) manifest(ctx context.Context, h *head, prior iceberg.ManifestFile, snapshotID int64, names []string, changed map[string]*tablelog.Add, added map[string]bool) (builtManifest, error) {
+func (a *arbiter) manifest(ctx context.Context, h *head, prior iceberg.ManifestFile, snapshotID int64, names []string, changed map[string]*tablelog.Add, added map[string]bool) (builtManifest, error) {
 	var out builtManifest
 	var buf bytes.Buffer
 	w, err := iceberg.NewManifestWriter(h.meta.Version(), &buf, h.meta.PartitionSpec(), h.meta.CurrentSchema(), snapshotID)
@@ -347,14 +351,14 @@ func (l *Log) manifest(ctx context.Context, h *head, prior iceberg.ManifestFile,
 	}
 	var old []iceberg.ManifestEntry
 	if prior != nil {
-		if old, err = l.entries(ctx, prior); err != nil {
+		if old, err = a.entries(ctx, prior); err != nil {
 			return out, err
 		}
 	}
 	n := 0
 	found := make(map[string]bool)
 	for _, e := range old {
-		name, err := l.name(e.DataFile().FilePath())
+		name, err := a.name(e.DataFile().FilePath())
 		if err != nil {
 			return out, err
 		}
@@ -386,12 +390,10 @@ func (l *Log) manifest(ctx context.Context, h *head, prior iceberg.ManifestFile,
 		var stats struct {
 			NumRecords int64 `json:"numRecords"`
 		}
-		if add.Stats != "" {
-			if err := json.Unmarshal([]byte(add.Stats), &stats); err != nil {
-				return out, fmt.Errorf("iceberglog: the statistics of %s: %w", name, err)
-			}
+		if err := json.Unmarshal([]byte(add.Stats), &stats); err != nil || stats.NumRecords < 1 {
+			return out, fmt.Errorf("iceberglog: %s does not say how many rows it has, so Iceberg readers would skip it (F47)", name)
 		}
-		b, err := iceberg.NewDataFileBuilder(h.meta.PartitionSpec(), iceberg.EntryContentData, l.uri(name), iceberg.ParquetFile,
+		b, err := iceberg.NewDataFileBuilder(h.meta.PartitionSpec(), iceberg.EntryContentData, a.uri(name), iceberg.ParquetFile,
 			nil, nil, nil, stats.NumRecords, add.Size)
 		if err != nil {
 			return out, fmt.Errorf("iceberglog: data file %s: %w", name, err)
@@ -450,8 +452,8 @@ func expired(snaps []table.Snapshot, keep map[int64]bool, newest int) []int64 {
 
 // cleanMetadata deletes this package's metadata files that no snapshot uses
 // and that are older than cutoff.
-func (l *Log) cleanMetadata(ctx context.Context, h *head, cutoff time.Time) (int, error) {
-	names, err := l.cfg.Store.List(ctx, metadataPrefix, "")
+func (a *arbiter) cleanMetadata(ctx context.Context, h *head, cutoff time.Time) (int, error) {
+	names, err := a.cfg.Store.List(ctx, metadataPrefix, "")
 	if err != nil {
 		return 0, err
 	}
@@ -478,19 +480,19 @@ func (l *Log) cleanMetadata(ctx context.Context, h *head, cutoff time.Time) (int
 	var mu sync.Mutex
 	snaps := h.meta.Snapshots()
 	err = each(ctx, snaps, func(ctx context.Context, _ int, s table.Snapshot) error {
-		ms, err := l.manifests(ctx, &s)
+		ms, err := a.manifests(ctx, &s)
 		if err != nil {
 			return err
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		name, err := l.name(s.ManifestList)
+		name, err := a.name(s.ManifestList)
 		if err != nil {
 			return err
 		}
 		used[name] = true
 		for _, m := range ms {
-			if name, err = l.name(m.FilePath()); err != nil {
+			if name, err = a.name(m.FilePath()); err != nil {
 				return err
 			}
 			used[name] = true
@@ -505,7 +507,7 @@ func (l *Log) cleanMetadata(ctx context.Context, h *head, cutoff time.Time) (int
 		if used[name] {
 			continue
 		}
-		if err := l.cfg.Store.Delete(ctx, name); err != nil {
+		if err := a.cfg.Store.Delete(ctx, name); err != nil {
 			return deleted, err
 		}
 		deleted++

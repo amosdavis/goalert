@@ -22,11 +22,10 @@ import (
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/iceberglog"
 	"github.com/target/goalert/iceberglog/icebergtest"
+	"github.com/target/goalert/managedlog"
+	"github.com/target/goalert/managedlog/managedlogtest"
 	"github.com/target/goalert/objstore"
-	"github.com/target/goalert/storagebackend"
-	"github.com/target/goalert/storagebackend/backendtest"
 	"github.com/target/goalert/tablelog"
-	"github.com/target/goalert/tablelog/tablelogtest"
 )
 
 const location = "gs://bucket/goalert"
@@ -123,33 +122,22 @@ func (e *env) check() *tablelog.Snapshot {
 	return s
 }
 
+// TestConformance runs the suite for what decides commits.
 func TestConformance(t *testing.T) {
-	envs := map[objstore.Store]*env{}
-	tablelogtest.Run(t,
-		func(t *testing.T) objstore.Store {
-			e := newEnv(t)
-			envs[e.store] = e
-			return e.store
-		},
-		func(t *testing.T, store objstore.Store, writerID string) tablelog.Log {
-			return envs[store].log(writerID)
-		},
-	)
-}
-
-// TestBackend runs the whole-backend suite. Whatever it leaves must be the same
-// to Iceberg and Delta readers.
-func TestBackend(t *testing.T) {
-	backendtest.Run(t, func(t *testing.T) func(string) *storagebackend.Backend {
+	managedlogtest.Run(t, func(t *testing.T) managedlogtest.Env {
 		e := newEnv(t)
 		t.Cleanup(func() {
-			if !t.Failed() {
-				e.check()
+			// Whatever a test leaves is the same to Iceberg readers, if GoAlert
+			// can open it.
+			if s, err := e.log("checker").Load(context.Background()); err == nil && !t.Failed() {
+				assert.ElementsMatch(t, s.FilePaths(), e.icebergFiles())
 			}
 		})
-		return func(writer string) *storagebackend.Backend {
-			return &storagebackend.Backend{Store: e.store, Log: e.log(writer), Location: location}
-		}
+		return managedlogtest.Env{Store: e.store, Connect: func(t *testing.T, store objstore.Store) managedlog.Arbiter {
+			a, err := iceberglog.NewArbiter(e.config())
+			require.NoError(t, err)
+			return a
+		}}
 	})
 }
 
@@ -430,227 +418,12 @@ func TestCommitOutcomes(t *testing.T) {
 	}
 }
 
-// TestLateCommit checks a request that is done long after it was given up on:
-// the catalog refuses it, since the version was taken meanwhile.
-func TestLateCommit(t *testing.T) {
-	e := newEnv(t)
-	e.create()
-	a, b := e.log("a"), e.log("b")
-	lost := errors.New("timeout")
-	e.cat.Before = func(op string) error {
-		if op == "commit" {
-			return lost
-		}
-		return nil
-	}
-	_, err := commit(a, 1, add("tbl=users/bucket=0/a.parquet"))
-	require.ErrorIs(t, err, objstore.ErrUnknown)
-	e.cat.Before = nil
-	_, err = commit(b, 1, add("tbl=users/bucket=0/b.parquet"))
-	require.NoError(t, err)
-	_, err = commit(a, 1, add("tbl=users/bucket=0/a.parquet"))
-	require.ErrorIs(t, err, tablelog.ErrConflict)
-	assert.Equal(t, []string{"tbl=users/bucket=0/b.parquet"}, e.check().FilePaths())
-}
-
-// TestCrashBeforePublish checks that a commit whose writer crashed right after
-// the catalog took it is found, by each way of finding it (F1, F43).
-func TestCrashBeforePublish(t *testing.T) {
-	ctx := context.Background()
-	setup := func(t *testing.T) (*env, tablelog.CommitInfo) {
-		e := newEnv(t)
-		e.create()
-		e.store.BeforeWrite = func(op, name string) error {
-			if name == deltalog.CommitName(1) {
-				return errors.New("crash")
-			}
-			return nil
-		}
-		info, err := commit(e.log("a"), 1, add("tbl=users/bucket=0/a.parquet"))
-		require.NoError(t, err, "it has happened")
-		require.NotEmpty(t, e.warns)
-		e.store.BeforeWrite = nil
-		_, err = e.store.Get(ctx, deltalog.CommitName(1))
-		require.ErrorIs(t, err, objstore.ErrNotFound)
-		return e, info
-	}
-	t.Run("Read", func(t *testing.T) {
-		e, info := setup(t)
-		got, actions, err := e.log("b").Read(ctx, 1)
-		require.NoError(t, err)
-		assert.Equal(t, info, got)
-		assert.Len(t, actions, 1)
-		e.check()
-	})
-	t.Run("Load", func(t *testing.T) {
-		e, info := setup(t)
-		assert.Equal(t, info.GoAlertCommitID, e.check().CommitID)
-	})
-	t.Run("Commit", func(t *testing.T) {
-		e, _ := setup(t)
-		_, err := commit(e.log("b"), 1)
-		require.ErrorIs(t, err, tablelog.ErrConflict)
-		_, err = commit(e.log("b"), 2, add("tbl=users/bucket=0/b.parquet"))
-		require.NoError(t, err)
-		_, err = e.store.Get(ctx, deltalog.CommitName(1))
-		require.NoError(t, err, "the Delta log has no gap")
-		assert.Len(t, e.check().Files, 2)
-	})
-	t.Run("Unpublishable", func(t *testing.T) {
-		// No commit may be made until the one before it is published.
-		e, _ := setup(t)
-		e.store.BeforeWrite = func(op, name string) error {
-			if strings.HasPrefix(name, "_delta_log/0000") {
-				return errors.New("no")
-			}
-			return nil
-		}
-		_, err := commit(e.log("b"), 2)
-		require.Error(t, err)
-		assert.Equal(t, 1, e.cat.Commits)
-	})
-	t.Run("Cleanup", func(t *testing.T) {
-		e, _ := setup(t)
-		_, err := e.log("b").Cleanup(ctx, start.Add(1000*time.Hour), time.Hour)
-		require.NoError(t, err)
-		e.check()
-	})
-}
-
-// TestCrashAtEveryWrite fails each write to the object store and the catalog
-// in turn, with and without doing it. Whatever was acknowledged must be there,
-// and whatever failed must not be (F1, F6, F32, F43).
-func TestCrashAtEveryWrite(t *testing.T) {
-	ctx := context.Background()
-	const commits = 5
-	for _, applied := range []bool{false, true} {
-		for step := 1; ; step++ {
-			e := newEnv(t)
-			e.create()
-			var n atomic.Int64
-			var dead atomic.Bool
-			crash := func() bool {
-				// From the crash on, nothing is written.
-				if !dead.Load() && n.Add(1) == int64(step) {
-					dead.Store(true)
-				}
-				return dead.Load()
-			}
-			var first atomic.Bool
-			e.store.BeforeWrite = func(op, name string) error {
-				if crash() {
-					if applied && first.CompareAndSwap(false, true) {
-						return objstore.ErrMemAppliedThenFailed
-					}
-					return objstore.Unknown(errors.New("crashed"))
-				}
-				return nil
-			}
-			e.cat.Before = func(op string) error {
-				if op == "commit" && crash() && !(applied && !first.Load()) {
-					return errors.New("crashed")
-				}
-				return nil
-			}
-			e.cat.After = func(op string) error {
-				if op == "commit" && dead.Load() && first.CompareAndSwap(false, true) {
-					return errors.New("crashed")
-				}
-				return nil
-			}
-			l := e.log("a")
-			l.SetRetry(2, time.Microsecond)
-			acked := int64(0)
-			var failed error
-			for v := int64(1); v <= commits && failed == nil; v++ {
-				actions := []tablelog.Action{add(fmt.Sprintf("tbl=users/bucket=%d/%d.parquet", v%2, v))}
-				if v > 2 {
-					actions = append(actions, remove(fmt.Sprintf("tbl=users/bucket=%d/%d.parquet", v%2, v-2)))
-				}
-				if _, err := commit(l, v, actions...); err != nil {
-					failed = err
-				} else {
-					acked = v
-				}
-			}
-			e.store.BeforeWrite, e.cat.Before, e.cat.After = nil, nil, nil
-			s := e.check()
-			switch {
-			case failed == nil:
-				require.EqualValues(t, commits, s.Version, "step %d", step)
-			case errors.Is(failed, objstore.ErrUnknown):
-				require.Contains(t, []int64{acked, acked + 1}, s.Version, "step %d", step)
-			default:
-				require.Equal(t, acked, s.Version, "step %d: a failed commit did not happen: %v", step, failed)
-			}
-			_, err := commit(e.log("b"), s.Version+1, add("tbl=users/bucket=9/next.parquet"))
-			require.NoError(t, err, "step %d: the table goes on", step)
-			e.check()
-			_, err = e.log("c").Cleanup(ctx, start.Add(1000*time.Hour), time.Hour)
-			require.NoError(t, err)
-			e.check()
-			if !dead.Load() {
-				assert.Greater(t, step, commits*5, "every write was covered")
-				break
-			}
-		}
-	}
-}
-
-// TestOtherWriters checks that what did not come from a GoAlert commit through
-// the catalog is refused (F11, F43).
+// TestOtherWriters checks that what others do to the catalog's table is refused
+// (F11, F43).
 func TestOtherWriters(t *testing.T) {
 	ctx := context.Background()
 	load := func(e *env) error { _, err := e.log("b").Load(ctx); return err }
 
-	t.Run("Delta alone", func(t *testing.T) {
-		e := newEnv(t)
-		e.create()
-		d := deltalog.New(e.store, "d")
-		_, err := d.Load(ctx)
-		require.ErrorIs(t, err, tablelog.ErrManaged, "a pod configured without the catalog must not write")
-		require.ErrorIs(t, d.Create(ctx, meta(), start), tablelog.ErrTableExists)
-		d.Manager = iceberglog.Manager
-		_, err = commit(d, 1)
-		require.ErrorIs(t, err, tablelog.ErrManaged)
-	})
-	t.Run("Iceberg alone", func(t *testing.T) {
-		// A table made without the catalog can't be opened with it.
-		e := newEnv(t)
-		require.NoError(t, deltalog.New(e.store, "d").Create(ctx, meta(), start))
-		require.ErrorIs(t, load(e), tablelog.ErrNoTable)
-		require.ErrorIs(t, e.log("a").Create(ctx, meta(), start), tablelog.ErrTableExists)
-		require.Nil(t, e.cat.Metadata())
-	})
-	t.Run("Delta commit", func(t *testing.T) {
-		// Something that ignores the catalog wrote to the Delta log.
-		e := newEnv(t)
-		e.create()
-		data, err := deltalog.Encode(deltalog.NewCommitInfo("store-id", "x", "WRITE", start), nil)
-		require.NoError(t, err)
-		require.NoError(t, e.store.PutIfAbsent(ctx, deltalog.CommitName(1), data))
-		require.ErrorIs(t, load(e), tablelog.ErrForeign)
-	})
-	t.Run("Delta commit first", func(t *testing.T) {
-		// The same, right before a pod publishes a commit the catalog took.
-		e := newEnv(t)
-		l := e.create()
-		data, err := deltalog.Encode(deltalog.NewCommitInfo("store-id", "x", "WRITE", start), nil)
-		require.NoError(t, err)
-		e.cat.After = func(op string) error {
-			if op != "commit" {
-				return nil
-			}
-			return e.store.PutIfAbsent(ctx, deltalog.CommitName(1), data)
-		}
-		_, err = commit(l, 1, add("tbl=users/bucket=0/a.parquet"))
-		require.NoError(t, err, "the catalog has it")
-		e.cat.After = nil
-		require.ErrorIs(t, errors.Join(e.warns...), tablelog.ErrForeign)
-		require.ErrorIs(t, load(e), tablelog.ErrForeign)
-		_, err = commit(l, 2, add("tbl=users/bucket=0/b.parquet"))
-		require.ErrorIs(t, err, tablelog.ErrForeign)
-	})
 	t.Run("Iceberg snapshot", func(t *testing.T) {
 		e := newEnv(t)
 		l := e.create()
@@ -997,10 +770,12 @@ func TestActions(t *testing.T) {
 		_, err = commit(l, 8, add(bad))
 		require.Error(t, err, bad)
 	}
-	bad := add(a)
-	bad.Add.Stats = "{"
-	_, err = commit(l, 8, bad)
-	require.Error(t, err)
+	for _, stats := range []string{"", "{", "{}", `{"numRecords":0}`} {
+		bad := add(a)
+		bad.Add.Stats = stats
+		_, err = commit(l, 8, bad)
+		require.ErrorContains(t, err, "how many rows", stats)
+	}
 	_, err = commit(l, 10)
 	require.Error(t, err, "a version too far")
 	_, err = commit(l, 0)

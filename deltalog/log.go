@@ -225,8 +225,8 @@ func (l *Log) Create(ctx context.Context, meta MetaData, at time.Time) error {
 	if err != nil {
 		return err
 	}
-	if m := meta.Configuration[ManagerKey] + l.Manager; m != "" {
-		return fmt.Errorf("%w: by %q", ErrManaged, m)
+	if m := meta.Configuration[ManagerKey]; m != l.Manager {
+		return fmt.Errorf("%w: by %q, not %q", ErrManaged, m, l.Manager)
 	}
 	_, err = l.commit(ctx, 0, meta.ID, "CREATE TABLE", at, CreateActions(meta))
 	if errors.Is(err, ErrConflict) {

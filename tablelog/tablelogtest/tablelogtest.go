@@ -38,7 +38,7 @@ func Run(t *testing.T, newStore func(t *testing.T) objstore.Store, newLog func(t
 		return tablelog.MetaData{ID: "store-id", Name: "goalert", SchemaString: `{"type":"struct","fields":[]}`}
 	}
 	add := func(path string) tablelog.Action {
-		return tablelog.Action{Add: &tablelog.Add{Path: path, Size: 1, DataChange: true, PartitionValues: map[string]string{"tbl": "users", "bucket": "0"}}}
+		return tablelog.Action{Add: &tablelog.Add{Path: path, Size: 1, DataChange: true, Stats: `{"numRecords":1}`, PartitionValues: map[string]string{"tbl": "users", "bucket": "0"}}}
 	}
 	remove := func(path string) tablelog.Action {
 		return tablelog.Action{Remove: &tablelog.Remove{Path: path, DeletionTimestamp: start.UnixMilli(), DataChange: true}}
