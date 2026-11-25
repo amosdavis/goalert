@@ -21,11 +21,17 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaKeys // the Delta backend, if set (delta.go)
 
 	keys    keyring.Keyring
 	reg     *nfydest.Registry
-	ncStore *notificationchannel.Store
+	ncStore destMapper
+}
+
+// destMapper is the part of the notification channel store that is used here.
+type destMapper interface {
+	MapDestToID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error)
 }
 
 func NewStore(ctx context.Context, db *sql.DB, keys keyring.Keyring, reg *nfydest.Registry, ncStore *notificationchannel.Store) *Store {
@@ -65,6 +71,9 @@ func (s *Store) GetServiceID(ctx context.Context, id string, t Type) (string, er
 		return "", err
 	}
 
+	if s.delta != nil {
+		return s.delta.serviceID(ctx, keyUUID, t)
+	}
 	serviceID, err := gadb.New(s.db).IntKeyGetServiceID(ctx, gadb.IntKeyGetServiceIDParams{
 		ID:   keyUUID,
 		Type: gadb.EnumIntegrationKeysType(t),
@@ -81,7 +90,6 @@ func (s *Store) GetServiceID(ctx context.Context, id string, t Type) (string, er
 }
 
 func (s *Store) Create(ctx context.Context, tx txn.Tx, i *IntegrationKey) (*IntegrationKey, error) {
-	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
@@ -103,6 +111,14 @@ func (s *Store) Create(ctx context.Context, tx txn.Tx, i *IntegrationKey) (*Inte
 
 	keyUUID := uuid.New()
 	n.ID = keyUUID.String()
+	if s.delta != nil {
+		err = s.delta.create(ctx, tx, n)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err = gadb.New(dbtx).IntKeyCreate(ctx, gadb.IntKeyCreateParams{
 		ID:        keyUUID,
 		Name:      n.Name,
@@ -131,7 +147,6 @@ func (s *Store) Delete(ctx context.Context, tx txn.Tx, id string) error {
 }
 
 func (s *Store) DeleteMany(ctx context.Context, tx txn.Tx, ids []string) error {
-	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -142,6 +157,10 @@ func (s *Store) DeleteMany(ctx context.Context, tx txn.Tx, ids []string) error {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.delete(ctx, tx, uuids)
+	}
+	dbtx := sqltxn.DBTX(s.db, tx)
 	err = gadb.New(dbtx).IntKeyDelete(ctx, uuids)
 	return err
 }
@@ -157,6 +176,9 @@ func (s *Store) FindOne(ctx context.Context, id string) (*IntegrationKey, error)
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOne(ctx, keyUUID)
+	}
 	row, err := gadb.New(s.db).IntKeyFindOne(ctx, keyUUID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -186,6 +208,9 @@ func (s *Store) FindAllByService(ctx context.Context, serviceID string) ([]Integ
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllByService(ctx, serviceUUID)
+	}
 	rows, err := gadb.New(s.db).IntKeyFindByService(ctx, serviceUUID)
 	if err != nil {
 		return nil, err

@@ -99,6 +99,9 @@ func (s *Store) SearchKeys(ctx context.Context, opts *KeySearchOptions) ([]strin
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.searchKeys(ctx, KeySearchOptions(*data))
+	}
 	query, args, err := search.RenderQuery(ctx, keySearchTemplate, data)
 	if err != nil {
 		return nil, errors.Wrap(err, "render query")

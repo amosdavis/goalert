@@ -99,13 +99,17 @@ func (s *Store) ValidateUIKConfigV1(ctx context.Context, cfg gadb.UIKConfigV1) e
 }
 
 func (s *Store) Config(ctx context.Context, tx txn.Tx, keyID uuid.UUID) (*gadb.UIKConfigV1, error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Service)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg, err := gadb.New(db).IntKeyGetConfig(ctx, keyID)
+	var cfg gadb.UIKConfig
+	if s.delta != nil {
+		cfg, err = s.delta.config(ctx, tx, keyID)
+	} else {
+		cfg, err = gadb.New(sqltxn.DBTX(s.db, tx)).IntKeyGetConfig(ctx, keyID)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return &gadb.UIKConfigV1{}, nil
 	}
@@ -121,7 +125,6 @@ func (s *Store) Config(ctx context.Context, tx txn.Tx, keyID uuid.UUID) (*gadb.U
 }
 
 func (s *Store) SetConfig(ctx context.Context, tx txn.Tx, keyID uuid.UUID, cfg *gadb.UIKConfigV1) error {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -134,17 +137,19 @@ func (s *Store) SetConfig(ctx context.Context, tx txn.Tx, keyID uuid.UUID, cfg *
 		}
 	}
 
-	gdb := gadb.New(db)
-	keyType, err := gdb.IntKeyGetType(ctx, keyID)
+	keyType, err := s.keyType(ctx, tx, keyID)
 	if err != nil {
 		return err
 	}
-	if keyType != gadb.EnumIntegrationKeysTypeUniversal {
+	if keyType != TypeUniversal {
 		return validation.NewGenericError("config only supported for universal keys")
 	}
 
 	if cfg == nil {
-		return gdb.IntKeyDeleteConfig(ctx, keyID)
+		if s.delta != nil {
+			return s.delta.deleteConfig(ctx, tx, keyID)
+		}
+		return gadb.New(sqltxn.DBTX(s.db, tx)).IntKeyDeleteConfig(ctx, keyID)
 	}
 
 	// ensure all rule IDs are set, and all actions have a channel
@@ -162,7 +167,10 @@ func (s *Store) SetConfig(ctx context.Context, tx txn.Tx, keyID uuid.UUID, cfg *
 		return err
 	}
 
-	err = gadb.New(db).IntKeySetConfig(ctx, gadb.IntKeySetConfigParams{
+	if s.delta != nil {
+		return s.delta.setConfig(ctx, tx, keyID, cfg)
+	}
+	err = gadb.New(sqltxn.DBTX(s.db, tx)).IntKeySetConfig(ctx, gadb.IntKeySetConfigParams{
 		ID:     keyID,
 		Config: gadb.UIKConfig{Version: 1, V1: *cfg},
 	})
@@ -171,6 +179,15 @@ func (s *Store) SetConfig(ctx context.Context, tx txn.Tx, keyID uuid.UUID, cfg *
 	}
 
 	return nil
+}
+
+// keyType returns a key's type, or sql.ErrNoRows if it doesn't exist.
+func (s *Store) keyType(ctx context.Context, tx txn.Tx, keyID uuid.UUID) (Type, error) {
+	if s.delta != nil {
+		return s.delta.keyType(ctx, tx, keyID)
+	}
+	t, err := gadb.New(sqltxn.DBTX(s.db, tx)).IntKeyGetType(ctx, keyID)
+	return Type(t), err
 }
 
 func (s *Store) setActionChannels(ctx context.Context, tx txn.Tx, actions []gadb.UIKActionV1) error {

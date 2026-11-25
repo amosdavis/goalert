@@ -96,6 +96,9 @@ func (s *Store) SearchValues(ctx context.Context, opts *ValueSearchOptions) ([]s
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.searchValues(ctx, ValueSearchOptions(*data))
+	}
 	query, args, err := search.RenderQuery(ctx, valueSearchTemplate, data)
 	if err != nil {
 		return nil, errors.Wrap(err, "render query")

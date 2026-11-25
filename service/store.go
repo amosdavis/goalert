@@ -15,7 +15,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaServices // the Delta backend, if set (delta.go)
 
 	findOne     *sql.Stmt
 	findOneUp   *sql.Stmt
@@ -98,7 +99,6 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 }
 
 func (s *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Service, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
@@ -107,7 +107,11 @@ func (s *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Se
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.findOneForUpdate(ctx, tx, uuid.MustParse(id))
+	}
 	var svc Service
+	stx := sqltxn.Unwrap(tx)
 	err = stx.StmtContext(ctx, s.findOneUp).QueryRowContext(ctx, id).Scan(&svc.ID, &svc.Name, &svc.Description, &svc.EscalationPolicyID)
 	if err != nil {
 		return nil, err
@@ -128,6 +132,9 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.find(ctx, permission.UserNullUUID(ctx), parseIDs(ids))
+	}
 
 	rows, err := s.findMany.QueryContext(ctx, sqlutil.UUIDArray(ids), permission.UserNullUUID(ctx))
 	if err != nil {
@@ -138,7 +145,6 @@ func (s *Store) FindMany(ctx context.Context, ids []string) ([]Service, error) {
 }
 
 func (s *Store) CreateServiceTx(ctx context.Context, tx txn.Tx, svc *Service) (*Service, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
@@ -150,6 +156,13 @@ func (s *Store) CreateServiceTx(ctx context.Context, tx txn.Tx, svc *Service) (*
 	}
 
 	n.ID = uuid.New().String()
+	if s.delta != nil {
+		if err := s.delta.insert(ctx, tx, n); err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.insert
 	if stx != nil {
 		stmt = stx.Stmt(stmt)
@@ -163,7 +176,6 @@ func (s *Store) CreateServiceTx(ctx context.Context, tx txn.Tx, svc *Service) (*
 }
 
 func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -172,6 +184,10 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.delete(ctx, tx, parseIDs(ids))
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.delete
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -189,7 +205,6 @@ func wrap(tx txn.Tx, s *sql.Stmt) *sql.Stmt {
 }
 
 func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, svc *Service) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -204,13 +219,16 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, svc *Service) error {
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, n)
+	}
 
 	mExp := sql.NullTime{
 		Time:  n.MaintenanceExpiresAt,
 		Valid: !n.MaintenanceExpiresAt.IsZero(),
 	}
 
-	_, err = wrap(stx, s.update).ExecContext(ctx, n.ID, n.Name, n.Description, n.EscalationPolicyID, mExp)
+	_, err = wrap(tx, s.update).ExecContext(ctx, n.ID, n.Name, n.Description, n.EscalationPolicyID, mExp)
 	return err
 }
 
@@ -236,6 +254,9 @@ func (s *Store) FindOneForUser(ctx context.Context, userID, serviceID string) (*
 	err = permission.LimitCheckAny(ctx, userCheck, permission.System)
 	if err != nil {
 		return nil, err
+	}
+	if s.delta != nil {
+		return s.delta.findOne(ctx, parseUserID(userID), uuid.MustParse(serviceID))
 	}
 
 	row := s.findOne.QueryRowContext(ctx, serviceID, uid)
@@ -279,6 +300,9 @@ func (s *Store) FindAllByEP(ctx context.Context, epID string) ([]Service, error)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
+	}
+	if s.delta != nil {
+		return s.delta.findAllByEP(ctx, epID)
 	}
 
 	rows, err := s.findAllByEP.QueryContext(ctx, epID)

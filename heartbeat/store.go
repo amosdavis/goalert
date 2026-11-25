@@ -17,7 +17,8 @@ import (
 
 // Store manages heartbeat checks and recording heartbeats.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaMonitors // the Delta backend, if set (delta.go)
 }
 
 // NewStore creates a new Store and prepares all sql statements.
@@ -29,7 +30,6 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 
 // CreateTx creates a new heartbeat Monitor.
 func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, m *Monitor) (*Monitor, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -42,7 +42,14 @@ func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, m *Monitor) (*Monitor, 
 	id := uuid.New()
 	n.ID = id.String()
 
-	err = s.dbtx(stx).HBInsert(ctx, gadb.HBInsertParams{
+	if s.delta != nil {
+		err = s.delta.insert(ctx, tx, id, n)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+	err = s.dbtx(tx).HBInsert(ctx, gadb.HBInsertParams{
 		ID:                id,
 		Name:              n.Name,
 		ServiceID:         uuid.MustParse(n.ServiceID), // already validated in Normalize
@@ -73,12 +80,14 @@ func (s *Store) RecordHeartbeat(ctx context.Context, idStr string) error {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.record(ctx, id)
+	}
 	return s.dbtx(nil).HBRecordHeartbeat(ctx, id)
 }
 
 // DeleteTx deletes the heartbeat check with the given ID(s).
 func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, idStrs ...string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -89,12 +98,14 @@ func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, idStrs ...string) error
 		return err
 	}
 
-	return s.dbtx(stx).HBDelete(ctx, ids)
+	if s.delta != nil {
+		return s.delta.delete(ctx, tx, ids)
+	}
+	return s.dbtx(tx).HBDelete(ctx, ids)
 }
 
 // UpdateTx updates a heartbeat Monitor.
 func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, m *Monitor) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return err
@@ -110,7 +121,10 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, m *Monitor) error {
 		return err
 	}
 
-	return s.dbtx(stx).HBUpdate(ctx, gadb.HBUpdateParams{
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, id, n)
+	}
+	return s.dbtx(tx).HBUpdate(ctx, gadb.HBUpdateParams{
 		ID:                id,
 		Name:              n.Name,
 		HeartbeatInterval: sqlutil.IntervalMicro(n.Timeout),
@@ -121,7 +135,6 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, m *Monitor) error {
 
 // FindOneTx returns a heartbeat montior for updating.
 func (s *Store) FindOneTx(ctx context.Context, tx txn.Tx, idStr string) (*Monitor, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -132,7 +145,10 @@ func (s *Store) FindOneTx(ctx context.Context, tx txn.Tx, idStr string) (*Monito
 		return nil, err
 	}
 
-	m, err := s.dbtx(stx).HBByIDForUpdate(ctx, id)
+	if s.delta != nil {
+		return s.delta.findOne(ctx, tx, id)
+	}
+	m, err := s.dbtx(tx).HBByIDForUpdate(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +175,9 @@ func (s *Store) FindMany(ctx context.Context, idStrs []string) ([]Monitor, error
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findMany(ctx, ids)
+	}
 	rows, err := s.dbtx(nil).HBManyByID(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -197,6 +216,9 @@ func (s *Store) FindAllByService(ctx context.Context, serviceIDStr string) ([]Mo
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllByService(ctx, serviceID)
+	}
 	rows, err := s.dbtx(nil).HBByService(ctx, serviceID)
 	if err != nil {
 		return nil, err

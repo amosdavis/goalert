@@ -398,7 +398,8 @@ Unique:
 - heartbeat_monitor_name_service_id (index): `(lower(name), service_id)`
 - heartbeat_monitors_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `heartbeat/delta.go`, with the limit trigger in `checkLimit`. The
+interval is int64 microseconds. The engine's processing is a later phase.
 
 ### integration_keys
 
@@ -415,7 +416,7 @@ Unique:
 - idx_int_key_name_svc_ext (index): `(lower(name), service_id, COALESCE(external_system_name, ''::text))`
 - integration_keys_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `integrationkey/delta.go`, with the limit trigger in `create`.
 
 ### keyring
 
@@ -442,7 +443,10 @@ Unique:
 - idx_labels_resource_id (index): `(tgt_service_id, tgt_schedule_id, tgt_rotation_id, tgt_ep_id, key)`
 - labels_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `label/delta.go`. The four foreign keys cascade. A target has one
+label with a key, which `idx_labels_resource_id` was meant to ensure: on
+Postgres every row has three null targets, nulls are distinct, and setting a
+label again adds a row.
 
 ### message_status_history
 
@@ -561,7 +565,9 @@ Unique:
 - pending_signals_message_id_key: `(message_id)`
 - pending_signals_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `integrationkey/delta.go`: both limit triggers are in `insertSignal`,
+and `trg_pending_signals_after_insert` is the optional `NewSignal` func. The
+engine's signal manager is a later phase.
 
 ### region_ids
 
@@ -800,7 +806,9 @@ Unique:
 - svc_ep_uniq (index): `(id, escalation_policy_id)`
 - svc_ep_uniq: `(id, escalation_policy_id)`
 
-**Go:** not ported yet.
+**Go:** ported, `service/delta.go` and `service/deltasearch.go`. The policy foreign
+key restricts. `trg_10_clear_ep_state_on_svc_ep_change` and the composite
+`svc_ep_fkey` are a func that the escalation port supplies.
 
 ### switchover_log
 
@@ -869,7 +877,7 @@ Unique:
 - uik_config_secondary_token_key (index): `(secondary_token)`
 - uik_config_secondary_token_key: `(secondary_token)`
 
-**Go:** not ported yet.
+**Go:** ported, `integrationkey/delta.go`, with both token constraints.
 
 ### user_calendar_subscriptions
 

@@ -59,10 +59,7 @@ func (s *Store) AuthorizeUIK(ctx context.Context, tokStr string) (context.Contex
 		return ctx, permission.Unauthorized()
 	}
 
-	serviceID, err := gadb.New(s.db).IntKeyUIKValidateService(ctx, gadb.IntKeyUIKValidateServiceParams{
-		KeyID:   keyID,
-		TokenID: uuid.NullUUID{UUID: tokID, Valid: true},
-	})
+	serviceID, err := s.uikServiceID(ctx, keyID, tokID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ctx, permission.Unauthorized()
 	}
@@ -70,12 +67,25 @@ func (s *Store) AuthorizeUIK(ctx context.Context, tokStr string) (context.Contex
 		return ctx, err
 	}
 
-	ctx = permission.ServiceSourceContext(ctx, serviceID.String(), &permission.SourceInfo{
+	ctx = permission.ServiceSourceContext(ctx, serviceID, &permission.SourceInfo{
 		Type: permission.SourceTypeUIK,
 		ID:   keyID.String(),
 	})
 
 	return ctx, nil
+}
+
+// uikServiceID returns the service of a universal key, or sql.ErrNoRows if
+// the token isn't one of the key's.
+func (s *Store) uikServiceID(ctx context.Context, keyID, tokID uuid.UUID) (string, error) {
+	if s.delta != nil {
+		return s.delta.uikServiceID(ctx, keyID, tokID)
+	}
+	id, err := gadb.New(s.db).IntKeyUIKValidateService(ctx, gadb.IntKeyUIKValidateServiceParams{
+		KeyID:   keyID,
+		TokenID: uuid.NullUUID{UUID: tokID, Valid: true},
+	})
+	return id.String(), err
 }
 
 func (s *Store) TokenHints(ctx context.Context, tx txn.Tx, id uuid.UUID) (primary, secondary string, err error) {
@@ -84,6 +94,9 @@ func (s *Store) TokenHints(ctx context.Context, tx txn.Tx, id uuid.UUID) (primar
 		return "", "", err
 	}
 
+	if s.delta != nil {
+		return s.delta.tokenHints(ctx, tx, id)
+	}
 	row, err := gadb.New(s.db).IntKeyTokenHints(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
@@ -96,17 +109,16 @@ func (s *Store) TokenHints(ctx context.Context, tx txn.Tx, id uuid.UUID) (primar
 }
 
 func (s *Store) GenerateToken(ctx context.Context, tx txn.Tx, id uuid.UUID) (string, error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return "", err
 	}
 
-	key, err := gadb.New(db).IntKeyFindOne(ctx, id)
+	keyType, err := s.keyType(ctx, tx, id)
 	if err != nil {
 		return "", err
 	}
-	if key.Type != gadb.EnumIntegrationKeysType(TypeUniversal) {
+	if keyType != TypeUniversal {
 		return "", validation.NewFieldError("ID", "key is not a universal key")
 	}
 
@@ -127,7 +139,6 @@ func (s *Store) GenerateToken(ctx context.Context, tx txn.Tx, id uuid.UUID) (str
 }
 
 func (s *Store) setToken(ctx context.Context, tx txn.Tx, keyID, tokenID uuid.UUID, tokenHint string) error {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -138,7 +149,10 @@ func (s *Store) setToken(ctx context.Context, tx txn.Tx, keyID, tokenID uuid.UUI
 		return errors.New("invalid token hint")
 	}
 
-	gdb := gadb.New(db)
+	if s.delta != nil {
+		return s.delta.setToken(ctx, tx, keyID, tokenID, tokenHint)
+	}
+	gdb := gadb.New(sqltxn.DBTX(s.db, tx))
 
 	_, err = gdb.IntKeySetSecondaryToken(ctx, gadb.IntKeySetSecondaryTokenParams{
 		ID:                 keyID,
@@ -166,13 +180,15 @@ func (s *Store) setToken(ctx context.Context, tx txn.Tx, keyID, tokenID uuid.UUI
 }
 
 func (s *Store) PromoteSecondaryToken(ctx context.Context, tx txn.Tx, id uuid.UUID) error {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
 
-	hint, err := gadb.New(db).IntKeyPromoteSecondary(ctx, id)
+	if s.delta != nil {
+		return s.delta.promoteSecondary(ctx, tx, id)
+	}
+	hint, err := gadb.New(sqltxn.DBTX(s.db, tx)).IntKeyPromoteSecondary(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -185,13 +201,15 @@ func (s *Store) PromoteSecondaryToken(ctx context.Context, tx txn.Tx, id uuid.UU
 }
 
 func (s *Store) DeleteSecondaryToken(ctx context.Context, tx txn.Tx, id uuid.UUID) error {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
 
-	err = gadb.New(db).IntKeyDeleteSecondaryToken(ctx, id)
+	if s.delta != nil {
+		return s.delta.deleteSecondary(ctx, tx, id)
+	}
+	err = gadb.New(sqltxn.DBTX(s.db, tx)).IntKeyDeleteSecondaryToken(ctx, id)
 	if err != nil {
 		return err
 	}

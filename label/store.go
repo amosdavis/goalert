@@ -17,7 +17,8 @@ import (
 
 // Store allows the lookup and management of Labels.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaLabels // the Delta backend, if set (delta.go)
 }
 
 // NewStore will Set a DB backend from a sql.DB. An error will be returned if statements fail to prepare.
@@ -58,7 +59,6 @@ func (l *Label) tgtRot() uuid.NullUUID {
 // SetTx will set a label for the service. It can be used to set the key-value pair for the label,
 // delete a label or update the value given the label's key.
 func (s *Store) SetTx(ctx context.Context, tx txn.Tx, label *Label) error {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return err
@@ -69,6 +69,13 @@ func (s *Store) SetTx(ctx context.Context, tx txn.Tx, label *Label) error {
 		return err
 	}
 
+	if s.delta != nil {
+		if n.Value == "" {
+			return s.delta.deleteKey(ctx, tx, label)
+		}
+		return s.delta.set(ctx, tx, label)
+	}
+	db := sqltxn.DBTX(s.db, tx)
 	if n.Value == "" { // delete if value is empty
 		err = gadb.New(db).LabelDeleteKeyByTarget(ctx, gadb.LabelDeleteKeyByTargetParams{
 			Key:        label.Key,
@@ -101,12 +108,15 @@ func (s *Store) SetTx(ctx context.Context, tx txn.Tx, label *Label) error {
 
 // FindAllByTarget finds all labels for a particular target. It returns all key-value pairs.
 func (s *Store) FindAllByTarget(ctx context.Context, tx txn.Tx, t assignment.Target) ([]Label, error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllByTarget(ctx, tx, t)
+	}
+	db := sqltxn.DBTX(s.db, tx)
 	label := Label{Target: t}
 	rows, err := gadb.New(db).LabelFindAllByTarget(ctx, gadb.LabelFindAllByTargetParams{
 		ServiceID:  label.tgtSvc(),
@@ -132,11 +142,13 @@ func (s *Store) FindAllByTarget(ctx context.Context, tx txn.Tx, t assignment.Tar
 }
 
 func (s *Store) UniqueKeysTx(ctx context.Context, tx txn.Tx) ([]string, error) {
-	db := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
-	return gadb.New(db).LabelUniqueKeys(ctx)
+	if s.delta != nil {
+		return s.delta.uniqueKeys(ctx, tx)
+	}
+	return gadb.New(sqltxn.DBTX(s.db, tx)).LabelUniqueKeys(ctx)
 }

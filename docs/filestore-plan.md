@@ -441,3 +441,10 @@ holder while it is sending.
   (`SetScheduleOnCallNotificationRules`, escalation policy actions, the
   integration key config, `createUserContactMethod`) call `ResolveDests` or
   `Normalize` before it. Until then those return an error on the Delta backend.
+- 2026-11-25: Phase 3: labels, heartbeat monitors, services and integration
+  keys. A transaction in which a constraint failed can't commit any more, and a
+  panic in a transaction ends only that transaction (F8, F41). Open: a heartbeat
+  is a commit of its own unless it waits behind another (F37, F40), so many
+  monitors need a short group delay; and a new key or token can be refused by a
+  pod that has not caught up (F29), so a miss should be retried at the latest
+  version.
