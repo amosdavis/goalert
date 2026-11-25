@@ -96,3 +96,38 @@ func TestUnwrap(t *testing.T) {
 
 	assert.Panics(t, func() { deltatxn.Unwrap(foreignTx{}) }, "a running GoAlert never mixes backends (F23)")
 }
+
+func TestReadAndWrite(t *testing.T) {
+	ctx := context.Background()
+	db, rows := open(t)
+
+	// Without a transaction, each runs in one of its own.
+	require.NoError(t, deltatxn.Write(ctx, db, nil, func(s deltatxn.Scope) error {
+		assert.False(t, s.Now.IsZero())
+		return rows.Insert(s.Tx, row{ID: "a"}, "rows_pkey")
+	}))
+	err := deltatxn.Write(ctx, db, nil, func(s deltatxn.Scope) error {
+		return rows.Insert(s.Tx, row{ID: "a"}, "rows_pkey")
+	})
+	var uerr *filestore.UniqueError
+	require.ErrorAs(t, err, &uerr, "Insert refuses to replace a row")
+	assert.Equal(t, "rows_pkey", uerr.ConstraintName())
+
+	// In a transaction, they join it, and see its writes.
+	require.NoError(t, db.Run(ctx, nil, func(tx txn.Tx) error {
+		if err := deltatxn.Write(ctx, db, tx, func(s deltatxn.Scope) error { return rows.Put(s.Tx, row{ID: "b"}) }); err != nil {
+			return err
+		}
+		return deltatxn.Read(ctx, db, tx, func(s deltatxn.Scope) error {
+			_, ok := rows.Get(s.Reader, "b")
+			assert.True(t, ok)
+			return nil
+		})
+	}))
+
+	require.NoError(t, db.Run(ctx, &txn.Options{ReadOnly: true}, func(tx txn.Tx) error {
+		err := deltatxn.Write(ctx, db, tx, func(deltatxn.Scope) error { return nil })
+		assert.ErrorIs(t, err, deltatxn.ErrReadOnly)
+		return nil
+	}))
+}

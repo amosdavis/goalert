@@ -3,8 +3,6 @@ package user
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"fmt"
 
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/permission"
@@ -51,10 +49,6 @@ func NewDeltaStore(db txn.DB, tables *DeltaTables, isFavorite FavoriteFunc) *Sto
 	return &Store{delta: &deltaUsers{db: db, DeltaTables: tables, isFavorite: isFavorite}}
 }
 
-// errNotPorted is returned by the methods that don't run on the Delta
-// backend yet (docs/filestore-plan.md, phase 3).
-var errNotPorted = errors.New("user: not available on the Delta backend yet")
-
 type deltaUsers struct {
 	db txn.DB
 	*DeltaTables
@@ -77,52 +71,32 @@ func (r userRow) user(isFavorite bool) User {
 	return u
 }
 
-// in runs fn with the parts of tx, or in a transaction of its own when tx
-// is nil.
-func (d *deltaUsers) in(ctx context.Context, tx txn.Tx, readOnly bool, fn func(ftx *filestore.Tx, r filestore.Reader) error) error {
-	if tx != nil {
-		ftx, r := deltatxn.Unwrap(tx)
-		if ftx == nil && !readOnly {
-			return fmt.Errorf("user: cannot write in a read-only transaction")
-		}
-		return fn(ftx, r)
-	}
-	return d.db.Run(ctx, &txn.Options{ReadOnly: readOnly}, func(tx txn.Tx) error {
-		ftx, r := deltatxn.Unwrap(tx)
-		return fn(ftx, r)
-	})
-}
-
 func (d *deltaUsers) insert(ctx context.Context, tx txn.Tx, u *User) error {
-	return d.in(ctx, tx, false, func(ftx *filestore.Tx, r filestore.Reader) error {
-		if _, exists := d.Users.Get(r, u.ID); exists {
-			// The primary key, as Postgres would refuse it.
-			return &filestore.UniqueError{Table: "users", Index: "goalert_user_pkey", Key: u.ID}
-		}
-		return d.Users.Put(ftx, toUserRow(u))
+	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		return d.Users.Insert(s.Tx, toUserRow(u), "goalert_user_pkey")
 	})
 }
 
 // update sets the name and email, like the Postgres store's update.
 func (d *deltaUsers) update(ctx context.Context, tx txn.Tx, u *User) error {
-	return d.in(ctx, tx, false, func(ftx *filestore.Tx, r filestore.Reader) error {
-		row, ok := d.Users.Get(r, u.ID)
+	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		row, ok := d.Users.Get(s.Reader, u.ID)
 		if !ok {
 			return nil // an UPDATE of no rows
 		}
 		row.Name, row.Email = u.Name, u.Email
-		return d.Users.Put(ftx, row)
+		return d.Users.Put(s.Tx, row)
 	})
 }
 
 func (d *deltaUsers) setRole(ctx context.Context, tx txn.Tx, id string, role permission.Role) error {
-	return d.in(ctx, tx, false, func(ftx *filestore.Tx, r filestore.Reader) error {
-		row, ok := d.Users.Get(r, id)
+	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		row, ok := d.Users.Get(s.Reader, id)
 		if !ok {
 			return nil
 		}
 		row.Role = string(role)
-		return d.Users.Put(ftx, row)
+		return d.Users.Put(s.Tx, row)
 	})
 }
 
@@ -130,12 +104,12 @@ func (d *deltaUsers) setRole(ctx context.Context, tx txn.Tx, id string, role per
 // does. With forUpdate, the favorite flag is false, as there.
 func (d *deltaUsers) findOne(ctx context.Context, tx txn.Tx, id string, forUpdate bool) (*User, error) {
 	var u User
-	err := d.in(ctx, tx, true, func(_ *filestore.Tx, r filestore.Reader) error {
-		row, ok := d.Users.Get(r, id)
+	err := deltatxn.Read(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		row, ok := d.Users.Get(s.Reader, id)
 		if !ok {
 			return sql.ErrNoRows
 		}
-		fav := !forUpdate && d.isFavorite(r, permission.UserID(ctx), id)
+		fav := !forUpdate && d.isFavorite(s.Reader, permission.UserID(ctx), id)
 		u = row.user(fav)
 		return nil
 	})
@@ -147,7 +121,8 @@ func (d *deltaUsers) findOne(ctx context.Context, tx txn.Tx, id string, forUpdat
 
 func (d *deltaUsers) findMany(ctx context.Context, ids []string) ([]User, error) {
 	var users []User
-	err := d.in(ctx, nil, true, func(_ *filestore.Tx, r filestore.Reader) error {
+	err := deltatxn.Read(ctx, d.db, nil, func(s deltatxn.Scope) error {
+		users = nil
 		me := permission.UserID(ctx)
 		seen := make(map[string]bool, len(ids))
 		for _, id := range ids {
@@ -155,8 +130,8 @@ func (d *deltaUsers) findMany(ctx context.Context, ids []string) ([]User, error)
 				continue // like `where id = any($1)`
 			}
 			seen[id] = true
-			if row, ok := d.Users.Get(r, id); ok {
-				users = append(users, row.user(d.isFavorite(r, me, id)))
+			if row, ok := d.Users.Get(s.Reader, id); ok {
+				users = append(users, row.user(d.isFavorite(s.Reader, me, id)))
 			}
 		}
 		return nil

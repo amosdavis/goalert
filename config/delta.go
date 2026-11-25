@@ -2,8 +2,6 @@ package config
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/target/goalert/filestore"
@@ -30,11 +28,9 @@ type DeltaTables struct {
 // newest version sorts last.
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	return &DeltaTables{
-		config: filestore.NewTable(s, "config", func(r configRow) string { return configKey(r.ID) }),
+		config: filestore.NewTable(s, "config", func(r configRow) string { return filestore.IntKey(r.ID) }),
 	}
 }
-
-func configKey(id int64) string { return fmt.Sprintf("%020d", id) }
 
 // NewDeltaStore returns a config store on the Delta backend; cfg.DB is not
 // used. changes, from filestore.DeltaDB.Changes("config"), makes every pod
@@ -49,26 +45,12 @@ func NewDeltaStore(ctx context.Context, cfg StoreConfig, db txn.DB, tables *Delt
 	return s, nil
 }
 
-var errReadOnly = errors.New("config: cannot write in a read-only transaction")
-
-// inDeltaTx runs fn with the parts of tx, or in a transaction of its own
-// when tx is nil.
-func (s *Store) inDeltaTx(ctx context.Context, tx txn.Tx, readOnly bool, fn func(ftx *filestore.Tx, r filestore.Reader) error) error {
-	if tx != nil {
-		ftx, r := deltatxn.Unwrap(tx)
-		return fn(ftx, r)
-	}
-	return s.txdb.Run(ctx, &txn.Options{ReadOnly: readOnly}, func(tx txn.Tx) error {
-		ftx, r := deltatxn.Unwrap(tx)
-		return fn(ftx, r)
-	})
-}
-
 // deltaLatest returns the newest config this version can read, like
 // `where schema <= $1 order by id desc limit 1`.
 func (s *Store) deltaLatest(ctx context.Context, tx txn.Tx) (id, schemaVersion int, data []byte, found bool, err error) {
-	err = s.inDeltaTx(ctx, tx, true, func(_ *filestore.Tx, r filestore.Reader) error {
-		s.delta.config.Descend(r, func(c configRow) bool {
+	err = deltatxn.Read(ctx, s.txdb, tx, func(sc deltatxn.Scope) error {
+		id, schemaVersion, data, found = 0, 0, nil, false
+		s.delta.config.Descend(sc.Reader, func(c configRow) bool {
 			if int(c.Schema) > SchemaVersion {
 				return true
 			}
@@ -83,16 +65,13 @@ func (s *Store) deltaLatest(ctx context.Context, tx txn.Tx) (id, schemaVersion i
 // deltaInsert adds a config version and returns its id.
 func (s *Store) deltaInsert(ctx context.Context, tx txn.Tx, data []byte) (int, error) {
 	var id int64
-	err := s.inDeltaTx(ctx, tx, false, func(ftx *filestore.Tx, _ filestore.Reader) error {
-		if ftx == nil {
-			return errReadOnly
-		}
+	err := deltatxn.Write(ctx, s.txdb, tx, func(sc deltatxn.Scope) error {
 		var err error
-		id, err = ftx.NextID("config_id_seq")
+		id, err = sc.Tx.NextID("config_id_seq")
 		if err != nil {
 			return err
 		}
-		return s.delta.config.Put(ftx, configRow{ID: id, Schema: SchemaVersion, Data: data, Created: ftx.Now()})
+		return s.delta.config.Insert(sc.Tx, configRow{ID: id, Schema: SchemaVersion, Data: data, Created: sc.Now}, "config_pkey")
 	})
 	return int(id), err
 }

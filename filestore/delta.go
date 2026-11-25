@@ -524,7 +524,7 @@ func (db *DeltaDB) publish(version int64, changed map[string]tableData) {
 			tables[name] = db.master[name].clone()
 		}
 	}
-	db.view.Store(&View{index: uint64(version), tables: tables})
+	db.view.Store(&View{index: uint64(version), time: db.snap.Time, tables: tables})
 	db.notifyChanged(changed)
 }
 
@@ -554,6 +554,17 @@ func (db *DeltaDB) notifyChanged(changed map[string]tableData) {
 			}
 		}
 	}
+}
+
+// Now is the time for reads outside a transaction, like now() in Postgres:
+// this pod's clock, but never earlier than the latest commit it has applied
+// (F13).
+func (db *DeltaDB) Now() time.Time {
+	t := db.opts.Clock.Now().UTC().Truncate(time.Microsecond)
+	if v := db.View(); t.Before(v.time) {
+		return v.time
+	}
+	return t
 }
 
 // View returns an immutable view of the latest version this pod has

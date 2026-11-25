@@ -75,6 +75,7 @@ func (o Options) withDefaults() Options {
 // View is an immutable, consistent view of the store as of one commit.
 type View struct {
 	index  uint64
+	time   time.Time // of the last commit, on a Delta table
 	tables map[string]tableData
 }
 

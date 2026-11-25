@@ -918,3 +918,16 @@ func TestDeltaChanges(t *testing.T) {
 		t.Fatal("no signal for the pod's own commit")
 	}
 }
+
+func TestDeltaNow(t *testing.T) {
+	ctx := context.Background()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	ahead := dOpts("ahead")
+	ahead.Clock = frozenClock(dStart.Add(time.Hour))
+	_, err := openPod(t, store, sch, ahead).Update(ctx, putUser(sch, "u1"))
+	require.NoError(t, err)
+
+	behind := openPod(t, store, sch, dOpts("behind"))
+	assert.Equal(t, dStart.Add(time.Hour), behind.Now(), "a read is never earlier than the commits it sees (F13)")
+}

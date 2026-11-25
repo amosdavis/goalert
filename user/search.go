@@ -10,6 +10,7 @@ import (
 	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
+	"github.com/target/goalert/txn/deltatxn"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -187,7 +188,7 @@ func (u User) AsField() nfydest.FieldValue {
 // Search performs a paginated search of users with the given options.
 func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]User, error) {
 	if s.delta != nil {
-		return nil, errNotPorted
+		return nil, deltatxn.ErrNotPorted
 	}
 	err := permission.LimitCheckAny(ctx, permission.User)
 	userCheck := permission.User

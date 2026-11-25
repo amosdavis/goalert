@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/txn"
@@ -28,10 +29,10 @@ var _ txn.DB = DB{}
 // reads one consistent view and commits nothing.
 func (db DB) Run(ctx context.Context, opts *txn.Options, fn func(tx txn.Tx) error) error {
 	if opts != nil && opts.ReadOnly {
-		return fn(&Tx{reader: db.DB.View()})
+		return fn(&Tx{reader: db.DB.View(), now: db.DB.Now()})
 	}
 	_, err := db.DB.Update(ctx, func(tx *filestore.Tx) error {
-		return fn(&Tx{tx: tx, reader: tx})
+		return fn(&Tx{tx: tx, reader: tx, now: tx.Now()})
 	})
 	return err
 }
@@ -44,6 +45,7 @@ func (DB) BeginTx(context.Context, *txn.Options) (txn.Tx, error) { return nil, E
 type Tx struct {
 	tx     *filestore.Tx // nil in a read-only transaction
 	reader filestore.Reader
+	now    time.Time
 }
 
 var _ txn.Tx = (*Tx)(nil)
@@ -61,15 +63,20 @@ func (*Tx) Rollback() error { return ErrManaged }
 // Unwrap panics if tx belongs to another backend: a running GoAlert never
 // mixes backends (F23).
 func Unwrap(tx txn.Tx) (*filestore.Tx, filestore.Reader) {
-	if tx == nil {
+	t := unwrap(tx)
+	if t == nil {
 		return nil, nil
+	}
+	return t.tx, t.reader
+}
+
+func unwrap(tx txn.Tx) *Tx {
+	if tx == nil {
+		return nil
 	}
 	t, ok := tx.(*Tx)
 	if !ok {
 		panic(fmt.Sprintf("deltatxn: a %T transaction was passed to a Delta store", tx))
 	}
-	if t == nil {
-		return nil, nil
-	}
-	return t.tx, t.reader
+	return t
 }

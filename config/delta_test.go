@@ -83,7 +83,7 @@ func TestDeltaConfigData(t *testing.T) {
 	// The stored data is encrypted.
 	require.NoError(t, db.Run(ctx, &txn.Options{ReadOnly: true}, func(tx txn.Tx) error {
 		_, r := deltatxn.Unwrap(tx)
-		row, ok := e.tables.config.Get(r, configKey(2))
+		row, ok := e.tables.config.Get(r, filestore.IntKey(2))
 		require.True(t, ok)
 		assert.NotContains(t, string(row.Data), "two")
 		return nil

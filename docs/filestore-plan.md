@@ -222,6 +222,23 @@ How a store is ported, in every package:
   pods racing wherever the Postgres version relied on a lock or a unique
   index (F4, F8).
 
+Packages are ported side by side, so each port stands on its own:
+
+- A package's `DefineDeltaTables` defines only its own tables. Foreign keys to
+  another package's tables are declared by a generic function that takes those
+  tables, so ports don't import each other, and one place builds the whole
+  schema and lists every foreign key. Reads that join another package's rows
+  take a function, like the user store's favorite lookup.
+- Methods run in `deltatxn.Read` or `deltatxn.Write`, whose `Scope` has the
+  transaction, its reader and its time, and return `deltatxn.ErrNotPorted`
+  until they are ported.
+- Primary keys, unique indexes, foreign keys and checks carry the names of the
+  Postgres constraints they stand for. `sqlutil.MapError` understands
+  filestore's constraint errors, so the messages users get are the same on both
+  backends (F22). A rule a trigger enforced, such as a limit, is a
+  `filestore.CheckError` with the trigger's constraint name and hint.
+- A missing row is `sql.ErrNoRows` wherever the Postgres store returned it.
+
 Foreign keys (82 in the schema, 75 of them `ON DELETE CASCADE`) are declared
 on the filestore tables rather than written into each store: a child row's
 parent must exist when it is written, and deleting a parent cascades, sets
@@ -403,3 +420,8 @@ holder while it is sending.
   backend. Found an upstream bug: unsetting a favorite schedule, rotation,
   escalation policy or user deletes it for every user (AND/OR precedence in
   `UserFavUnset`).
+- 2026-11-24: Phase 3: the shared layer for the ports (`deltatxn.Read` and
+  `Write`, constraint errors that map to the same user messages as Postgres's,
+  `DeltaDB.Now` for reads). GitHub started no workflow runs for `fc53c8e37`,
+  `b3f4ef9ef` and `c1f2e631c` on 2026-11-22, so CI has not checked them on
+  their own; the next run covers them.

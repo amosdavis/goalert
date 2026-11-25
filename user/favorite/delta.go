@@ -2,7 +2,6 @@ package favorite
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/filestore"
@@ -63,13 +62,6 @@ func targetKey(userID string, tgt assignment.Target) string {
 	return userID + "/" + tgt.TargetType().String() + "/" + tgt.TargetID()
 }
 
-func optRef(p *string) (string, bool) {
-	if p == nil {
-		return "", false
-	}
-	return *p, true
-}
-
 // DeltaTables are the favorites store's tables on the Delta backend.
 type DeltaTables struct {
 	favorites *filestore.Table[favRow]
@@ -82,7 +74,7 @@ type DeltaTables struct {
 // escalation policies are added when those tables are ported.
 func DefineDeltaTables(s *filestore.Schema, users *user.DeltaTables) *DeltaTables {
 	t := &DeltaTables{}
-	t.favorites = filestore.NewTable(s, "user_favorites", func(r favRow) string { return fmt.Sprintf("%020d", r.ID) })
+	t.favorites = filestore.NewTable(s, "user_favorites", func(r favRow) string { return filestore.IntKey(r.ID) })
 	t.byUser = t.favorites.Index("user_favorites_user_id", func(r favRow) []string { return []string{r.UserID} })
 	t.byTarget = t.favorites.Unique("user_favorites_user_id_tgt_key", func(r favRow) (string, bool) {
 		tgt, ok := r.target()
@@ -94,7 +86,7 @@ func DefineDeltaTables(s *filestore.Schema, users *user.DeltaTables) *DeltaTable
 	filestore.References(t.favorites, "user_favorites_user_id_fkey", users.Users,
 		func(r favRow) (string, bool) { return r.UserID, true }, filestore.Cascade, nil)
 	filestore.References(t.favorites, "user_favorites_tgt_user_id_fkey", users.Users,
-		func(r favRow) (string, bool) { return optRef(r.TgtUserID) }, filestore.Cascade, nil)
+		func(r favRow) (string, bool) { return filestore.Ref(r.TgtUserID) }, filestore.Cascade, nil)
 	return t
 }
 
@@ -115,32 +107,18 @@ type deltaFavorites struct {
 	*DeltaTables
 }
 
-func (d *deltaFavorites) in(ctx context.Context, tx txn.Tx, readOnly bool, fn func(ftx *filestore.Tx, r filestore.Reader) error) error {
-	if tx != nil {
-		ftx, r := deltatxn.Unwrap(tx)
-		if ftx == nil && !readOnly {
-			return fmt.Errorf("favorite: cannot write in a read-only transaction")
-		}
-		return fn(ftx, r)
-	}
-	return d.db.Run(ctx, &txn.Options{ReadOnly: readOnly}, func(tx txn.Tx) error {
-		ftx, r := deltatxn.Unwrap(tx)
-		return fn(ftx, r)
-	})
-}
-
 // set adds a favorite, or does nothing if it is one (ON CONFLICT DO
 // NOTHING).
 func (d *deltaFavorites) set(ctx context.Context, tx txn.Tx, userID string, tgt assignment.Target) error {
-	return d.in(ctx, tx, false, func(ftx *filestore.Tx, r filestore.Reader) error {
-		if _, ok := d.byTarget.Get(r, targetKey(userID, tgt)); ok {
+	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		if _, ok := d.byTarget.Get(s.Reader, targetKey(userID, tgt)); ok {
 			return nil
 		}
-		id, err := ftx.NextID("user_favorites_id_seq")
+		id, err := s.Tx.NextID("user_favorites_id_seq")
 		if err != nil {
 			return err
 		}
-		return d.favorites.Put(ftx, newFavRow(id, userID, tgt))
+		return d.favorites.Insert(s.Tx, newFavRow(id, userID, tgt), "user_favorites_uniq_id")
 	})
 }
 
@@ -148,12 +126,12 @@ func (d *deltaFavorites) set(ctx context.Context, tx txn.Tx, userID string, tgt 
 // precedence removes everyone's favorite of a schedule, rotation,
 // escalation policy or user; this removes only the user's own.)
 func (d *deltaFavorites) unset(ctx context.Context, tx txn.Tx, userID string, tgt assignment.Target) error {
-	return d.in(ctx, tx, false, func(ftx *filestore.Tx, r filestore.Reader) error {
-		row, ok := d.byTarget.Get(r, targetKey(userID, tgt))
+	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		row, ok := d.byTarget.Get(s.Reader, targetKey(userID, tgt))
 		if !ok {
 			return nil
 		}
-		_, err := d.favorites.Delete(ftx, fmt.Sprintf("%020d", row.ID))
+		_, err := d.favorites.Delete(s.Tx, filestore.IntKey(row.ID))
 		return err
 	})
 }
@@ -161,8 +139,9 @@ func (d *deltaFavorites) unset(ctx context.Context, tx txn.Tx, userID string, tg
 // findAll returns the user's favorites of the allowed types, oldest first.
 func (d *deltaFavorites) findAll(ctx context.Context, tx txn.Tx, userID string, allow func(assignment.TargetType) bool) ([]assignment.Target, error) {
 	targets := []assignment.Target{} // as the Postgres store returns
-	err := d.in(ctx, tx, true, func(_ *filestore.Tx, r filestore.Reader) error {
-		d.byUser.Ascend(r, userID, func(row favRow) bool {
+	err := deltatxn.Read(ctx, d.db, tx, func(s deltatxn.Scope) error {
+		targets = []assignment.Target{}
+		d.byUser.Ascend(s.Reader, userID, func(row favRow) bool {
 			if tgt, ok := row.target(); ok && allow(tgt.TargetType()) {
 				targets = append(targets, tgt)
 			}
