@@ -14,7 +14,9 @@ import (
 // that carries it, so nested calls to withContextTx join it.
 //
 // Run commits and rolls back. On the Delta backend it can run fn more than
-// once, so fn must do no I/O beyond the stores it calls (F3).
+// once, so fn must do no I/O beyond the stores it calls (F3), and must not
+// change what its next run starts from: it sets results, but never assigns one
+// to a variable that it also reads as input (F4).
 func withContextTx(ctx context.Context, db txn.DB, fn func(context.Context, txn.Tx) error) error {
 	// Defining a static key to store the transaction within Context. The `0` value is arbitrary,
 	// it just needs to be a unique type/value pair, vs. other context values.

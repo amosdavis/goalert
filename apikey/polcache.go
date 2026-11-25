@@ -97,6 +97,9 @@ func (c *polCache) Get(ctx context.Context, key uuid.UUID) (value *policyInfo, o
 }
 
 func (s *Store) _verifyPolicyID(ctx context.Context, id uuid.UUID) (bool, error) {
+	if s.delta != nil {
+		return s.delta.isValid(ctx, id)
+	}
 	valid, err := gadb.New(s.db).APIKeyAuthCheck(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

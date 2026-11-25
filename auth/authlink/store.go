@@ -24,7 +24,12 @@ type Store struct {
 	db *sql.DB
 
 	k keyring.Keyring
+
+	delta *deltaStore // the Delta backend, if set (delta.go)
 }
+
+// linkTTL is how long a link request is valid.
+const linkTTL = 5 * time.Minute
 
 type Metadata struct {
 	UserDetails string
@@ -63,7 +68,12 @@ func (s *Store) FindLinkMetadata(ctx context.Context, token string) (*Metadata, 
 		return nil, nil
 	}
 
-	data, err := gadb.New(s.db).AuthLinkMetadata(ctx, uuid.MustParse(tokID))
+	var data []byte
+	if s.delta != nil {
+		data, err = s.delta.metadata(ctx, uuid.MustParse(tokID))
+	} else {
+		data, err = gadb.New(s.db).AuthLinkMetadata(ctx, uuid.MustParse(tokID))
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -106,6 +116,9 @@ func (s *Store) LinkAccount(ctx context.Context, token string) error {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.link(ctx, uuid.MustParse(tokID), permission.UserID(ctx))
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -148,7 +161,7 @@ func (s *Store) AuthLinkURL(ctx context.Context, providerID, subjectID string, m
 
 	id := uuid.New()
 	now := time.Now()
-	expires := now.Add(5 * time.Minute)
+	expires := now.Add(linkTTL)
 
 	var c jwt.RegisteredClaims
 	c.ID = id.String()
@@ -167,13 +180,17 @@ func (s *Store) AuthLinkURL(ctx context.Context, providerID, subjectID string, m
 	if err != nil {
 		return "", err
 	}
-	err = gadb.New(s.db).AuthLinkAddReq(ctx, gadb.AuthLinkAddReqParams{
-		ID:         id,
-		ProviderID: providerID,
-		SubjectID:  subjectID,
-		ExpiresAt:  expires,
-		Metadata:   data,
-	})
+	if s.delta != nil {
+		err = s.delta.add(ctx, id, providerID, subjectID, linkTTL, data)
+	} else {
+		err = gadb.New(s.db).AuthLinkAddReq(ctx, gadb.AuthLinkAddReqParams{
+			ID:         id,
+			ProviderID: providerID,
+			SubjectID:  subjectID,
+			ExpiresAt:  expires,
+			Metadata:   data,
+		})
+	}
 	if err != nil {
 		return "", err
 	}

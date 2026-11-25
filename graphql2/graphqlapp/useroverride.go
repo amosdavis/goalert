@@ -65,15 +65,16 @@ func (m *Mutation) CreateUserOverride(ctx context.Context, input graphql2.Create
 	if input.RemoveUserID != nil {
 		u.RemoveUserID = *input.RemoveUserID
 	}
+	var created *override.UserOverride
 	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
-		u, err = m.OverrideStore.CreateUserOverrideTx(ctx, tx, u)
+		created, err = m.OverrideStore.CreateUserOverrideTx(ctx, tx, u)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return u, nil
+	return created, nil
 }
 
 func (u *UserOverride) AddUser(ctx context.Context, raw *override.UserOverride) (*user.User, error) {

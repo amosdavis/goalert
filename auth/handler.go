@@ -50,7 +50,9 @@ type Handler struct {
 	providers map[string]IdentityProvider
 	cfg       HandlerConfig
 
-	db         *sql.DB
+	txdb  txn.DB
+	delta *deltaAuth // the Delta backend, if set (delta.go)
+
 	userLookup *sql.Stmt
 	addSubject *sql.Stmt
 	updateUA   *sql.Stmt
@@ -74,7 +76,7 @@ func NewHandler(ctx context.Context, db *sql.DB, cfg HandlerConfig) (*Handler, e
 
 	h := &Handler{
 		providers: make(map[string]IdentityProvider),
-		db:        db,
+		txdb:      sqltxn.DB{DB: db},
 
 		cfg: cfg,
 
@@ -154,11 +156,21 @@ type UserSession struct {
 }
 
 func (h *Handler) EndUserSessionTx(ctx context.Context, tx txn.Tx, id ...string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
+	if h.delta != nil {
+		ids, err := validate.ParseManyUUID("SessionID", id, -1)
+		if err != nil {
+			return err
+		}
+		if permission.Admin(ctx) {
+			return h.delta.end(ctx, tx, ids)
+		}
+		return h.delta.endOwn(ctx, tx, permission.UserNullUUID(ctx), ids)
+	}
+	stx := sqltxn.Unwrap(tx)
 	if permission.Admin(ctx) {
 		_, err = stx.StmtContext(ctx, h.endSession).ExecContext(ctx, sqlutil.UUIDArray(id))
 	} else {
@@ -169,7 +181,6 @@ func (h *Handler) EndUserSessionTx(ctx context.Context, tx txn.Tx, id ...string)
 
 // EndAllUserSessionsTx ends all sessions other than the user's currently active session
 func (h *Handler) EndAllUserSessionsTx(ctx context.Context, tx txn.Tx) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.MatchUser(permission.UserID(ctx)))
 	if err != nil {
 		return err
@@ -178,6 +189,10 @@ func (h *Handler) EndAllUserSessionsTx(ctx context.Context, tx txn.Tx) error {
 	// get current session id
 	src := permission.Source(ctx)
 
+	if h.delta != nil {
+		return h.delta.endAllOther(ctx, tx, permission.UserNullUUID(ctx), src)
+	}
+	stx := sqltxn.Unwrap(tx)
 	stmt := h.endAllSessionsUser
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -193,6 +208,9 @@ func (h *Handler) FindAllUserSessions(ctx context.Context, userID string) ([]Use
 		return nil, err
 	}
 
+	if h.delta != nil {
+		return h.delta.userSessions(ctx, userID)
+	}
 	rows, err := h.userSessions.QueryContext(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -243,7 +261,17 @@ func (h *Handler) ServeLogout(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	_, err := h.endSession.ExecContext(log.FromContext(ctx).BackgroundContext(), sqlutil.UUIDArray(sessionIDs))
+	var err error
+	bgCtx := log.FromContext(ctx).BackgroundContext()
+	if h.delta != nil {
+		var ids []uuid.UUID
+		ids, err = validate.ParseManyUUID("SessionID", sessionIDs, -1)
+		if err == nil {
+			err = h.delta.end(bgCtx, nil, ids)
+		}
+	} else {
+		_, err = h.endSession.ExecContext(bgCtx, sqlutil.UUIDArray(sessionIDs))
+	}
 	if err != nil {
 		log.Log(ctx, errors.Wrap(err, "end session(s)"))
 	}
@@ -442,7 +470,11 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 	}
 
 	var userID string
-	err = h.userLookup.QueryRowContext(ctx, id, sub.SubjectID).Scan(&userID)
+	if h.delta != nil {
+		userID, err = h.delta.subjectUser(ctx, id, sub.SubjectID)
+	} else {
+		err = h.userLookup.QueryRowContext(ctx, id, sub.SubjectID).Scan(&userID)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
@@ -462,7 +494,7 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 		}
 
 		// create user, with its subject, in one transaction
-		err = sqltxn.DB{DB: h.db}.Run(ctx, nil, func(tx txn.Tx) error {
+		err = h.txdb.Run(ctx, nil, func(tx txn.Tx) error {
 			// Built inside, so that a rerun starts from scratch.
 			u := &user.User{
 				Role:  permission.RoleUser,
@@ -476,7 +508,11 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 			if err != nil {
 				return err
 			}
-			_, err = sqltxn.Unwrap(tx).Stmt(h.addSubject).ExecContext(ctx, id, sub.SubjectID, u.ID)
+			if h.delta != nil {
+				err = h.delta.addSubject(ctx, tx, user.AuthSubject{ProviderID: id, SubjectID: sub.SubjectID, UserID: u.ID})
+			} else {
+				_, err = sqltxn.Unwrap(tx).Stmt(h.addSubject).ExecContext(ctx, id, sub.SubjectID, u.ID)
+			}
 			if err != nil {
 				return err
 			}
@@ -488,8 +524,12 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 			return
 		}
 	} else {
-		_, err = h.updateUser.ExecContext(ctx, userID, validate.SanitizeName(sub.Name),
-			validate.SanitizeEmail(sub.Email))
+		name, email := validate.SanitizeName(sub.Name), validate.SanitizeEmail(sub.Email)
+		if h.delta != nil {
+			err = h.delta.updateProfile(ctx, userID, name, email)
+		} else {
+			_, err = h.updateUser.ExecContext(ctx, userID, name, email)
+		}
 		if err != nil {
 			log.Log(ctx, errors.Wrap(err, "update user info"))
 		}
@@ -529,7 +569,12 @@ func (h *Handler) CreateSession(ctx context.Context, userAgent, userID string) (
 		Type:    authtoken.TypeSession,
 		ID:      uuid.New(),
 	}
-	_, err := h.startSession.ExecContext(ctx, tok.ID.String(), userAgent, userID)
+	var err error
+	if h.delta != nil {
+		err = h.delta.start(ctx, tok.ID, userAgent, userID)
+	} else {
+		_, err = h.startSession.ExecContext(ctx, tok.ID.String(), userAgent, userID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +663,11 @@ func (h *Handler) tryAuthUser(ctx context.Context, w http.ResponseWriter, req *h
 
 	var userID uuid.UUID
 	var userRole permission.Role
-	err = h.fetchSession.QueryRowContext(ctx, tok.ID.String()).Scan(&userID, &userRole)
+	if h.delta != nil {
+		userID, userRole, err = h.delta.session(ctx, tok.ID)
+	} else {
+		err = h.fetchSession.QueryRowContext(ctx, tok.ID.String()).Scan(&userID, &userRole)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -630,7 +679,11 @@ func (h *Handler) tryAuthUser(ctx context.Context, w http.ResponseWriter, req *h
 			log.Log(ctx, errors.Wrap(err, "failed to sign/issue new session token"))
 		} else {
 			h.setSessionCookie(w, req, newSignedToken)
-			_, err = h.updateUA.ExecContext(ctx, tok.ID.String(), req.UserAgent())
+			if h.delta != nil {
+				err = h.delta.setUserAgent(ctx, tok.ID, req.UserAgent())
+			} else {
+				_, err = h.updateUA.ExecContext(ctx, tok.ID.String(), req.UserAgent())
+			}
 			if err != nil {
 				log.Log(ctx, errors.Wrap(err, "update user agent (session key refresh)"))
 			}

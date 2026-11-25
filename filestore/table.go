@@ -240,7 +240,10 @@ func (t *Table[V]) Descend(r Reader, fn func(V) bool) {
 }
 
 // Put inserts or replaces a row.
-func (t *Table[V]) Put(tx *Tx, v V) error {
+func (t *Table[V]) Put(tx *Tx, v V) error { return t.put(tx, v, true) }
+
+// put is Put, which checks v's references to other rows.
+func (t *Table[V]) put(tx *Tx, v V, checkRefs bool) error {
 	if err := tx.check(); err != nil {
 		return err
 	}
@@ -252,8 +255,10 @@ func (t *Table[V]) Put(tx *Tx, v V) error {
 	if err := checkKey(t.name, "primary", key); err != nil {
 		return err
 	}
-	if err := t.schema.checkReferences(tx, t.name, v2); err != nil {
-		return err
+	if checkRefs {
+		if err := t.schema.checkReferences(tx, t.name, v2); err != nil {
+			return err
+		}
 	}
 	d := tx.writable(t.name).(*typedTable[V])
 	if err := d.put(key, v2); err != nil {

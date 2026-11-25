@@ -26,6 +26,8 @@ type Store struct {
 	update        *sql.Stmt
 
 	mx sync.Mutex
+
+	delta *deltaStore // the Delta backend, if set (delta.go)
 }
 
 // NewStore creates a new DB. Error is returned if the prepared statements fail to register.
@@ -106,7 +108,6 @@ func (b *Store) NewHashedPassword(ctx context.Context, password string) (HashedP
 // An error is returned if the username is not unique or the userID is invalid.
 // Must have same user or admin role.
 func (b *Store) CreateTx(ctx context.Context, tx txn.Tx, userID, username string, password HashedPassword) error {
-	stx := sqltxn.Unwrap(tx)
 	err := ValidateBasicAuth(ctx)
 	if err != nil {
 		return err
@@ -125,13 +126,16 @@ func (b *Store) CreateTx(ctx context.Context, tx txn.Tx, userID, username string
 		return err
 	}
 
+	if b.delta != nil {
+		return b.delta.insert(ctx, tx, userID, username, password.Hash())
+	}
+	stx := sqltxn.Unwrap(tx)
 	_, err = stx.StmtContext(ctx, b.insert).ExecContext(ctx, userID, username, password.Hash())
 	return err
 }
 
 // UpdateTx updates a user's password. oldPass is required if the current context is not an admin.
 func (b *Store) UpdateTx(ctx context.Context, tx txn.Tx, userID string, oldPass ValidatedPassword, newPass HashedPassword) error {
-	stx := sqltxn.Unwrap(tx)
 	err := ValidateBasicAuth(ctx)
 	if err != nil {
 		return err
@@ -154,14 +158,23 @@ func (b *Store) UpdateTx(ctx context.Context, tx txn.Tx, userID string, oldPass 
 		return validation.NewFieldError("OldPassword", "Previous password required")
 	}
 
-	res, err := stx.StmtContext(ctx, b.update).ExecContext(ctx, userID, newPass.Hash())
-	if err != nil {
-		return err
-	}
+	var count int64
+	if b.delta != nil {
+		count, err = b.delta.update(ctx, tx, userID, newPass.Hash())
+		if err != nil {
+			return err
+		}
+	} else {
+		stx := sqltxn.Unwrap(tx)
+		res, err := stx.StmtContext(ctx, b.update).ExecContext(ctx, userID, newPass.Hash())
+		if err != nil {
+			return err
+		}
 
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
+		count, err = res.RowsAffected()
+		if err != nil {
+			return err
+		}
 	}
 
 	if count == 0 {
@@ -181,9 +194,13 @@ func (b *Store) Validate(ctx context.Context, username, password string) (string
 		return "", err
 	}
 
-	row := b.getByUsername.QueryRowContext(ctx, username)
 	var userID, hashed string
-	err = row.Scan(&userID, &hashed)
+	if b.delta != nil {
+		userID, hashed, err = b.delta.byUsernameHash(ctx, username)
+	} else {
+		row := b.getByUsername.QueryRowContext(ctx, username)
+		err = row.Scan(&userID, &hashed)
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", errors.New("invalid username")
@@ -226,7 +243,11 @@ func (b *Store) ValidatePassword(ctx context.Context, password string) (Validate
 	}
 
 	var hash string
-	err = b.getByID.QueryRowContext(ctx, userID).Scan(&hash)
+	if b.delta != nil {
+		hash, err = b.delta.hash(ctx, userID)
+	} else {
+		err = b.getByID.QueryRowContext(ctx, userID).Scan(&hash)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("unknown userID")
 	}

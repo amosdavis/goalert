@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/auth/authtoken"
@@ -25,6 +26,8 @@ type Store struct {
 
 	keys keyring.Keyring
 	oc   *oncall.Store
+
+	delta *deltaStore // the Delta backend, if set (delta.go)
 }
 
 // NewStore will create a new Store with the given parameters.
@@ -43,10 +46,16 @@ func (s *Store) Authorize(ctx context.Context, tok authtoken.Token) (context.Con
 		return ctx, permission.Unauthorized()
 	}
 
-	userID, err := gadb.New(s.db).CalSubAuthUser(ctx, gadb.CalSubAuthUserParams{
-		ID:        tok.ID,
-		CreatedAt: tok.CreatedAt,
-	})
+	var userID uuid.UUID
+	var err error
+	if s.delta != nil {
+		userID, err = s.delta.authUser(ctx, tok.ID, tok.CreatedAt)
+	} else {
+		userID, err = gadb.New(s.db).CalSubAuthUser(ctx, gadb.CalSubAuthUserParams{
+			ID:        tok.ID,
+			CreatedAt: tok.CreatedAt,
+		})
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return ctx, permission.Unauthorized()
 	}
@@ -62,10 +71,10 @@ func (s *Store) Authorize(ctx context.Context, tok authtoken.Token) (context.Con
 
 // FindOne will return a single calendar subscription for the given id.
 func (s *Store) FindOne(ctx context.Context, id string) (*Subscription, error) {
-	return s._FindOne(ctx, gadb.New(s.db), id, false)
+	return s._FindOne(ctx, nil, id, false)
 }
 
-func (s *Store) _FindOne(ctx context.Context, q *gadb.Queries, id string, upd bool) (*Subscription, error) {
+func (s *Store) _FindOne(ctx context.Context, tx txn.Tx, id string, upd bool) (*Subscription, error) {
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
@@ -76,6 +85,10 @@ func (s *Store) _FindOne(ctx context.Context, q *gadb.Queries, id string, upd bo
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOne(ctx, tx, id)
+	}
+	q := gadb.New(sqltxn.DBTX(s.db, tx))
 	var sub gadb.FindOneCalSubRow
 
 	if upd {
@@ -106,13 +119,11 @@ func (s *Store) _FindOne(ctx context.Context, q *gadb.Queries, id string, upd bo
 }
 
 func (s *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Subscription, error) {
-	stx := sqltxn.Unwrap(tx)
-	return s._FindOne(ctx, gadb.New(s.db).WithTx(stx), id, true)
+	return s._FindOne(ctx, tx, id, true)
 }
 
 // UpdateTx will update the given calendar subscription with the given input.
 func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, cs *Subscription) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.MatchUser(cs.UserID))
 	if err != nil {
 		return err
@@ -137,6 +148,10 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, cs *Subscription) error
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, n, cfgData)
+	}
+	stx := sqltxn.Unwrap(tx)
 	err = gadb.New(s.db).WithTx(stx).UpdateCalSub(ctx, gadb.UpdateCalSubParams{
 		ID:       uuid.MustParse(n.ID),
 		Name:     n.Name,
@@ -149,7 +164,6 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, cs *Subscription) error
 
 // CreateTx will return a created calendar subscription with the given input.
 func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, cs *Subscription) (*Subscription, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.MatchUser(cs.UserID))
 	if err != nil {
 		return nil, err
@@ -170,14 +184,20 @@ func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, cs *Subscription) (*Sub
 		return nil, err
 	}
 
-	now, err := gadb.New(s.db).WithTx(stx).CreateCalSub(ctx, gadb.CreateCalSubParams{
-		ID:         uuid.MustParse(n.ID),
-		Name:       n.Name,
-		UserID:     uuid.MustParse(n.UserID),
-		Disabled:   n.Disabled,
-		ScheduleID: uuid.MustParse(n.ScheduleID),
-		Config:     cfgData,
-	})
+	var now time.Time
+	if s.delta != nil {
+		now, err = s.delta.create(ctx, tx, n, cfgData)
+	} else {
+		stx := sqltxn.Unwrap(tx)
+		now, err = gadb.New(s.db).WithTx(stx).CreateCalSub(ctx, gadb.CreateCalSubParams{
+			ID:         uuid.MustParse(n.ID),
+			Name:       n.Name,
+			UserID:     uuid.MustParse(n.UserID),
+			Disabled:   n.Disabled,
+			ScheduleID: uuid.MustParse(n.ScheduleID),
+			Config:     cfgData,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +227,9 @@ func (s *Store) FindAllByUser(ctx context.Context, userID string) ([]Subscriptio
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllByUser(ctx, userID)
+	}
 	subs, err := gadb.New(s.db).FindManyCalSubByUser(ctx, uuid.MustParse(userID))
 	if err != nil {
 		return nil, err
@@ -233,7 +256,6 @@ func (s *Store) FindAllByUser(ctx context.Context, userID string) ([]Subscriptio
 
 // DeleteTx removes calendar subscriptions with the given ids for the given user.
 func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, userID string, ids ...string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.MatchUser(userID))
 	if err != nil {
 		return err
@@ -251,6 +273,10 @@ func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, userID string, ids ...s
 		return nil
 	}
 
+	if s.delta != nil {
+		return s.delta.deleteMany(ctx, tx, userID, ids)
+	}
+	stx := sqltxn.Unwrap(tx)
 	uids := make([]uuid.UUID, len(ids))
 	for i, id := range ids {
 		uids[i] = uuid.MustParse(id)

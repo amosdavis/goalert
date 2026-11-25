@@ -62,6 +62,9 @@ func (s *Store) userNameMap(ctx context.Context, shifts []oncall.Shift) (map[str
 		uniqueIDs = append(uniqueIDs, uuid.MustParse(s.UserID))
 	}
 
+	if s.delta != nil {
+		return names, s.delta.userNames(ctx, names)
+	}
 	users, err := gadb.New(s.db).CalSubUserNames(ctx, uniqueIDs)
 	if err != nil {
 		return nil, fmt.Errorf("lookup user names: %w", err)
@@ -71,6 +74,23 @@ func (s *Store) userNameMap(ctx context.Context, shifts []oncall.Shift) (map[str
 		names[u.ID.String()] = u.Name
 	}
 	return names, nil
+}
+
+// renderInfo is what a subscription is rendered from.
+type renderInfo struct {
+	Now          time.Time
+	ScheduleID   uuid.UUID
+	ScheduleName string
+	Config       json.RawMessage
+	UserID       uuid.UUID
+}
+
+func (s *Store) renderInfo(ctx context.Context, id uuid.UUID) (renderInfo, error) {
+	if s.delta != nil {
+		return s.delta.renderInfo(ctx, id)
+	}
+	row, err := gadb.New(s.db).CalSubRenderInfo(ctx, id)
+	return renderInfo(row), err
 }
 
 // ServeICalData will return an iCal file for the subscription associated with the current request.
@@ -87,7 +107,7 @@ func (s *Store) ServeICalData(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	info, err := gadb.New(s.db).CalSubRenderInfo(ctx, uuid.MustParse(src.ID))
+	info, err := s.renderInfo(ctx, uuid.MustParse(src.ID))
 	if errutil.HTTPError(ctx, w, err) {
 		return
 	}

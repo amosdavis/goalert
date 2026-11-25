@@ -102,7 +102,10 @@ func References[C, P any](child *Table[C], name string, parent *Table[P], ref fu
 			if !ok {
 				return nil
 			}
-			return child.Put(tx, clear(c))
+			// Clearing a reference leaves no new one to check. The row's
+			// others may refer to a row that this delete takes away too, and
+			// their foreign keys deal with that.
+			return child.put(tx, clear(c), false)
 		},
 	})
 }

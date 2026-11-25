@@ -27,6 +27,8 @@ type Store struct {
 
 	polCache      *polCache
 	lastUsedCache *lastUsedCache
+
+	delta *deltaStore // the Delta backend, if set (delta.go)
 }
 
 // NewStore will create a new Store.
@@ -35,7 +37,12 @@ func NewStore(ctx context.Context, db *sql.DB, key keyring.Keyring) (*Store, err
 		db:  db,
 		key: key,
 	}
+	s.initCaches()
 
+	return s, nil
+}
+
+func (s *Store) initCaches() {
 	s.polCache = newPolCache(polCacheConfig{
 		FillFunc: s._fetchPolicyInfo,
 		Verify:   s._verifyPolicyID,
@@ -43,8 +50,6 @@ func NewStore(ctx context.Context, db *sql.DB, key keyring.Keyring) (*Store, err
 	})
 
 	s.lastUsedCache = newLastUsedCache(1000, s._updateLastUsed)
-
-	return s, nil
 }
 
 type APIKeyInfo struct {
@@ -67,6 +72,9 @@ func (s *Store) FindAllAdminGraphQLKeys(ctx context.Context) ([]APIKeyInfo, erro
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.list(ctx)
+	}
 	keys, err := gadb.New(s.db).APIKeyList(ctx)
 	if err != nil {
 		return nil, err
@@ -76,14 +84,8 @@ func (s *Store) FindAllAdminGraphQLKeys(ctx context.Context) ([]APIKeyInfo, erro
 	for _, k := range keys {
 		k := k
 
-		var p GQLPolicy
-		err = json.Unmarshal(k.Policy, &p)
-		if err != nil {
-			log.Log(ctx, fmt.Errorf("invalid policy for key %s: %w", k.ID, err))
-			continue
-		}
-		if p.Version != 1 {
-			log.Log(ctx, fmt.Errorf("unknown policy version for key %s: %d", k.ID, p.Version))
+		p, ok := listPolicy(ctx, k.ID, k.Policy)
+		if !ok {
 			continue
 		}
 
@@ -118,6 +120,21 @@ func (s *Store) FindAllAdminGraphQLKeys(ctx context.Context) ([]APIKeyInfo, erro
 	return res, nil
 }
 
+// listPolicy parses a key's policy for listing. If this version can't read
+// it, that is logged and the key is left out.
+func listPolicy(ctx context.Context, id uuid.UUID, data []byte) (p GQLPolicy, ok bool) {
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		log.Log(ctx, fmt.Errorf("invalid policy for key %s: %w", id, err))
+		return p, false
+	}
+	if p.Version != 1 {
+		log.Log(ctx, fmt.Errorf("unknown policy version for key %s: %d", id, p.Version))
+		return p, false
+	}
+	return p, true
+}
+
 type APIKeyUsage struct {
 	UserAgent string
 	IP        string
@@ -146,6 +163,9 @@ func (s *Store) UpdateAdminGraphQLKey(ctx context.Context, id uuid.UUID, name, d
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.update(ctx, id, name, desc, permission.UserNullUUID(ctx))
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -182,6 +202,9 @@ func (s *Store) DeleteAdminGraphQLKey(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.revoke(ctx, id, permission.UserNullUUID(ctx))
+	}
 	return gadb.New(s.db).APIKeyDelete(ctx, gadb.APIKeyDeleteParams{
 		DeletedBy: permission.UserNullUUID(ctx),
 		ID:        id,
@@ -273,15 +296,19 @@ func (s *Store) CreateAdminGraphQLKey(ctx context.Context, opt NewAdminGQLKeyOpt
 	}
 
 	id := uuid.New()
-	err = gadb.New(s.db).APIKeyInsert(ctx, gadb.APIKeyInsertParams{
-		ID:          id,
-		Name:        opt.Name,
-		Description: opt.Desc,
-		ExpiresAt:   opt.Expires,
-		Policy:      policyData,
-		CreatedBy:   permission.UserNullUUID(ctx),
-		UpdatedBy:   permission.UserNullUUID(ctx),
-	})
+	if s.delta != nil {
+		err = s.delta.insert(ctx, id, opt, policyData, permission.UserNullUUID(ctx))
+	} else {
+		err = gadb.New(s.db).APIKeyInsert(ctx, gadb.APIKeyInsertParams{
+			ID:          id,
+			Name:        opt.Name,
+			Description: opt.Desc,
+			ExpiresAt:   opt.Expires,
+			Policy:      policyData,
+			CreatedBy:   permission.UserNullUUID(ctx),
+			UpdatedBy:   permission.UserNullUUID(ctx),
+		})
+	}
 	if err != nil {
 		return uuid.Nil, "", err
 	}

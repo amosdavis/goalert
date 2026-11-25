@@ -14,6 +14,9 @@ func (s *Store) _updateLastUsed(ctx context.Context, id uuid.UUID, ua, ip string
 	ua = validate.SanitizeText(ua, 1024)
 	ip, _, _ = net.SplitHostPort(ip)
 	ip = validate.SanitizeText(ip, 255)
+	if s.delta != nil {
+		return s.delta.recordUsage(ctx, id, ua, net.ParseIP(ip))
+	}
 	params := gadb.APIKeyRecordUsageParams{
 		KeyID:     id,
 		UserAgent: ua,

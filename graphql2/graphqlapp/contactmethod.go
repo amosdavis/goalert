@@ -9,6 +9,7 @@ import (
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/twilio"
+	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user/contactmethod"
 	"github.com/target/goalert/validation"
@@ -140,16 +141,28 @@ func (m *Mutation) CreateUserContactMethod(ctx context.Context, input graphql2.C
 		return nil, validation.NewFieldError("input", "must provide either dest or type/value")
 	}
 
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
+	// The contact method is normalized before the transaction, since that can
+	// call the provider's API (F3). The store checks the same permissions.
+	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin, permission.MatchUser(input.UserID))
+	if err != nil {
+		return nil, err
+	}
+	cm, err = cm.Normalize(ctx, m.DestReg)
+	if err != nil {
+		return nil, err
+	}
+
+	var created *contactmethod.ContactMethod
+	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
-		cm, err = m.CMStore.Create(ctx, tx, cm)
+		created, err = m.CMStore.Create(ctx, tx, cm)
 		if err != nil {
 			return err
 		}
 
 		if input.NewUserNotificationRule != nil {
 			input.NewUserNotificationRule.UserID = &input.UserID
-			str := cm.ID.String()
+			str := created.ID.String()
 			input.NewUserNotificationRule.ContactMethodID = &str
 
 			_, err = m.CreateUserNotificationRule(ctx, *input.NewUserNotificationRule)
@@ -163,7 +176,7 @@ func (m *Mutation) CreateUserContactMethod(ctx context.Context, input graphql2.C
 		return nil, err
 	}
 
-	return cm, nil
+	return created, nil
 }
 
 func (m *Mutation) UpdateUserContactMethod(ctx context.Context, input graphql2.UpdateUserContactMethodInput) (bool, error) {

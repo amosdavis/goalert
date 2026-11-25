@@ -49,21 +49,21 @@ func (q *Query) UserCalendarSubscription(ctx context.Context, id string) (*calsu
 
 // todo: return UserCalendarSubscription with generated url once endpoint has been created
 func (m *Mutation) CreateUserCalendarSubscription(ctx context.Context, input graphql2.CreateUserCalendarSubscriptionInput) (cs *calsub.Subscription, err error) {
-	cs = &calsub.Subscription{
+	newSub := &calsub.Subscription{
 		Name:       input.Name,
 		ScheduleID: input.ScheduleID,
 		UserID:     permission.UserID(ctx),
 	}
 	if input.Disabled != nil {
-		cs.Disabled = *input.Disabled
+		newSub.Disabled = *input.Disabled
 	}
-	cs.Config.ReminderMinutes = input.ReminderMinutes
+	newSub.Config.ReminderMinutes = input.ReminderMinutes
 	if input.FullSchedule != nil {
-		cs.Config.FullSchedule = *input.FullSchedule
+		newSub.Config.FullSchedule = *input.FullSchedule
 	}
 	err = withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
 		var err error
-		cs, err = m.CalSubStore.CreateTx(ctx, tx, cs)
+		cs, err = m.CalSubStore.CreateTx(ctx, tx, newSub)
 		return err
 	})
 

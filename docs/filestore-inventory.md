@@ -148,7 +148,8 @@ Unique:
 - auth_basic_users_username_key (index): `(username)`
 - auth_basic_users_username_key: `(username)`
 
-**Go:** not ported yet.
+**Go:** ported, `auth/basic/delta.go`, with `trg_insert_basic_user`. Passwords are
+hashed outside transactions.
 
 ### auth_link_requests
 
@@ -156,7 +157,7 @@ Unique:
 
 - auth_link_requests_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `auth/authlink/delta.go`. Adding a request also deletes expired ones.
 
 ### auth_nonce
 
@@ -194,7 +195,9 @@ Unique:
 
 - auth_user_sessions_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `auth/delta.go`. The table key is a hash of the session ID, which keeps
+it out of errors (F20). Last accesses are written together, at most once a
+minute for each pod (F37), and can't bring back a session that was ended.
 
 ### config
 
@@ -378,7 +381,8 @@ Unique:
 - gql_api_key_usage_api_key_id_key: `(api_key_id)`
 - gql_api_key_usage_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `apikey/delta.go`. Uses are written together, at most once a minute
+for each pod (F37).
 
 ### gql_api_keys
 
@@ -393,7 +397,7 @@ Unique:
 - gql_api_keys_name_key (index): `(name) WHERE (deleted_at IS NULL)`
 - gql_api_keys_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `apikey/delta.go`.
 
 ### heartbeat_monitors
 
@@ -922,7 +926,8 @@ Unique:
 - user_calendar_subscriptions_name_schedule_id_user_id_key: `(name, schedule_id, user_id)`
 - user_calendar_subscriptions_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `calsub/delta.go`, with the limit trigger. Last accesses are written
+together, at most once a minute for each pod (F37).
 
 ### user_contact_methods
 

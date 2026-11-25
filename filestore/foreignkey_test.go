@@ -2,6 +2,7 @@ package filestore
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -207,4 +208,65 @@ func TestForeignKeyAcrossPods(t *testing.T) {
 	})
 	var fkErr *ForeignKeyError
 	require.ErrorAs(t, err, &fkErr, "the write is made on top of the deletion, and fails its check (F4, F7)")
+}
+
+// TestForeignKeySetNullTwice checks that a row can refer to a deleted row
+// more than once, and to others that go with it.
+func TestForeignKeySetNullTwice(t *testing.T) {
+	type user struct {
+		ID string `parquet:"id"`
+	}
+	type team struct {
+		ID    string `parquet:"id"`
+		Owner string `parquet:"owner"`
+	}
+	type key struct {
+		ID        string  `parquet:"id"`
+		CreatedBy *string `parquet:"created_by,optional"`
+		UpdatedBy *string `parquet:"updated_by,optional"`
+		Owner     *string `parquet:"owner,optional"`
+		Team      *string `parquet:"team,optional"`
+	}
+	ctx := context.Background()
+	s := NewSchema()
+	users := NewTable(s, "users", func(u user) string { return u.ID })
+	teams := NewTable(s, "teams", func(m team) string { return m.ID })
+	keys := NewTable(s, "keys", func(k key) string { return k.ID })
+	References(keys, "keys_created_by_fkey", users, func(k key) (string, bool) { return Ref(k.CreatedBy) }, SetNull,
+		func(k key) key { k.CreatedBy = nil; return k })
+	References(keys, "keys_updated_by_fkey", users, func(k key) (string, bool) { return Ref(k.UpdatedBy) }, SetNull,
+		func(k key) key { k.UpdatedBy = nil; return k })
+	References(keys, "keys_team_fkey", teams, func(k key) (string, bool) { return Ref(k.Team) }, SetNull,
+		func(k key) key { k.Team = nil; return k })
+	References(teams, "teams_owner_fkey", users, func(m team) (string, bool) { return m.Owner, true }, Cascade, nil)
+	// Declared last, so that rows it will delete are cleared first.
+	References(keys, "keys_owner_fkey", users, func(k key) (string, bool) { return Ref(k.Owner) }, Cascade, nil)
+
+	store := objstore.NewMem()
+	require.NoError(t, CreateDelta(ctx, store, s, dOpts("create")))
+	db, err := OpenDelta(ctx, store, s, dOpts("a"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	u1, u2, t1 := "u1", "u2", "t1"
+	_, err = db.Update(ctx, func(tx *Tx) error {
+		return errors.Join(
+			users.Put(tx, user{u1}), users.Put(tx, user{u2}), teams.Put(tx, team{t1, u1}),
+			keys.Put(tx, key{ID: "both", CreatedBy: &u1, UpdatedBy: &u1, Team: &t1}),
+			keys.Put(tx, key{ID: "one", CreatedBy: &u2, UpdatedBy: &u1}),
+			keys.Put(tx, key{ID: "owned", CreatedBy: &u1, Owner: &u1, Team: &t1}),
+		)
+	})
+	require.NoError(t, err)
+	_, err = db.Update(ctx, func(tx *Tx) error { _, err := users.Delete(tx, u1); return err })
+	require.NoError(t, err)
+
+	k, ok := keys.Get(db.View(), "both")
+	require.True(t, ok)
+	assert.Equal(t, key{ID: "both"}, k)
+	k, ok = keys.Get(db.View(), "one")
+	require.True(t, ok)
+	assert.Equal(t, key{ID: "one", CreatedBy: &u2}, k)
+	_, ok = keys.Get(db.View(), "owned")
+	assert.False(t, ok)
+	assert.Zero(t, teams.Len(db.View()))
 }
