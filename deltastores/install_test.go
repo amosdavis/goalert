@@ -20,6 +20,7 @@ import (
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
+	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/objstore"
 	"github.com/target/goalert/override"
 	"github.com/target/goalert/permission"
@@ -27,6 +28,8 @@ import (
 	"github.com/target/goalert/service"
 	"github.com/target/goalert/storagebackend"
 	"github.com/target/goalert/tablelog"
+	"github.com/target/goalert/user"
+	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/util/sqlutil"
 )
 
@@ -176,4 +179,25 @@ func TestReEncryptAll(t *testing.T) {
 	// The old key alone does not do any more, and the new one does.
 	require.Error(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, keyring.Keys{[]byte("key")}))
 	require.NoError(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, keyring.Keys{[]byte("new")}))
+}
+
+// TestNoSecrets checks that a program without the keys makes none of its own.
+func TestNoSecrets(t *testing.T) {
+	in := deltastorestest.New(t)
+	ctx := permission.SystemContext(context.Background(), "test")
+	db, tables, err := deltastores.Open(ctx, in.Backend("tool"), filestore.DeltaOptions{PollInterval: -1})
+	require.NoError(t, err)
+	defer db.Close()
+	before := db.View().Index()
+	s, err := deltastores.New(ctx, db, tables, deltastores.Options{Logger: log.NewLogger(), Registry: nfydest.NewRegistry(), NoSecrets: true})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, s.Close(ctx)) }()
+	assert.Equal(t, before, db.View().Index())
+	assert.Nil(t, s.Config)
+	_, err = s.User.Insert(ctx, &user.User{Name: "bob", Role: permission.RoleUser})
+	require.NoError(t, err)
+
+	// Nor are they in the way of one that has them.
+	p := in.Pod(t)
+	require.NoError(t, p.Tables.ReEncryptAll(p.Admin(), p.DB, keyring.Keys{[]byte("key")}))
 }

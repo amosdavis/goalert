@@ -94,6 +94,11 @@ type Options struct {
 	// Config is the config store's configuration, without a database. Its keys
 	// also encrypt the keyrings.
 	Config config.StoreConfig
+
+	// NoSecrets leaves out the config store and the keyrings, which would be
+	// created with the wrong keys, for a program that only works with the rest
+	// of the data. What signs or checks tokens does not work without them.
+	NoSecrets bool
 }
 
 // New builds GoAlert's stores on a Delta table whose schema has these tables.
@@ -107,24 +112,10 @@ func New(ctx context.Context, delta *filestore.DeltaDB, t *Tables, opts Options)
 		}
 	}()
 
-	if s.Config, err = config.NewDeltaStore(ctx, opts.Config, db, t.Config, delta.Changes("config")); err != nil {
-		return nil, fmt.Errorf("init config store: %w", err)
-	}
-	for _, k := range []struct {
-		ring *keyring.Keyring
-		keyring.Config
-	}{
-		{&s.OAuthKeyring, keyring.Config{Name: "oauth-state", RotationDays: 1, MaxOldKeys: 1}},
-		{&s.AuthLinkKeyring, keyring.Config{Name: "auth-link", RotationDays: 1, MaxOldKeys: 1}},
-		{&s.SessionKeyring, keyring.Config{Name: "browser-sessions", RotationDays: 1, MaxOldKeys: 30}},
-		{&s.APIKeyring, keyring.Config{Name: "api-keys", MaxOldKeys: 100}},
-	} {
-		k.Keys = opts.Config.Keys
-		ring, err := keyring.NewDeltaDB(ctx, opts.Logger, db, t.Keyring, &k.Config)
-		if err != nil {
-			return nil, fmt.Errorf("init %s keyring: %w", k.Name, err)
+	if !opts.NoSecrets {
+		if err := s.initSecrets(ctx, delta, opts); err != nil {
+			return nil, err
 		}
-		*k.ring = ring
 	}
 
 	limits := t.Limit.MaxFunc
@@ -250,6 +241,30 @@ func New(ctx context.Context, delta *filestore.DeltaDB, t *Tables, opts Options)
 		MaxPerUser:   limits(limit.CalendarSubscriptionsPerUser),
 	})
 	return s, nil
+}
+
+func (s *Stores) initSecrets(ctx context.Context, delta *filestore.DeltaDB, opts Options) (err error) {
+	s.Config, err = config.NewDeltaStore(ctx, opts.Config, s.DB, s.Tables.Config, delta.Changes("config"))
+	if err != nil {
+		return fmt.Errorf("init config store: %w", err)
+	}
+	for _, k := range []struct {
+		ring *keyring.Keyring
+		keyring.Config
+	}{
+		{&s.OAuthKeyring, keyring.Config{Name: "oauth-state", RotationDays: 1, MaxOldKeys: 1}},
+		{&s.AuthLinkKeyring, keyring.Config{Name: "auth-link", RotationDays: 1, MaxOldKeys: 1}},
+		{&s.SessionKeyring, keyring.Config{Name: "browser-sessions", RotationDays: 1, MaxOldKeys: 30}},
+		{&s.APIKeyring, keyring.Config{Name: "api-keys", MaxOldKeys: 100}},
+	} {
+		k.Keys = opts.Config.Keys
+		ring, err := keyring.NewDeltaDB(ctx, opts.Logger, s.DB, s.Tables.Keyring, &k.Config)
+		if err != nil {
+			return fmt.Errorf("init %s keyring: %w", k.Name, err)
+		}
+		*k.ring = ring
+	}
+	return nil
 }
 
 // ReEncryptAll encrypts the keyrings and the configuration with the first of
