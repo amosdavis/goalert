@@ -2,12 +2,12 @@ package schedule
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
@@ -18,18 +18,17 @@ const FixedShiftsPerTemporaryScheduleLimit = 150
 
 // TemporarySchedules will return the current set for the provided scheduleID.
 func (store *Store) TemporarySchedules(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID) ([]TemporarySchedule, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := store.scheduleData(ctx, stx, scheduleID)
+	data, err := store.scheduleData(ctx, tx, scheduleID)
 	if err != nil {
 		return nil, err
 	}
 
-	check, err := store.usr.UserExists(ctx)
+	check, err := store.userExists(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +59,14 @@ func isDataPkeyConflict(err error) bool {
 	return dbErr.ConstraintName == "schedule_data_pkey"
 }
 
+// clone returns a copy with its own shifts. Merging temporary schedules changes
+// shifts in place, and a transaction on the Delta backend can run more than
+// once (F4), so each run starts from a copy.
+func (temp TemporarySchedule) clone() TemporarySchedule {
+	temp.Shifts = slices.Clone(temp.Shifts)
+	return temp
+}
+
 func validateFuture(fieldName string, t time.Time) error {
 	if time.Until(t) > 5*time.Minute {
 		return nil
@@ -69,13 +76,12 @@ func validateFuture(fieldName string, t time.Time) error {
 
 // SetTemporarySchedule will cause the schedule to use only, and exactly, the provided set of shifts between the provided start and end times.
 func (store *Store) SetTemporarySchedule(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, temp TemporarySchedule) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
 
-	check, err := store.usr.UserExists(ctx)
+	check, err := store.userExists(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -85,21 +91,20 @@ func (store *Store) SetTemporarySchedule(ctx context.Context, tx txn.Tx, schedul
 		return err
 	}
 
-	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
-		data.V1.TemporarySchedules = setFixedShifts(data.V1.TemporarySchedules, *newTemp)
+	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
+		data.V1.TemporarySchedules = setFixedShifts(data.V1.TemporarySchedules, newTemp.clone())
 		return nil
 	})
 }
 
 // SetClearTemporarySchedules works like SetTemporarySchedule after clearing out any existing TemporarySchedules between clearStart and clearEnd.
 func (store *Store) SetClearTemporarySchedule(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, temp TemporarySchedule, clearStart, clearEnd time.Time) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
 
-	check, err := store.usr.UserExists(ctx)
+	check, err := store.userExists(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -119,16 +124,15 @@ func (store *Store) SetClearTemporarySchedule(ctx context.Context, tx txn.Tx, sc
 		clearStart = now
 	}
 
-	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
+	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
 		data.V1.TemporarySchedules = deleteFixedShifts(data.V1.TemporarySchedules, clearStart, clearEnd)
-		data.V1.TemporarySchedules = setFixedShifts(data.V1.TemporarySchedules, *newTemp)
+		data.V1.TemporarySchedules = setFixedShifts(data.V1.TemporarySchedules, newTemp.clone())
 		return nil
 	})
 }
 
 // ClearTemporarySchedules will clear out (or split, if needed) any defined TemporarySchedules that exist between the start and end time.
 func (store *Store) ClearTemporarySchedules(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, start, end time.Time) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -145,7 +149,7 @@ func (store *Store) ClearTemporarySchedules(ctx context.Context, tx txn.Tx, sche
 		start = time.Now()
 	}
 
-	return store.updateScheduleData(ctx, stx, scheduleID, func(data *Data) error {
+	return store.updateScheduleData(ctx, tx, scheduleID, func(data *Data) error {
 		data.V1.TemporarySchedules = deleteFixedShifts(data.V1.TemporarySchedules, start, end)
 		return nil
 	})

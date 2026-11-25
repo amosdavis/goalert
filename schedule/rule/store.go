@@ -18,7 +18,8 @@ import (
 
 type ScheduleTriggerFunc func(string)
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaRules // the Delta backend, if set (delta.go)
 
 	add     *sql.Stmt
 	update  *sql.Stmt
@@ -113,7 +114,7 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	}, p.Err
 }
 
-func (s *Store) _Add(ctx context.Context, stmt *sql.Stmt, r *Rule) (*Rule, error) {
+func (s *Store) _Add(ctx context.Context, tx txn.Tx, r *Rule) (*Rule, error) {
 	n, err := r.Normalize()
 	if err != nil {
 		return nil, err
@@ -125,6 +126,18 @@ func (s *Store) _Add(ctx context.Context, stmt *sql.Stmt, r *Rule) (*Rule, error
 	}
 
 	n.ID = uuid.New().String()
+	if s.delta != nil {
+		err = s.delta.add(ctx, tx, n)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+
+	stmt := s.add
+	if stx := sqltxn.Unwrap(tx); stx != nil {
+		stmt = stx.Stmt(stmt)
+	}
 	_, err = stmt.ExecContext(ctx, n.readFields()...)
 	if err != nil {
 		return nil, err
@@ -134,7 +147,7 @@ func (s *Store) _Add(ctx context.Context, stmt *sql.Stmt, r *Rule) (*Rule, error
 }
 
 func (s *Store) Add(ctx context.Context, r *Rule) (*Rule, error) {
-	r, err := s._Add(ctx, s.add, r)
+	r, err := s._Add(ctx, nil, r)
 	if err != nil {
 		return nil, err
 	}
@@ -142,15 +155,10 @@ func (s *Store) Add(ctx context.Context, r *Rule) (*Rule, error) {
 }
 
 func (s *Store) CreateRuleTx(ctx context.Context, tx txn.Tx, r *Rule) (*Rule, error) {
-	stx := sqltxn.Unwrap(tx)
-	if stx == nil {
-		return s._Add(ctx, s.add, r)
-	}
-	return s._Add(ctx, stx.Stmt(s.add), r)
+	return s._Add(ctx, tx, r)
 }
 
 func (s *Store) FindByTargetTx(ctx context.Context, tx txn.Tx, scheduleID string, target assignment.Target) ([]Rule, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -164,8 +172,12 @@ func (s *Store) FindByTargetTx(ctx context.Context, tx txn.Tx, scheduleID string
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findByTarget(ctx, tx, scheduleID, target)
+	}
+
 	stmt := s.findTgt
-	if stx != nil {
+	if stx := sqltxn.Unwrap(tx); stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
 	}
 
@@ -202,7 +214,6 @@ func (s *Store) FindByTargetTx(ctx context.Context, tx txn.Tx, scheduleID string
 }
 
 func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ruleIDs []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -214,8 +225,11 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ruleIDs []string) e
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.deleteMany(ctx, tx, ruleIDs)
+	}
 	stmt := s.delete
-	if stx != nil {
+	if stx := sqltxn.Unwrap(tx); stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
 	}
 
@@ -225,7 +239,6 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ruleIDs []string) e
 }
 
 func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, r *Rule) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return err
@@ -234,11 +247,14 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, r *Rule) error {
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.update(ctx, tx, n)
+	}
 
 	f := n.readFields()
 
 	stmt := s.update
-	if stx != nil {
+	if stx := sqltxn.Unwrap(tx); stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
 	}
 	_, err = stmt.ExecContext(ctx, f...)
@@ -253,7 +269,6 @@ func (s *Store) FindAll(ctx context.Context, scheduleID string) ([]Rule, error) 
 }
 
 func (s *Store) FindAllTx(ctx context.Context, tx txn.Tx, scheduleID string) ([]Rule, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("ScheduleID", scheduleID)
 	if err != nil {
 		return nil, err
@@ -262,8 +277,11 @@ func (s *Store) FindAllTx(ctx context.Context, tx txn.Tx, scheduleID string) ([]
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.findAll(ctx, tx, scheduleID)
+	}
 	stmt := s.findAll
-	if stx != nil {
+	if stx := sqltxn.Unwrap(tx); stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
 	}
 	rows, err := stmt.QueryContext(ctx, scheduleID)

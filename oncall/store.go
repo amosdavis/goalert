@@ -45,7 +45,8 @@ type Shift struct {
 
 // Store allows retrieving and calculating on-call information.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaOnCall // the Delta backend, if set (delta.go)
 
 	onCallUsersSvc      *sql.Stmt
 	onCallUsersSchedule *sql.Stmt
@@ -150,6 +151,9 @@ func (s *Store) OnCallUsersByService(ctx context.Context, serviceID string) ([]S
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.usersByService(ctx, serviceID)
+	}
 	rows, err := s.onCallUsersSvc.QueryContext(ctx, serviceID)
 	if err != nil {
 		return nil, err
@@ -176,6 +180,9 @@ func (s *Store) OnCallUsersBySchedule(ctx context.Context, scheduleID string) ([
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.usersBySchedule(ctx, scheduleID)
+	}
 	rows, err := s.onCallUsersSchedule.QueryContext(ctx, scheduleID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch on-call users for schedule '%s': %w", scheduleID, err)
@@ -194,6 +201,22 @@ func (s *Store) OnCallUsersBySchedule(ctx context.Context, scheduleID string) ([
 	}
 
 	return result, nil
+}
+
+// resolveRules returns the rules with their rotations, by rotation ID.
+func resolveRules(rawRules []rule.Rule, rots map[string]*ResolvedRotation) []ResolvedRule {
+	var rules []ResolvedRule
+	for _, r := range rawRules {
+		if r.Target.TargetType() == assignment.TargetTypeRotation {
+			rules = append(rules, ResolvedRule{
+				Rule:     r,
+				Rotation: rots[r.Target.TargetID()],
+			})
+		} else {
+			rules = append(rules, ResolvedRule{Rule: r})
+		}
+	}
+	return rules
 }
 
 // HistoryBySchedule will return the list of shifts that overlap the start and end time for the given schedule.
@@ -215,6 +238,14 @@ func (s *Store) HistoryBySchedule(ctx context.Context, scheduleID string, start,
 		defer func() { <-s.histLim }()
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+
+	if s.delta != nil {
+		st, err := s.delta.historyState(ctx, s, scheduleID, start, end)
+		if err != nil {
+			return nil, err
+		}
+		return st.CalculateShifts(start, end), nil
 	}
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{
@@ -275,17 +306,7 @@ func (s *Store) HistoryBySchedule(ctx context.Context, scheduleID string, start,
 		return nil, errors.Wrap(err, "lookup schedule rules")
 	}
 
-	var rules []ResolvedRule
-	for _, r := range rawRules {
-		if r.Target.TargetType() == assignment.TargetTypeRotation {
-			rules = append(rules, ResolvedRule{
-				Rule:     r,
-				Rotation: rots[r.Target.TargetID()],
-			})
-		} else {
-			rules = append(rules, ResolvedRule{Rule: r})
-		}
-	}
+	rules := resolveRules(rawRules, rots)
 
 	rows, err = tx.StmtContext(ctx, s.schedOnCall).QueryContext(ctx, scheduleID, start, end)
 	if err != nil {

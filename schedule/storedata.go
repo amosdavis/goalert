@@ -14,6 +14,9 @@ import (
 )
 
 func (store *Store) scheduleData(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID) (*Data, error) {
+	if store.delta != nil {
+		return store.delta.scheduleData(ctx, tx, scheduleID)
+	}
 	stx := sqltxn.Unwrap(tx)
 	db := gadb.New(store.db)
 	if stx != nil {
@@ -39,6 +42,9 @@ func (store *Store) scheduleData(ctx context.Context, tx txn.Tx, scheduleID uuid
 }
 
 func (store *Store) updateScheduleData(ctx context.Context, tx txn.Tx, scheduleID uuid.UUID, apply func(data *Data) error) error {
+	if store.delta != nil {
+		return store.delta.updateData(ctx, tx, scheduleID, apply)
+	}
 	stx := sqltxn.Unwrap(tx)
 	var err error
 	externalTx := stx != nil

@@ -16,8 +16,9 @@ import (
 )
 
 type Store struct {
-	db  *sql.DB
-	usr *user.Store
+	db    *sql.DB
+	usr   *user.Store
+	delta *deltaSchedules // the Delta backend, if set (delta.go)
 }
 
 func NewStore(ctx context.Context, db *sql.DB, usr *user.Store) (*Store, error) {
@@ -28,7 +29,6 @@ func NewStore(ctx context.Context, db *sql.DB, usr *user.Store) (*Store, error) 
 }
 
 func (store *Store) FindManyTx(ctx context.Context, tx txn.Tx, ids []string) ([]Schedule, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -47,6 +47,11 @@ func (store *Store) FindManyTx(ctx context.Context, tx txn.Tx, ids []string) ([]
 		}
 	}
 
+	if store.delta != nil {
+		return store.delta.findMany(ctx, tx, uuids)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	db := gadb.New(store.db)
 	if stx != nil {
 		db = db.WithTx(stx)
@@ -87,13 +92,15 @@ func (store *Store) FindMany(ctx context.Context, ids []string) ([]Schedule, err
 }
 
 func (store *Store) FindManyByUserID(ctx context.Context, tx txn.Tx, userID uuid.NullUUID) ([]Schedule, error) {
-	db := sqltxn.DBTX(store.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
 	}
+	if store.delta != nil {
+		return store.delta.findManyByUser(ctx, tx, userID)
+	}
 
-	rows, err := gadb.New(db).ScheduleFindManyByUser(ctx, userID)
+	rows, err := gadb.New(sqltxn.DBTX(store.db, tx)).ScheduleFindManyByUser(ctx, userID)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -119,7 +126,6 @@ func (store *Store) Create(ctx context.Context, s *Schedule) (*Schedule, error) 
 }
 
 func (store *Store) CreateScheduleTx(ctx context.Context, tx txn.Tx, s *Schedule) (*Schedule, error) {
-	stx := sqltxn.Unwrap(tx)
 	n, err := s.Normalize()
 	if err != nil {
 		return nil, err
@@ -130,16 +136,22 @@ func (store *Store) CreateScheduleTx(ctx context.Context, tx txn.Tx, s *Schedule
 		return nil, err
 	}
 
-	db := gadb.New(store.db)
-	if stx != nil {
-		db = db.WithTx(stx)
+	var id uuid.UUID
+	if store.delta != nil {
+		id = uuid.New()
+		err = store.delta.create(ctx, tx, id, n)
+	} else {
+		stx := sqltxn.Unwrap(tx)
+		db := gadb.New(store.db)
+		if stx != nil {
+			db = db.WithTx(stx)
+		}
+		id, err = db.SchedCreate(ctx, gadb.SchedCreateParams{
+			Name:        n.Name,
+			Description: n.Description,
+			TimeZone:    n.TimeZone.String(),
+		})
 	}
-
-	id, err := db.SchedCreate(ctx, gadb.SchedCreateParams{
-		Name:        n.Name,
-		Description: n.Description,
-		TimeZone:    n.TimeZone.String(),
-	})
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +180,9 @@ func (store *Store) Update(ctx context.Context, s *Schedule) error {
 	if err != nil {
 		return err
 	}
+	if store.delta != nil {
+		return store.delta.update(ctx, nil, id, n)
+	}
 
 	err = gadb.New(store.db).SchedUpdate(ctx, gadb.SchedUpdateParams{
 		ID:          id,
@@ -179,7 +194,6 @@ func (store *Store) Update(ctx context.Context, s *Schedule) error {
 }
 
 func (store *Store) UpdateTx(ctx context.Context, tx txn.Tx, s *Schedule) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -198,8 +212,11 @@ func (store *Store) UpdateTx(ctx context.Context, tx txn.Tx, s *Schedule) error 
 	if err != nil {
 		return err
 	}
+	if store.delta != nil {
+		return store.delta.update(ctx, tx, id, n)
+	}
 
-	err = gadb.New(store.db).WithTx(stx).SchedUpdate(ctx, gadb.SchedUpdateParams{
+	err = gadb.New(store.db).WithTx(sqltxn.Unwrap(tx)).SchedUpdate(ctx, gadb.SchedUpdateParams{
 		ID:          id,
 		Name:        n.Name,
 		Description: n.Description,
@@ -212,6 +229,9 @@ func (store *Store) FindAll(ctx context.Context) ([]Schedule, error) {
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
+	}
+	if store.delta != nil {
+		return store.delta.findAll(ctx)
 	}
 
 	rows, err := gadb.New(store.db).SchedFindAll(ctx)
@@ -237,7 +257,6 @@ func (store *Store) FindAll(ctx context.Context) ([]Schedule, error) {
 }
 
 func (store *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Schedule, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -251,9 +270,12 @@ func (store *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) 
 	if err != nil {
 		return nil, err
 	}
+	if store.delta != nil {
+		return store.delta.findOne(ctx, tx, schedID, false)
+	}
 
 	db := gadb.New(store.db)
-	if stx != nil {
+	if stx := sqltxn.Unwrap(tx); stx != nil {
 		db = db.WithTx(stx)
 	}
 
@@ -290,6 +312,9 @@ func (store *Store) FindOne(ctx context.Context, id string) (*Schedule, error) {
 	if err != nil {
 		return nil, err
 	}
+	if store.delta != nil {
+		return store.delta.findOne(ctx, nil, schedID, true)
+	}
 
 	row, err := gadb.New(store.db).SchedFindOne(ctx, gadb.SchedFindOneParams{
 		ID:     schedID,
@@ -319,12 +344,10 @@ func (store *Store) Delete(ctx context.Context, id string) error {
 }
 
 func (store *Store) DeleteTx(ctx context.Context, tx txn.Tx, id string) error {
-	stx := sqltxn.Unwrap(tx)
-	return store.DeleteManyTx(ctx, stx, []string{id})
+	return store.DeleteManyTx(ctx, tx, []string{id})
 }
 
 func (store *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -345,7 +368,11 @@ func (store *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) e
 			return err
 		}
 	}
+	if store.delta != nil {
+		return store.delta.deleteMany(ctx, tx, uuids)
+	}
 
+	stx := sqltxn.Unwrap(tx)
 	db := gadb.New(store.db)
 	if stx != nil {
 		db = db.WithTx(stx)
@@ -353,4 +380,13 @@ func (store *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) e
 
 	err = db.SchedDeleteMany(ctx, uuids)
 	return err
+}
+
+// userExists returns a checker from the user store on Postgres, or from the
+// users lookup on Delta. tx lets the Delta checker see the caller's changes.
+func (store *Store) userExists(ctx context.Context, tx txn.Tx) (user.ExistanceChecker, error) {
+	if store.delta != nil {
+		return store.delta.userExists(ctx, tx)
+	}
+	return store.usr.UserExists(ctx)
 }
