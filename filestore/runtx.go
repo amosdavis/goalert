@@ -17,6 +17,43 @@ func (tx *Tx) Fail(err error) {
 	}
 }
 
+// Try runs fn, and undoes what it changed if it fails, like a savepoint in
+// Postgres: the rest of the transaction can still commit. That includes a
+// constraint that failed in it (Fail). A panic in fn is an error too, a
+// *TxPanic.
+//
+// It is for work on many rows, where one that can't be handled must not keep
+// the others from being (F53).
+func (tx *Tx) Try(fn func() error) (err error) {
+	if err := tx.check(); err != nil {
+		return err
+	}
+	working := make(map[string]tableData, len(tx.working))
+	for name, d := range tx.working {
+		working[name] = d.clone()
+	}
+	muts, failed := len(tx.muts), tx.failed
+	done := false
+	defer func() {
+		if !done {
+			v := recover()
+			if v == nil {
+				return // runtime.Goexit, which goes on and ends the transaction
+			}
+			err = &TxPanic{Value: v, Stack: debug.Stack()}
+		}
+		if err != nil {
+			tx.working, tx.muts, tx.failed = working, tx.muts[:muts], failed
+		}
+	}()
+	err = fn()
+	if err == nil && tx.failed != failed {
+		err = tx.failed
+	}
+	done = true
+	return err
+}
+
 // TxPanic is what Update panics with when the transaction's function
 // panicked.
 type TxPanic struct {

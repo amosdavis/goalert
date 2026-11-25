@@ -494,3 +494,94 @@ func TestDeltaUpdateEachRace(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 2*pods*rounds+1, got)
 }
+
+// TestDeltaTry checks that a part of a transaction that fails is undone, and
+// that the rest commits.
+func TestDeltaTry(t *testing.T) {
+	ctx := t.Context()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	db := openPod(t, store, sch, dOpts("a"))
+	boom := errors.New("boom")
+	mail := func(id, email string) dUser { return dUser{ID: id, Email: email} }
+	_, err := db.Update(ctx, func(tx *Tx) error {
+		require.NoError(t, sch.users.Put(tx, mail("0", "zero")))
+		return nil
+	})
+	require.NoError(t, err)
+
+	_, err = db.Update(ctx, func(tx *Tx) error {
+		require.NoError(t, sch.users.Put(tx, mail("1", "one")))
+		require.NoError(t, tx.Try(func() error { return sch.users.Put(tx, mail("2", "two")) }))
+
+		// Rows, index entries, sequences and deletions come back.
+		require.ErrorIs(t, tx.Try(func() error {
+			require.NoError(t, sch.users.Put(tx, mail("3", "three")))
+			require.NoError(t, sch.users.Put(tx, mail("1", "changed")))
+			_, err := sch.users.Delete(tx, "0")
+			require.NoError(t, err)
+			_, err = tx.NextID("seq")
+			require.NoError(t, err)
+			return boom
+		}), boom)
+		u, ok := sch.email.Get(tx, "one")
+		require.True(t, ok)
+		require.Equal(t, "1", u.ID)
+		_, ok = sch.email.Get(tx, "changed")
+		require.False(t, ok)
+		require.Equal(t, 3, sch.users.Len(tx))
+		id, err := tx.NextID("seq")
+		require.NoError(t, err)
+		require.EqualValues(t, 1, id)
+
+		// A table nobody had changed before.
+		require.NoError(t, tx.Try(func() error { return nil }))
+
+		// A constraint that failed, and whose error was ignored, is undone too.
+		require.ErrorIs(t, tx.Try(func() error {
+			require.NoError(t, sch.users.Put(tx, mail("4", "four")))
+			tx.Fail(boom)
+			return nil
+		}), boom)
+
+		var pe *TxPanic
+		require.ErrorAs(t, tx.Try(func() error {
+			require.NoError(t, sch.users.Put(tx, mail("5", "five")))
+			panic("oops")
+		}), &pe)
+
+		// One inside another.
+		require.NoError(t, tx.Try(func() error {
+			require.NoError(t, sch.users.Put(tx, mail("6", "six")))
+			require.ErrorIs(t, tx.Try(func() error {
+				require.NoError(t, sch.users.Put(tx, mail("6", "again")))
+				return boom
+			}), boom)
+			return nil
+		}))
+		require.ErrorIs(t, tx.Try(func() error {
+			require.NoError(t, tx.Try(func() error { return sch.users.Put(tx, mail("7", "seven")) }))
+			return boom
+		}), boom)
+		return nil
+	})
+	require.NoError(t, err)
+	reader := newDSchema()
+	want := []dUser{mail("0", "zero"), mail("1", "one"), mail("2", "two"), mail("6", "six")}
+	require.Equal(t, want, dumpUsers(sch, db.View()))
+	require.Equal(t, want, dumpUsers(reader, openPod(t, store, reader, dOpts("b")).View()), "and so it was written")
+
+	// A failure outside still fails it all.
+	_, err = db.Update(ctx, func(tx *Tx) error {
+		require.NoError(t, tx.Try(func() error { return sch.users.Put(tx, mail("8", "eight")) }))
+		tx.Fail(boom)
+		require.NoError(t, tx.Try(func() error { return sch.users.Put(tx, mail("9", "nine")) }))
+		return nil
+	})
+	require.ErrorIs(t, err, boom)
+	var late *Tx
+	_, err = db.Update(ctx, func(tx *Tx) error { late = tx; return nil })
+	require.NoError(t, err)
+	require.ErrorIs(t, late.Try(func() error { return nil }), ErrTxDone)
+	require.Equal(t, want, dumpUsers(sch, db.View()))
+}

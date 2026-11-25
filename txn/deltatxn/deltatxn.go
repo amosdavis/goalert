@@ -32,7 +32,7 @@ func (db DB) Run(ctx context.Context, opts *txn.Options, fn func(tx txn.Tx) erro
 		return fn(&Tx{reader: db.DB.View(), now: db.DB.Now()})
 	}
 	_, err := db.DB.Update(ctx, func(tx *filestore.Tx) error {
-		return fn(&Tx{tx: tx, reader: tx, now: tx.Now()})
+		return fn(Of(tx))
 	})
 	return err
 }
@@ -49,6 +49,10 @@ type Tx struct {
 }
 
 var _ txn.Tx = (*Tx)(nil)
+
+// Of returns a filestore transaction as one that store methods take, for code
+// that runs transactions itself, such as the engine.
+func Of(tx *filestore.Tx) *Tx { return &Tx{tx: tx, reader: tx, now: tx.Now()} }
 
 // Commit returns ErrManaged: Run commits.
 func (*Tx) Commit() error { return ErrManaged }
