@@ -50,11 +50,10 @@ type DeltaTables struct {
 
 // DefineDeltaTables adds the auth handler's tables to the Delta backend's
 // schema: auth_user_sessions, keyed by a hash of its id
-// (auth_user_sessions_pkey). Its rows are small, and a write of last accesses
-// changes many of them, so it has few buckets (F39).
+// (auth_user_sessions_pkey).
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{}
-	t.Sessions = filestore.NewTable(s, "auth_user_sessions", func(r sessionRow) string { return sessionKey(r.ID) }).Buckets(4)
+	t.Sessions = filestore.NewTable(s, "auth_user_sessions", func(r sessionRow) string { return sessionKey(r.ID) })
 	t.byUser = t.Sessions.Index("auth_user_sessions_user_id", func(r sessionRow) []string {
 		if r.UserID == nil {
 			return nil

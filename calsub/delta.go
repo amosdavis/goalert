@@ -50,11 +50,10 @@ type DeltaTables struct {
 
 // DefineDeltaTables adds the calendar subscription store's tables to the
 // Delta backend's schema: user_calendar_subscriptions, keyed by id
-// (user_calendar_subscriptions_pkey). Its rows are small, and a write of last
-// accesses changes many of them, so it has few buckets (F39).
+// (user_calendar_subscriptions_pkey).
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{}
-	t.Subscriptions = filestore.NewTable(s, "user_calendar_subscriptions", func(r subRow) string { return r.ID }).Buckets(4)
+	t.Subscriptions = filestore.NewTable(s, "user_calendar_subscriptions", func(r subRow) string { return r.ID })
 	t.Subscriptions.Unique("user_calendar_subscriptions_name_schedule_id_user_id_key", func(r subRow) (string, bool) {
 		return r.ScheduleID + "/" + r.UserID + "/" + r.Name, true
 	})

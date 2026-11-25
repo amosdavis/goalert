@@ -74,7 +74,8 @@ type DeltaTables struct {
 // DefineDeltaTables adds the heartbeat store's tables to the Delta backend's
 // schema: heartbeat_monitors, keyed by id (heartbeat_monitors_pkey).
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
-	t := &DeltaTables{Monitors: filestore.NewTable(s, "heartbeat_monitors", func(r monitorRow) string { return r.ID })}
+	// Every heartbeat changes a row, so few rows share a file (F39).
+	t := &DeltaTables{Monitors: filestore.NewTable(s, "heartbeat_monitors", func(r monitorRow) string { return r.ID }).Buckets(32)}
 	t.ByState = t.Monitors.Index("heartbeat_monitors_last_state", func(r monitorRow) []string {
 		if r.LastHeartbeat == nil {
 			return nil

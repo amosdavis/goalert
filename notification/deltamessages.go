@@ -13,10 +13,9 @@ import (
 	"github.com/target/goalert/gadb"
 )
 
-// messageBuckets is how many data files outgoing_messages and
-// message_status_history are spread over. Both grow without bound and change
-// with every message, so small files keep a change cheap (F39).
-const messageBuckets = 64
+// messageBuckets is how many buckets outgoing_messages and
+// message_status_history have, which grow without bound (F39).
+const messageBuckets = 8
 
 const (
 	statusBundled        = string(gadb.EnumOutgoingMessagesStatusBundled)

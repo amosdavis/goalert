@@ -77,9 +77,7 @@ type DeltaTables struct {
 // Delta backend's schema.
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{}
-	// Every change of an alert adds a row, which rewrites the row's bucket
-	// (F39).
-	t.Logs = filestore.NewTable(s, "alert_logs", func(l DeltaLog) string { return filestore.IntKey(l.ID) }).Buckets(64)
+	t.Logs = filestore.NewTable(s, "alert_logs", func(l DeltaLog) string { return filestore.IntKey(l.ID) }).Buckets(8)
 	// This also serves idx_alert_logs_alert_id, one event after the other.
 	t.byAlertEvent = t.Logs.Index("idx_alert_logs_alert_event", func(l DeltaLog) []string {
 		if l.AlertID == nil {

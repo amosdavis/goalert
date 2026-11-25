@@ -46,10 +46,6 @@ type StepOnCallRow struct {
 // allOpen is the index key of every open row, next to keys that are uuids.
 const allOpen = "open"
 
-// onCallBuckets is how many files each table's rows are spread over. Both
-// tables keep history, so their files would get large with the default (F39).
-const onCallBuckets = 64
-
 // DeltaTables are the on-call tables on the Delta backend. The engine writes
 // them, with the Start and End methods, which keep their constraints.
 type DeltaTables struct {
@@ -69,8 +65,8 @@ type DeltaTables struct {
 // ep_step_on_call_users, keyed by id (ep_step_on_call_users_uniq_id).
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{
-		ScheduleOnCall: filestore.NewTable(s, "schedule_on_call_users", func(r ScheduleOnCallRow) string { return filestore.IntKey(r.ID) }).Buckets(onCallBuckets),
-		StepOnCall:     filestore.NewTable(s, "ep_step_on_call_users", func(r StepOnCallRow) string { return filestore.IntKey(r.ID) }).Buckets(onCallBuckets),
+		ScheduleOnCall: filestore.NewTable(s, "schedule_on_call_users", func(r ScheduleOnCallRow) string { return filestore.IntKey(r.ID) }),
+		StepOnCall:     filestore.NewTable(s, "ep_step_on_call_users", func(r StepOnCallRow) string { return filestore.IntKey(r.ID) }),
 	}
 
 	t.schedOpen = t.ScheduleOnCall.Unique("idx_schedule_on_call_once", func(r ScheduleOnCallRow) (string, bool) {

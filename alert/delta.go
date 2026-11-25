@@ -143,8 +143,7 @@ type DeltaTables struct {
 func DefineDeltaTables(s *filestore.Schema) *DeltaTables {
 	t := &DeltaTables{}
 
-	// Alerts change often, and a change rewrites the row's bucket (F39).
-	t.Alerts = filestore.NewTable(s, "alerts", func(a DeltaAlert) string { return filestore.IntKey(a.ID) }).Buckets(64)
+	t.Alerts = filestore.NewTable(s, "alerts", func(a DeltaAlert) string { return filestore.IntKey(a.ID) }).Buckets(8)
 	t.byDedup = t.Alerts.Unique("idx_no_alert_duplicates", func(a DeltaAlert) (string, bool) {
 		if a.ServiceID == nil || a.DedupKey == nil {
 			return "", false

@@ -1,6 +1,7 @@
 package filestore
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"maps"
 	"math/rand/v2"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,9 +25,14 @@ import (
 // This file keeps the store in a Delta table that several pods share
 // (docs/filestore-plan.md). Every pod holds the whole state in memory, as
 // with the local log, and follows the table's log. A transaction is one
-// Delta commit. It rewrites the data file of every bucket it changed, and is
-// made on top of the latest version: if another pod commits first, the
-// transaction runs again on the new state (F4).
+// Delta commit, made on top of the latest version: if another pod commits
+// first, the transaction runs again on the new state (F4).
+//
+// A bucket's rows are in any number of data files. A commit writes the rows it
+// adds or changes to a new file, with what else is in the files that held them,
+// and merges files that are no larger than the new one. So a bucket has few
+// files, each row is rewritten only as often as their sizes double, and adding
+// a row costs the same however many there are (F39).
 
 // ErrConflicts means a write kept losing to other pods' commits and gave up
 // (F40). Nothing was changed.
@@ -36,13 +41,15 @@ var ErrConflicts = errors.New("filestore: too many conflicting commits from othe
 const (
 	// defaultBuckets is how many buckets a table's rows are spread over,
 	// unless Table.Buckets says otherwise.
-	defaultBuckets = 16
+	defaultBuckets = 4
+
+	// defaultFileRows is how many rows a data file has at most, unless
+	// DeltaOptions.MaxFileRows says otherwise.
+	defaultFileRows = 1024
 
 	// bucketsKey is the table configuration that records a table's bucket
 	// count, which can never change once rows are stored by it.
 	bucketsKey = "goalert.buckets."
-
-	bucketIndex = "_bucket"
 
 	// minChunkGrace is the shortest grace period a chunked object store
 	// accepts (chunkstore.MinGracePeriod).
@@ -58,8 +65,7 @@ type deltaDef interface {
 
 // deltaData is what a Delta table needs from a table's data.
 type deltaData interface {
-	encodeBucket(bucket int) (data []byte, rows int, err error)
-	bucketKeys(bucket int) []string
+	encodeKeys(keys []string) ([]byte, error)
 	decodeFile(data []byte) ([]deltaRow, error)
 	hasKey(key string) bool
 	removeKey(key string)
@@ -71,10 +77,10 @@ type deltaRow struct {
 	val any
 }
 
-// Buckets sets how many data files the table's rows are spread over in a
-// Delta table, 16 by default. A change rewrites its bucket's whole file, so
-// more buckets mean less to rewrite (F39). The count is recorded in the
-// table and cannot change later.
+// Buckets sets how many buckets the table's rows are spread over in a Delta
+// table, 4 by default. A commit writes a file for each bucket it changes, so
+// more of them mean more requests, and fewer files to look for a row in (F39).
+// The count is recorded in the table and cannot change later.
 func (t *Table[V]) Buckets(n int) *Table[V] {
 	t.schema.checkOpen()
 	if n < 1 || n > 4096 {
@@ -92,10 +98,6 @@ func (t *Table[V]) deltaInit() error {
 	if t.buckets == 0 {
 		t.buckets = defaultBuckets
 	}
-	n := t.buckets
-	t.bucketIx = t.Index(bucketIndex, func(v V) []string {
-		return []string{strconv.Itoa(deltatable.Bucket(t.keyFn(v), n))}
-	})
 	t.rowType = rt
 	return nil
 }
@@ -103,32 +105,17 @@ func (t *Table[V]) deltaInit() error {
 func (t *Table[V]) deltaColumn() deltatable.Column { return t.rowType }
 func (t *Table[V]) deltaBuckets() int              { return t.buckets }
 
-func (d *typedTable[V]) bucketScan(bucket int, fn func(key string, v V)) {
-	prefix := strconv.Itoa(bucket) + "\x00"
-	d.idx[d.def.bucketIx.pos].AscendGreaterOrEqual(prefix, func(e string) bool {
-		if !strings.HasPrefix(e, prefix) {
-			return false
+// encodeKeys encodes the rows with the keys, in that order.
+func (d *typedTable[V]) encodeKeys(keys []string) ([]byte, error) {
+	rows := make([]V, len(keys))
+	for i, k := range keys {
+		it, ok := d.rows.Get(item[V]{key: k})
+		if !ok {
+			return nil, fmt.Errorf("filestore: %s: row %q of a data file is not in the table", d.def.name, k)
 		}
-		it, _ := d.rows.Get(item[V]{key: e[len(prefix):]})
-		fn(it.key, it.val)
-		return true
-	})
-}
-
-func (d *typedTable[V]) encodeBucket(bucket int) ([]byte, int, error) {
-	var rows []V
-	d.bucketScan(bucket, func(_ string, v V) { rows = append(rows, v) })
-	if len(rows) == 0 {
-		return nil, 0, nil
+		rows[i] = it.val
 	}
-	data, err := d.def.rowType.Encode(rows)
-	return data, len(rows), err
-}
-
-func (d *typedTable[V]) bucketKeys(bucket int) []string {
-	var keys []string
-	d.bucketScan(bucket, func(key string, _ V) { keys = append(keys, key) })
-	return keys
+	return d.def.rowType.Encode(rows)
 }
 
 func (d *typedTable[V]) decodeFile(data []byte) ([]deltaRow, error) {
@@ -276,6 +263,12 @@ type DeltaOptions struct {
 	// once. The default is 8.
 	UploadConcurrency int
 
+	// MaxFileRows is how many rows a data file has at most. Changing a row
+	// rewrites its file, so a higher limit means fewer files to read when a pod
+	// starts, and more to write for a change of an old row. The default is
+	// 1024. Pods need not agree on it.
+	MaxFileRows int
+
 	// PollInterval is how often the store looks for other pods' commits.
 	// The default is 1s; a negative value turns following off. While the
 	// table is idle it backs off to MaxPollInterval, 10s by default (F37).
@@ -333,6 +326,9 @@ func (o DeltaOptions) withDefaults() DeltaOptions {
 	if o.UploadConcurrency <= 0 {
 		o.UploadConcurrency = 8
 	}
+	if o.MaxFileRows <= 0 {
+		o.MaxFileRows = defaultFileRows
+	}
 	if o.PollInterval == 0 {
 		o.PollInterval = time.Second
 	}
@@ -350,6 +346,22 @@ type bucketID struct {
 	bucket int
 }
 
+func (id bucketID) compare(other bucketID) int {
+	return cmp.Or(cmp.Compare(id.table, other.table), cmp.Compare(id.bucket, other.bucket))
+}
+
+// dataFile is an active data file.
+type dataFile struct {
+	id   bucketID
+	path string
+	keys []string // of its rows, sorted
+}
+
+func (f *dataFile) has(key string) bool {
+	_, ok := slices.BinarySearch(f.keys, key)
+	return ok
+}
+
 // DeltaDB is a store in a Delta table shared by several pods. Its methods
 // are safe for concurrent use.
 type DeltaDB struct {
@@ -359,10 +371,11 @@ type DeltaDB struct {
 	opts   DeltaOptions
 	want   deltalog.MetaData
 
-	sem     chan struct{}         // held by the one writer, or by catching up
-	snap    *deltalog.Snapshot    // writer-owned, like the fields up to view
-	master  map[string]tableData  // never seen by readers
-	buckets map[bucketID][]string // active data files by bucket
+	sem     chan struct{}        // held by the one writer, or by catching up
+	snap    *deltalog.Snapshot   // writer-owned, like the fields up to view
+	master  map[string]tableData // never seen by readers
+	files   map[string]*dataFile // the active data files by path
+	buckets map[bucketID][]*dataFile
 	// When this pod last confirmed it had every commit, by the wall clock
 	// and by the monotonic one.
 	currentWall, currentMono time.Time
@@ -486,24 +499,25 @@ func (db *DeltaDB) load(ctx context.Context) error {
 		tables[name] = def.newData()
 	}
 	paths := snap.FilePaths()
-	buckets := make(map[bucketID][]string)
 	ids := make([]bucketID, len(paths))
 	for i, p := range paths {
-		id, err := db.fileBucket(snap.Files[p])
-		if err != nil {
+		if ids[i], err = db.fileBucket(snap.Files[p]); err != nil {
 			return err
 		}
-		ids[i] = id
-		buckets[id] = append(buckets[id], p)
 	}
 	rows, err := db.readFiles(ctx, paths, ids, tables)
 	if err != nil {
 		return err
 	}
+	files := make(map[string]*dataFile, len(paths))
+	buckets := make(map[bucketID][]*dataFile)
 	for i, id := range ids {
-		if err := db.putRows(tables[id.table].(deltaData), id, rows[i]); err != nil {
+		f, err := db.putRows(tables[id.table].(deltaData), id, paths[i], rows[i])
+		if err != nil {
 			return err
 		}
+		files[f.path] = f
+		buckets[id] = append(buckets[id], f)
 	}
 	if db.snap != nil {
 		// Reloading: it must be the same table, and never an older version.
@@ -514,7 +528,7 @@ func (db *DeltaDB) load(ctx context.Context) error {
 			return corruptf("the log went back from version %d to %d", db.snap.Version, snap.Version)
 		}
 	}
-	db.snap, db.master, db.buckets = snap, tables, buckets
+	db.snap, db.master, db.files, db.buckets = snap, tables, files, buckets
 	db.publish(snap.Version, tables)
 	db.markCurrent()
 	return nil
@@ -581,20 +595,23 @@ func (db *DeltaDB) readFiles(ctx context.Context, paths []string, ids []bucketID
 
 // putRows adds a data file's rows to their table. Every row must belong to
 // the file's bucket and appear in no other file.
-func (db *DeltaDB) putRows(d deltaData, id bucketID, rows []deltaRow) error {
+func (db *DeltaDB) putRows(d deltaData, id bucketID, path string, rows []deltaRow) (*dataFile, error) {
 	n := db.schema.tables[id.table].deltaBuckets()
-	for _, r := range rows {
+	f := &dataFile{id: id, path: path, keys: make([]string, len(rows))}
+	for i, r := range rows {
 		if deltatable.Bucket(r.key, n) != id.bucket {
-			return corruptf("table %s: row %q is in bucket %d, not %d", id.table, r.key, id.bucket, deltatable.Bucket(r.key, n))
+			return nil, corruptf("table %s: row %q is in bucket %d, not %d", id.table, r.key, id.bucket, deltatable.Bucket(r.key, n))
 		}
 		if d.hasKey(r.key) {
-			return corruptf("table %s: row %q is in two data files", id.table, r.key)
+			return nil, corruptf("table %s: row %q is in two data files", id.table, r.key)
 		}
 		if err := d.putRow(r); err != nil {
-			return err
+			return nil, err
 		}
+		f.keys[i] = r.key
 	}
-	return nil
+	slices.Sort(f.keys)
+	return f, nil
 }
 
 func (db *DeltaDB) publish(version int64, changed map[string]tableData) {
@@ -760,14 +777,46 @@ func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, er
 	if err := db.writeErr(); err != nil {
 		return 0, err
 	}
-	p := &pendingTx{ctx: ctx, fn: fn, done: make(chan txResult, 1)}
+	return db.await(ctx, db.enqueue(ctx, fn)[0]).finish()
+}
+
+// UpdateEach runs fns as transactions of their own, in order: each sees the
+// changes of those before it, and one that fails is left out without affecting
+// the others. They share a Delta commit, unless there are more than a commit
+// holds. It returns each one's error, as Update would; a panic is a *TxPanic.
+func (db *DeltaDB) UpdateEach(ctx context.Context, fns ...func(tx *Tx) error) []error {
+	errs := make([]error, len(fns))
+	if err := db.writeErr(); err != nil {
+		for i := range errs {
+			errs[i] = err
+		}
+		return errs
+	}
+	for i, p := range db.enqueue(ctx, fns...) {
+		errs[i] = db.await(ctx, p).err
+	}
+	return errs
+}
+
+// enqueue adds transactions to the queue, one right after the other.
+func (db *DeltaDB) enqueue(ctx context.Context, fns ...func(tx *Tx) error) []*pendingTx {
+	ps := make([]*pendingTx, len(fns))
+	for i, fn := range fns {
+		ps[i] = &pendingTx{ctx: ctx, fn: fn, done: make(chan txResult, 1)}
+	}
 	db.queueMu.Lock()
-	db.queue = append(db.queue, p)
-	db.queueMu.Unlock()
+	defer db.queueMu.Unlock()
+	db.queue = append(db.queue, ps...)
+	return ps
+}
+
+// await waits for a transaction in the queue, and commits what is queued if
+// nobody else does.
+func (db *DeltaDB) await(ctx context.Context, p *pendingTx) txResult {
 	for {
 		select {
 		case r := <-p.done:
-			return r.finish()
+			return r
 		case db.sem <- struct{}{}:
 			// Commit whatever is waiting, this transaction included unless an
 			// earlier batch took it. The batch runs on its own goroutine, so
@@ -778,13 +827,13 @@ func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, er
 			}()
 		case <-ctx.Done():
 			if db.dequeue(p) {
-				return 0, ctx.Err()
+				return txResult{err: ctx.Err()}
 			}
 			select {
 			case r := <-p.done:
-				return r.finish()
+				return r
 			default:
-				return 0, objstore.Unknown(fmt.Errorf("filestore: %w while the transaction was being committed", ctx.Err()))
+				return txResult{err: objstore.Unknown(fmt.Errorf("filestore: %w while the transaction was being committed", ctx.Err()))}
 			}
 		}
 	}
@@ -850,7 +899,7 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		return 0, nil, err
 	}
 	delay := db.opts.ConflictBackoff
-	uploads := make(map[bucketID]uploaded)
+	uploads := make(map[uploadID]*deltalog.Add)
 	for attempt := 1; ; attempt++ {
 		if err := db.catchUp(ctx); err != nil {
 			return 0, nil, err
@@ -876,7 +925,7 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		}
 
 		all := &Tx{schema: db.schema, base: db.master, working: working, muts: muts, now: now, done: true}
-		actions, files, err := db.prepare(ctx, all, uploads)
+		actions, change, err := db.prepare(ctx, all, uploads)
 		if err != nil {
 			db.noteStorage(err, true)
 			return 0, nil, err
@@ -889,7 +938,7 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		info, err := db.log.Commit(ctx, version, db.snap.MetaData.ID, "WRITE", now, actions)
 		db.noteStorage(err, true)
 		if err == nil {
-			db.committed(version, info, actions, files, working)
+			db.committed(version, info, actions, change, working)
 			return version, errs, nil
 		}
 		if !errors.Is(err, deltalog.ErrConflict) {
@@ -927,65 +976,106 @@ func (db *DeltaDB) commitTime() time.Time {
 	return t
 }
 
-// uploaded is a data file that no commit has added yet.
-type uploaded struct {
+// uploadID identifies the content of a data file.
+type uploadID struct {
+	id     bucketID
 	digest [sha256.Size]byte
-	add    deltalog.Add
 }
 
-// prepare uploads a new data file for every bucket the transaction changed,
-// before the commit that adds it (F6), and returns the commit's actions and
-// each changed bucket's new files.
+// fileChange is what a commit does to the data files: it replaces old by new.
+type fileChange struct{ old, new []*dataFile }
+
+// rewrite returns the files of a bucket that a transaction replaces, and the
+// keys of the rows that replace them: those it touched, unless it deleted them,
+// what else is in the files they were in, and the files no larger than that
+// (F39).
+func (db *DeltaDB) rewrite(tx *Tx, id bucketID, touched map[string]bool) (old []*dataFile, keys []string) {
+	before, after := db.master[id.table].(deltaData), tx.tableData(id.table).(deltaData)
+	var stored []string
+	for k := range touched {
+		if before.hasKey(k) {
+			stored = append(stored, k)
+		}
+		if after.hasKey(k) {
+			keys = append(keys, k)
+		}
+	}
+	var rest []*dataFile
+	for _, f := range db.buckets[id] {
+		if !slices.ContainsFunc(stored, f.has) {
+			rest = append(rest, f)
+			continue
+		}
+		old = append(old, f)
+		for _, k := range f.keys {
+			if !touched[k] {
+				keys = append(keys, k)
+			}
+		}
+	}
+	slices.SortFunc(rest, func(a, b *dataFile) int {
+		return cmp.Or(cmp.Compare(len(a.keys), len(b.keys)), cmp.Compare(a.path, b.path))
+	})
+	for _, f := range rest {
+		if len(f.keys) > len(keys) || len(keys)+len(f.keys) > db.opts.MaxFileRows {
+			break
+		}
+		old, keys = append(old, f), append(keys, f.keys...)
+	}
+	slices.Sort(keys)
+	return old, keys
+}
+
+// prepare uploads new data files for the rows the transaction changed, before
+// the commit that adds them (F6), and returns the commit's actions and what it
+// does to the files.
 //
 // uploads holds the files of the batch's attempts that lost to another pod's
-// commit. A bucket that comes out the same again, as most do when pods change
-// different rows, keeps its file, so a lost race costs little (F37, F40).
-func (db *DeltaDB) prepare(ctx context.Context, tx *Tx, uploads map[bucketID]uploaded) ([]deltalog.Action, map[bucketID][]string, error) {
-	touched := make(map[bucketID]bool)
+// commit. One that comes out the same again, as most do when pods change
+// different rows, is kept, so a lost race costs little (F37, F40).
+func (db *DeltaDB) prepare(ctx context.Context, tx *Tx, uploads map[uploadID]*deltalog.Add) ([]deltalog.Action, fileChange, error) {
+	touched := make(map[bucketID]map[string]bool)
 	for _, m := range tx.muts {
 		n := db.schema.tables[m.table].deltaBuckets()
-		touched[bucketID{table: m.table, bucket: deltatable.Bucket(m.key, n)}] = true
-	}
-	ids := make([]bucketID, 0, len(touched))
-	for id := range touched {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool {
-		if ids[i].table != ids[j].table {
-			return ids[i].table < ids[j].table
+		id := bucketID{table: m.table, bucket: deltatable.Bucket(m.key, n)}
+		if touched[id] == nil {
+			touched[id] = make(map[string]bool)
 		}
-		return ids[i].bucket < ids[j].bucket
-	})
-
-	adds, err := db.upload(ctx, tx, ids, uploads)
+		touched[id][m.key] = true
+	}
+	var change fileChange
+	for _, id := range slices.SortedFunc(maps.Keys(touched), bucketID.compare) {
+		old, keys := db.rewrite(tx, id, touched[id])
+		change.old = append(change.old, old...)
+		for part := range slices.Chunk(keys, db.opts.MaxFileRows) {
+			change.new = append(change.new, &dataFile{id: id, keys: part})
+		}
+	}
+	adds, err := db.upload(ctx, tx, change.new, uploads)
 	if err != nil {
-		return nil, nil, err
+		return nil, fileChange{}, err
 	}
-	var actions []deltalog.Action
-	files := make(map[bucketID][]string, len(ids))
-	for i, id := range ids {
-		files[id] = nil
-		if add := adds[i]; add != nil {
-			actions = append(actions, deltalog.Action{Add: add})
-			files[id] = []string{add.Path}
-		}
-		for _, p := range db.buckets[id] {
-			old := db.snap.Files[p]
-			actions = append(actions, deltalog.Action{Remove: &deltalog.Remove{
-				Path: p, DeletionTimestamp: tx.now.UnixMilli(), DataChange: true,
-				ExtendedFileMetadata: true, PartitionValues: old.PartitionValues, Size: old.Size,
-			}})
-		}
+	actions := make([]deltalog.Action, 0, len(change.new)+len(change.old))
+	for i, f := range change.new {
+		f.path = adds[i].Path
+		actions = append(actions, deltalog.Action{Add: adds[i]})
 	}
-	return actions, files, nil
+	for _, f := range change.old {
+		add := db.snap.Files[f.path]
+		actions = append(actions, deltalog.Action{Remove: &deltalog.Remove{
+			Path: f.path, DeletionTimestamp: tx.now.UnixMilli(), DataChange: true,
+			ExtendedFileMetadata: true, PartitionValues: add.PartitionValues, Size: add.Size,
+		}})
+	}
+	return actions, change, nil
 }
 
-// upload uploads the buckets' data files, several at once (F15). It returns one
-// for each bucket, or nil for an empty one.
-func (db *DeltaDB) upload(ctx context.Context, tx *Tx, ids []bucketID, uploads map[bucketID]uploaded) ([]*deltalog.Add, error) {
+// upload uploads data files, several at once (F15), and returns the action that
+// adds each.
+func (db *DeltaDB) upload(ctx context.Context, tx *Tx, files []*dataFile, uploads map[uploadID]*deltalog.Add) ([]*deltalog.Add, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	adds := make([]*deltalog.Add, len(ids))
+	adds := make([]*deltalog.Add, len(files))
 	var (
 		wg    sync.WaitGroup
 		mu    sync.Mutex
@@ -1000,7 +1090,7 @@ func (db *DeltaDB) upload(ctx context.Context, tx *Tx, ids []bucketID, uploads m
 		}
 	}
 	sem := make(chan struct{}, db.opts.UploadConcurrency)
-	for i, id := range ids {
+	for i, f := range files {
 		// Encoded only once it can be uploaded, so that no more files than are
 		// uploaded at once are in memory (F17).
 		sem <- struct{}{}
@@ -1008,20 +1098,18 @@ func (db *DeltaDB) upload(ctx context.Context, tx *Tx, ids []bucketID, uploads m
 			<-sem
 			break
 		}
-		data, n, err := tx.tableData(id.table).(deltaData).encodeBucket(id.bucket)
+		data, err := tx.tableData(f.id.table).(deltaData).encodeKeys(f.keys)
 		if err != nil {
-			fail(fmt.Errorf("filestore: %s: %w", id.table, err))
+			fail(fmt.Errorf("filestore: %s: %w", f.id.table, err))
+			<-sem
+			break
 		}
-		digest := sha256.Sum256(data)
+		id := uploadID{f.id, sha256.Sum256(data)}
 		mu.Lock()
 		prior, ok := uploads[id]
 		mu.Unlock()
-		switch {
-		case err != nil || n == 0:
-			<-sem
-			continue
-		case ok && prior.digest == digest:
-			adds[i] = &prior.add
+		if ok {
+			adds[i] = prior
 			<-sem
 			continue
 		}
@@ -1029,7 +1117,7 @@ func (db *DeltaDB) upload(ctx context.Context, tx *Tx, ids []bucketID, uploads m
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			add, err := deltatable.Upload(ctx, db.store, id.table, id.bucket, data, n, tx.now)
+			add, err := deltatable.Upload(ctx, db.store, f.id.table, f.id.bucket, data, len(f.keys), tx.now)
 			if err != nil {
 				fail(err)
 				return
@@ -1037,7 +1125,7 @@ func (db *DeltaDB) upload(ctx context.Context, tx *Tx, ids []bucketID, uploads m
 			adds[i] = &add
 			mu.Lock()
 			defer mu.Unlock()
-			uploads[id] = uploaded{digest: digest, add: add}
+			uploads[id] = &add
 		}()
 	}
 	wg.Wait()
@@ -1063,13 +1151,13 @@ func (db *DeltaDB) failIfFatal(err error) {
 
 // committed applies this pod's own commit, whose rows are already in
 // working.
-func (db *DeltaDB) committed(version int64, info deltalog.CommitInfo, actions []deltalog.Action, files map[bucketID][]string, working map[string]tableData) {
+func (db *DeltaDB) committed(version int64, info deltalog.CommitInfo, actions []deltalog.Action, change fileChange, working map[string]tableData) {
 	if err := db.snap.Apply(version, info, actions); err != nil {
 		// Unreachable unless something is badly wrong: stop writing (F21).
 		db.fail(fmt.Errorf("apply this pod's commit %d: %w", version, err))
 		return
 	}
-	db.setFiles(files)
+	db.replaceFiles(change)
 	for name, d := range working {
 		db.master[name] = d
 	}
@@ -1077,13 +1165,17 @@ func (db *DeltaDB) committed(version int64, info deltalog.CommitInfo, actions []
 	db.maybeCheckpoint()
 }
 
-func (db *DeltaDB) setFiles(files map[bucketID][]string) {
-	for id, paths := range files {
-		if len(paths) == 0 {
-			delete(db.buckets, id)
-		} else {
-			db.buckets[id] = paths
+func (db *DeltaDB) replaceFiles(change fileChange) {
+	for _, f := range change.old {
+		delete(db.files, f.path)
+		db.buckets[f.id] = slices.DeleteFunc(db.buckets[f.id], func(o *dataFile) bool { return o == f })
+		if len(db.buckets[f.id]) == 0 {
+			delete(db.buckets, f.id)
 		}
+	}
+	for _, f := range change.new {
+		db.files[f.path] = f
+		db.buckets[f.id] = append(db.buckets[f.id], f)
 	}
 }
 
@@ -1122,16 +1214,13 @@ func (db *DeltaDB) catchUp(ctx context.Context) error {
 	}
 }
 
-// apply applies another pod's commit: it reads the new files of every
-// bucket the commit changed and replaces those buckets' rows. Nothing
-// changes unless the whole commit applies (F10).
+// apply applies another pod's commit: it reads the files that the commit adds,
+// and replaces the rows of those it removes. Nothing changes unless the whole
+// commit applies (F10).
 func (db *DeltaDB) apply(ctx context.Context, version int64, info deltalog.CommitInfo, actions []deltalog.Action) error {
-	newFiles := make(map[bucketID][]string)
-	touch := func(id bucketID) {
-		if _, ok := newFiles[id]; !ok {
-			newFiles[id] = slices.Clone(db.buckets[id])
-		}
-	}
+	var change fileChange
+	var paths []string
+	var ids []bucketID
 	for _, a := range actions {
 		switch {
 		case a.MetaData != nil:
@@ -1139,36 +1228,15 @@ func (db *DeltaDB) apply(ctx context.Context, version int64, info deltalog.Commi
 				return err
 			}
 		case a.Remove != nil:
-			old, ok := db.snap.Files[a.Remove.Path]
-			if !ok {
-				continue // Apply below refuses it
+			if f, ok := db.files[a.Remove.Path]; ok { // otherwise Apply below refuses it
+				change.old = append(change.old, f)
 			}
-			id, err := db.fileBucket(old)
+		case a.Add != nil:
+			id, err := db.fileBucket(*a.Add)
 			if err != nil {
 				return err
 			}
-			touch(id)
-			newFiles[id] = slices.DeleteFunc(newFiles[id], func(p string) bool { return p == a.Remove.Path })
-		}
-	}
-	for _, a := range actions {
-		if a.Add == nil {
-			continue
-		}
-		id, err := db.fileBucket(*a.Add)
-		if err != nil {
-			return err
-		}
-		touch(id)
-		newFiles[id] = append(newFiles[id], a.Add.Path)
-	}
-
-	// Read every file of each changed bucket.
-	var paths []string
-	var ids []bucketID
-	for id, ps := range newFiles {
-		for _, p := range ps {
-			paths, ids = append(paths, p), append(ids, id)
+			paths, ids = append(paths, a.Add.Path), append(ids, id)
 		}
 	}
 	rows, err := db.readFiles(ctx, paths, ids, db.master)
@@ -1176,8 +1244,8 @@ func (db *DeltaDB) apply(ctx context.Context, version int64, info deltalog.Commi
 		return err
 	}
 
-	// Replace the changed buckets' rows: remove them all first, so a unique
-	// key that moved between buckets is free before it is put again.
+	// Remove every row first, so a unique key that moved between files is free
+	// before it is put again.
 	working := make(map[string]tableData)
 	writable := func(table string) deltaData {
 		d, ok := working[table]
@@ -1187,22 +1255,24 @@ func (db *DeltaDB) apply(ctx context.Context, version int64, info deltalog.Commi
 		}
 		return d.(deltaData)
 	}
-	for id := range newFiles {
-		d := writable(id.table)
-		for _, k := range d.bucketKeys(id.bucket) {
+	for _, f := range change.old {
+		d := writable(f.id.table)
+		for _, k := range f.keys {
 			d.removeKey(k)
 		}
 	}
 	for i, id := range ids {
-		if err := db.putRows(writable(id.table), id, rows[i]); err != nil {
+		f, err := db.putRows(writable(id.table), id, paths[i], rows[i])
+		if err != nil {
 			return err
 		}
+		change.new = append(change.new, f)
 	}
 
 	if err := db.snap.Apply(version, info, actions); err != nil {
 		return err
 	}
-	db.setFiles(newFiles)
+	db.replaceFiles(change)
 	for name, d := range working {
 		db.master[name] = d
 	}

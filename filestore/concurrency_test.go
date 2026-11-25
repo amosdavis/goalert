@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -387,4 +388,109 @@ func BenchmarkDeltaPods(b *testing.B) {
 			b.ReportMetric(float64(time.Since(start).Microseconds())/float64(b.N), "us/txn")
 		})
 	}
+}
+
+// TestDeltaUpdateEach checks that a group of transactions is one commit, in
+// which each sees those before it, and none is hurt by another's failure.
+func TestDeltaUpdateEach(t *testing.T) {
+	ctx := t.Context()
+	store := newDeltaStore(t)
+	sch := newDSchema()
+	db := openPod(t, store, sch, dOpts("a"))
+	boom := errors.New("boom")
+	before := db.View()
+
+	var seen []int
+	errs := db.UpdateEach(ctx,
+		putUser(sch, "1"),
+		func(tx *Tx) error {
+			seen = append(seen[:0], sch.users.Len(tx))
+			if err := putUser(sch, "2")(tx); err != nil {
+				return err
+			}
+			return boom
+		},
+		func(tx *Tx) error { panic("oops") },
+		func(tx *Tx) error {
+			seen = append(seen, sch.users.Len(tx))
+			return putUser(sch, "3")(tx)
+		},
+		func(tx *Tx) error { runtime.Goexit(); return nil },
+		putUser(sch, "4"),
+	)
+	require.NoError(t, errs[0])
+	require.ErrorIs(t, errs[1], boom)
+	var pe *TxPanic
+	require.ErrorAs(t, errs[2], &pe)
+	require.Equal(t, "oops", pe.Value)
+	require.NoError(t, errs[3])
+	require.Error(t, errs[4])
+	require.NoError(t, errs[5])
+	require.Equal(t, []int{1, 1}, seen)
+	require.Equal(t, before.Index()+1, db.View().Index(), "one commit")
+	require.Equal(t, 3, sch.users.Len(db.View()))
+
+	require.Empty(t, db.UpdateEach(ctx))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, err := range db.UpdateEach(canceled, putUser(sch, "5"), putUser(sch, "6")) {
+		require.ErrorIs(t, err, context.Canceled)
+	}
+	require.Equal(t, 3, sch.users.Len(db.View()))
+
+	// More than fit in a commit still run in order.
+	opts := dOpts("b")
+	opts.MaxBatch = 2
+	b := openPod(t, store, newDSchema(), opts)
+	var fns []func(tx *Tx) error
+	var order []int
+	for i := range 5 {
+		fns = append(fns, func(tx *Tx) error {
+			if i == len(order) {
+				order = append(order, i)
+			}
+			return nil
+		})
+	}
+	for _, err := range b.UpdateEach(ctx, fns...) {
+		require.NoError(t, err)
+	}
+	require.Equal(t, []int{0, 1, 2, 3, 4}, order)
+
+	require.NoError(t, b.Close())
+	for _, err := range b.UpdateEach(ctx, fns...) {
+		require.ErrorIs(t, err, ErrClosed)
+	}
+}
+
+// TestDeltaUpdateEachRace checks that groups of several pods lose no update.
+func TestDeltaUpdateEachRace(t *testing.T) {
+	ctx := t.Context()
+	store := newDeltaStore(t)
+	const pods, rounds = 3, 8
+	var wg sync.WaitGroup
+	var last *DeltaDB
+	for p := range pods {
+		db := openPod(t, store, newDSchema(), dOpts(fmt.Sprint(p)))
+		last = db
+		wg.Go(func() {
+			for range rounds {
+				count := func(tx *Tx) error {
+					_, err := tx.NextID("count")
+					return err
+				}
+				for _, err := range db.UpdateEach(ctx, count, count) {
+					assert.NoError(t, err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	var got int64
+	_, err := last.Update(ctx, func(tx *Tx) (err error) {
+		got, err = tx.NextID("count")
+		return err
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 2*pods*rounds+1, got)
 }

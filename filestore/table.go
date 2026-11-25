@@ -77,10 +77,9 @@ type Table[V any] struct {
 	uniques []*Unique[V]
 
 	// On a Delta table (delta.go): how many buckets the rows are spread
-	// over, the Parquet row type, and the index of rows by bucket.
-	buckets  int
-	rowType  *deltatable.RowType[V]
-	bucketIx *Index[V]
+	// over, and the Parquet row type.
+	buckets int
+	rowType *deltatable.RowType[V]
 }
 
 // Index finds rows by a secondary key. A row can have any number of keys in
