@@ -269,7 +269,12 @@ func (f *fakeCosmos) query(w http.ResponseWriter, r *http.Request, body []byte, 
 		Parameters []struct{ Name, Value string }
 	}
 	if err := json.Unmarshal(body, &q); err != nil {
-		f.errs = append(f.errs, "bad query: "+err.Error())
+		if r.Context().Err() != nil {
+			return // ListChunks cancels the other shard queries after one fails.
+		}
+		f.errs = append(f.errs, fmt.Sprintf("bad query (%s %s, %d bytes): %v: %q", r.Method, r.URL, len(body), err, body))
+		f.fail(w, http.StatusBadRequest, "", "bad query")
+		return
 	}
 	if pk == "" {
 		f.errs = append(f.errs, "a query across partitions")
