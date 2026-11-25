@@ -181,7 +181,8 @@ Unique:
 - auth_subjects_uniq_id (index): `(id)`
 - auth_subjects_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `user/deltasubjects.go`. The table key is the provider/subject
+primary key; the sequence ID has a unique index. Both foreign keys cascade.
 
 ### auth_user_sessions
 
@@ -1028,8 +1029,8 @@ Unique:
 
 - goalert_user_pkey (index): `(id)`
 
-**Go:** partly ported, `user/delta.go`: inserting, updating, setting the
-role and finding users, with the favorite flag from `user_favorites`. Not yet:
-deleting users (which also rewrites rotation participants), auth subjects,
-search, the existence cache, and trg_enforce_status_update_same_user; those
-return an error on the Delta backend.
+**Go:** ported, `user/delta.go` and `user/deltasearch.go`, including search,
+existence checks, deletion and the trigger (`PutUser`, also the role's default
+and enum). Rotation cleanup, destination lookup and the on-call lookups are
+injected by their owning packages. Search orders lowercased names by bytes
+rather than the database's collation (F24).

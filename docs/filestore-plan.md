@@ -430,3 +430,7 @@ holder while it is sending.
   the fast way doesn't cover still go through a file. GitHub has started no
   workflow runs since 2026-11-21, so nothing after `f95b178be` has been checked
   by CI.
+- 2026-11-25: Phase 3: the rest of `user` (auth subjects, search, existence
+  checks, deletion, the on-call overview). Porting deletion found that the
+  Postgres code could skip the participant on call when a deleted user was in a
+  rotation twice; fixed (F5).

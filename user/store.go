@@ -442,6 +442,26 @@ func (s *Store) _deleteTx(ctx context.Context, tx txn.Tx, id string) error {
 	return nil
 }
 
+// activeIndexWithout returns the active index of a rotation after removing a
+// user, who may be in it more than once, from its participants: the one of
+// the same participant, or if that was the user, of the next one left.
+func activeIndexWithout(userIDs []string, activeIndex int, userID string) int {
+	var left, newIndex int
+	for i, id := range userIDs {
+		if id == userID {
+			continue
+		}
+		left++
+		if i < activeIndex {
+			newIndex++
+		}
+	}
+	if newIndex >= left {
+		return 0
+	}
+	return newIndex
+}
+
 func (s *Store) removeUserFromRotation(ctx context.Context, tx txn.Tx, userID, rotationID string) error {
 	stx := sqltxn.Unwrap(tx)
 	type part struct {
@@ -469,16 +489,18 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx txn.Tx, userID, r
 		return fmt.Errorf("query active index: %w", err)
 	}
 
+	userIDs := make([]string, len(participants))
+	for i, p := range participants {
+		userIDs[i] = p.UserID
+	}
+	activeIndex = activeIndexWithout(userIDs, activeIndex, userID)
+
 	// update participant user IDs
 	var skipped bool
 	curIndex := -1
 	updatePart := stx.StmtContext(ctx, s.updateRotationPart)
-	for i, p := range participants {
+	for _, p := range participants {
 		if p.UserID == userID {
-			if i < activeIndex {
-				activeIndex--
-			}
-
 			skipped = true
 			continue
 		}
@@ -489,9 +511,6 @@ func (s *Store) removeUserFromRotation(ctx context.Context, tx txn.Tx, userID, r
 				return fmt.Errorf("update participant %d to user '%s': %w", curIndex, p.UserID, err)
 			}
 		}
-	}
-	if activeIndex > curIndex {
-		activeIndex = 0
 	}
 
 	// delete in reverse order from the end

@@ -84,7 +84,10 @@ the switchover system (`swo/`), and River.
 - **F5 Wrong person paged.** Rotation and schedule logic in triggers
   (`fn_advance_or_end_rot_on_part_del`, the position no-gap rules,
   `fn_set_rot_state_pos_*`) is ported slightly wrong, so who is on call drifts.
-  *Rule:* the rotation, schedule and escalation smoke tests pass unchanged.
+  The Postgres code had such a bug too: deleting a user who was in a rotation
+  twice could skip the participant on call. *Rule:* the rotation, schedule and
+  escalation smoke tests pass unchanged, and a port checks the existing logic
+  instead of copying it.
 
 ### B. Data integrity
 
