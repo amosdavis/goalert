@@ -4,6 +4,10 @@
 // PutIfAbsent creates blobs with a single Put Blob request carrying
 // If-None-Match: *, which Azure checks atomically, so a commit blob is either
 // created whole or not at all.
+//
+// An account with a hierarchical namespace (ADLS Gen2) has real directories:
+// creating a/b/c creates a and a/b, which listings return like blobs. List
+// leaves them out, so the store holds only the objects GoAlert wrote there.
 package azblobstore
 
 import (
@@ -153,7 +157,10 @@ func (s *Store) Put(ctx context.Context, name string, data []byte) error {
 }
 
 func (s *Store) List(ctx context.Context, prefix, startAfter string) ([]string, error) {
-	pager := s.c.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{Prefix: to.Ptr(s.prefix + prefix)})
+	pager := s.c.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
+		Prefix:  to.Ptr(s.prefix + prefix),
+		Include: container.ListBlobsInclude{Metadata: true}, // to tell directories
+	})
 	var names []string
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
@@ -161,6 +168,9 @@ func (s *Store) List(ctx context.Context, prefix, startAfter string) ([]string, 
 			return nil, opErr("list", prefix, err)
 		}
 		for _, item := range page.Segment.BlobItems {
+			if item.Name == nil || isDirectory(item) {
+				continue
+			}
 			name := strings.TrimPrefix(*item.Name, s.prefix)
 			if name > startAfter {
 				names = append(names, name)
@@ -168,6 +178,21 @@ func (s *Store) List(ctx context.Context, prefix, startAfter string) ([]string, 
 		}
 	}
 	return names, nil
+}
+
+// isDirectory reports whether a listed blob is a directory of an account with a
+// hierarchical namespace. The service says so in its resource type, and in the
+// hdi_isfolder metadata that marks a directory for the Blob API.
+func isDirectory(item *container.BlobItem) bool {
+	if p := item.Properties; p != nil && p.ResourceType != nil && strings.EqualFold(*p.ResourceType, "directory") {
+		return true
+	}
+	for k, v := range item.Metadata {
+		if strings.EqualFold(k, "hdi_isfolder") && v != nil && strings.EqualFold(*v, "true") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) Delete(ctx context.Context, name string) error {
