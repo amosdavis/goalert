@@ -3,6 +3,7 @@ package favorite
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/txn"
@@ -39,8 +40,8 @@ func (r favRow) target() (assignment.Target, bool) {
 }
 
 func newFavRow(id int64, userID string, tgt assignment.Target) favRow {
-	r := favRow{ID: id, UserID: userID}
-	v := tgt.TargetID()
+	r := favRow{ID: id, UserID: dbID(userID)}
+	v := dbID(tgt.TargetID())
 	switch tgt.TargetType() {
 	case assignment.TargetTypeService:
 		r.TgtServiceID = &v
@@ -59,7 +60,17 @@ func newFavRow(id int64, userID string, tgt assignment.Target) favRow {
 // targetKey is a row's key in the unique index of user and target, which
 // stands for the five (user_id, tgt_...) unique constraints.
 func targetKey(userID string, tgt assignment.Target) string {
-	return userID + "/" + tgt.TargetType().String() + "/" + tgt.TargetID()
+	return dbID(userID) + "/" + tgt.TargetType().String() + "/" + dbID(tgt.TargetID())
+}
+
+// dbID returns a valid uuid the way Postgres stores it, so that ids match
+// however they are written.
+func dbID(id string) string {
+	u, err := uuid.Parse(id)
+	if err != nil {
+		return id
+	}
+	return u.String()
 }
 
 // DeltaTables are the favorites store's tables on the Delta backend.
@@ -70,8 +81,7 @@ type DeltaTables struct {
 }
 
 // DefineDeltaTables adds user_favorites to the Delta backend's schema, with
-// its foreign keys to users. Those to services, schedules, rotations and
-// escalation policies are added when those tables are ported.
+// its foreign keys to users.
 func DefineDeltaTables(s *filestore.Schema, users *user.DeltaTables) *DeltaTables {
 	t := &DeltaTables{}
 	t.favorites = filestore.NewTable(s, "user_favorites", func(r favRow) string { return filestore.IntKey(r.ID) })
@@ -90,11 +100,58 @@ func DefineDeltaTables(s *filestore.Schema, users *user.DeltaTables) *DeltaTable
 	return t
 }
 
-// IsUserFavorite reports, in r, whether userID has targetUserID as a
-// favorite. It is the user store's user.FavoriteFunc.
-func (t *DeltaTables) IsUserFavorite(r filestore.Reader, userID, targetUserID string) bool {
-	_, ok := t.byTarget.Get(r, targetKey(userID, assignment.UserTarget(targetUserID)))
+// DeclareDeltaForeignKeys declares this package's foreign keys to services,
+// schedules, rotations and escalation policies.
+func DeclareDeltaForeignKeys[Svc, Sched, Rot, EP any](t *DeltaTables, services *filestore.Table[Svc], schedules *filestore.Table[Sched], rotations *filestore.Table[Rot], policies *filestore.Table[EP]) {
+	filestore.References(t.favorites, "user_favorites_tgt_service_id_fkey", services,
+		func(r favRow) (string, bool) { return filestore.Ref(r.TgtServiceID) }, filestore.Cascade, nil)
+	filestore.References(t.favorites, "user_favorites_tgt_schedule_id_fkey", schedules,
+		func(r favRow) (string, bool) { return filestore.Ref(r.TgtScheduleID) }, filestore.Cascade, nil)
+	filestore.References(t.favorites, "user_favorites_tgt_rotation_id_fkey", rotations,
+		func(r favRow) (string, bool) { return filestore.Ref(r.TgtRotationID) }, filestore.Cascade, nil)
+	filestore.References(t.favorites, "user_favorites_tgt_escalation_policy_id_fkey", policies,
+		func(r favRow) (string, bool) { return filestore.Ref(r.TgtEscalationPolID) }, filestore.Cascade, nil)
+}
+
+// IsFavorite reports, in r, whether userID has the target as a favorite.
+func (t *DeltaTables) IsFavorite(r filestore.Reader, userID string, tgt assignment.Target) bool {
+	_, ok := t.byTarget.Get(r, targetKey(userID, tgt))
 	return ok
+}
+
+// The stores of the targets take one of these each.
+
+// IsUserFavorite is IsFavorite for a user.
+func (t *DeltaTables) IsUserFavorite(r filestore.Reader, userID, id string) bool {
+	return t.IsFavorite(r, userID, assignment.UserTarget(id))
+}
+
+// IsScheduleFavorite is IsFavorite for a schedule.
+func (t *DeltaTables) IsScheduleFavorite(r filestore.Reader, userID, id string) bool {
+	return t.IsFavorite(r, userID, assignment.ScheduleTarget(id))
+}
+
+// IsRotationFavorite is IsFavorite for a rotation.
+func (t *DeltaTables) IsRotationFavorite(r filestore.Reader, userID, id string) bool {
+	return t.IsFavorite(r, userID, assignment.RotationTarget(id))
+}
+
+// IsEscalationPolicyFavorite is IsFavorite for an escalation policy.
+func (t *DeltaTables) IsEscalationPolicyFavorite(r filestore.Reader, userID, id string) bool {
+	return t.IsFavorite(r, userID, assignment.EscalationPolicyTarget(id))
+}
+
+// FavoriteServices returns, in r, the IDs of the services that userID has as
+// favorites.
+func (t *DeltaTables) FavoriteServices(r filestore.Reader, userID string) []string {
+	var ids []string
+	t.byUser.Ascend(r, dbID(userID), func(row favRow) bool {
+		if row.TgtServiceID != nil {
+			ids = append(ids, *row.TgtServiceID)
+		}
+		return true
+	})
+	return ids
 }
 
 // NewDeltaStore returns a favorites store on the Delta backend.
@@ -122,9 +179,7 @@ func (d *deltaFavorites) set(ctx context.Context, tx txn.Tx, userID string, tgt 
 	})
 }
 
-// unset removes the user's favorite. (The Postgres query's AND/OR
-// precedence removes everyone's favorite of a schedule, rotation,
-// escalation policy or user; this removes only the user's own.)
+// unset removes the user's favorite.
 func (d *deltaFavorites) unset(ctx context.Context, tx txn.Tx, userID string, tgt assignment.Target) error {
 	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
 		row, ok := d.byTarget.Get(s.Reader, targetKey(userID, tgt))
@@ -141,7 +196,7 @@ func (d *deltaFavorites) findAll(ctx context.Context, tx txn.Tx, userID string, 
 	targets := []assignment.Target{} // as the Postgres store returns
 	err := deltatxn.Read(ctx, d.db, tx, func(s deltatxn.Scope) error {
 		targets = []assignment.Target{}
-		d.byUser.Ascend(s.Reader, userID, func(row favRow) bool {
+		d.byUser.Ascend(s.Reader, dbID(userID), func(row favRow) bool {
 			if tgt, ok := row.target(); ok && allow(tgt.TargetType()) {
 				targets = append(targets, tgt)
 			}

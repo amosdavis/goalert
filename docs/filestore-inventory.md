@@ -968,13 +968,8 @@ Unique:
 - user_favorites_user_id_tgt_user_id_key (index): `(user_id, tgt_user_id)`
 - user_favorites_user_id_tgt_user_id_key: `(user_id, tgt_user_id)`
 
-**Go:** ported, `user/favorite/delta.go`. The five `(user_id, tgt_...)`
-unique constraints are one unique index of user and target, since a row has one
-target. The foreign keys to users cascade; those to services, schedules,
-rotations and escalation policies come with those tables. Unset removes only the
-user's own favorite, on both backends; the Postgres query's AND/OR precedence
-used to remove everyone's favorite of a schedule, rotation, escalation policy or
-user.
+**Go:** ported, `user/favorite/delta.go`, with all six foreign keys. One unique index
+stands for the five of user and target.
 
 ### user_notification_rules
 
