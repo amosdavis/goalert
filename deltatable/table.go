@@ -27,8 +27,8 @@ const (
 // PartitionColumns lists the Delta table's partition columns.
 func PartitionColumns() []string { return []string{TableColumn, BucketColumn} }
 
-// Column is one GoAlert table's column in the Delta table. *RowType[V]
-// implements it.
+// Column is one GoAlert table's column in the Delta table. *Rows implements
+// it.
 type Column interface {
 	Name() string
 	DeltaField() json.RawMessage

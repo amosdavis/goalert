@@ -23,22 +23,22 @@ type mutation struct {
 // the function passed to Update, on that goroutine.
 type Tx struct {
 	schema  *Schema
-	base    map[string]tableData // the writer's current tables
-	working map[string]tableData // clones of the tables this transaction changed
+	base    map[string]*tableData // the writer's current tables
+	working map[string]*tableData // clones of the tables this transaction changed
 	muts    []mutation
 	now     time.Time
 	done    bool
 	failed  error // set by Fail
 }
 
-func (tx *Tx) tableData(name string) tableData {
+func (tx *Tx) tableData(name string) *tableData {
 	if d, ok := tx.working[name]; ok {
 		return d
 	}
 	return tx.base[name]
 }
 
-func (tx *Tx) writable(name string) tableData {
+func (tx *Tx) writable(name string) *tableData {
 	if d, ok := tx.working[name]; ok {
 		return d
 	}

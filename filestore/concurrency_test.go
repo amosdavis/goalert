@@ -170,7 +170,7 @@ func TestDeltaConflictReusesUploads(t *testing.T) {
 	a, b := openPod(t, store, sch, dOpts("a")), openPod(t, store, sch, dOpts("b"))
 
 	// Users in different buckets.
-	bucket := func(id string) int { return deltatable.Bucket(id, sch.users.deltaBuckets()) }
+	bucket := func(id string) int { return deltatable.Bucket(id, sch.users.t.buckets) }
 	mine, other := "mine", "other"
 	for i := 0; bucket(other) == bucket(mine); i++ {
 		other = fmt.Sprintf("other-%d", i)

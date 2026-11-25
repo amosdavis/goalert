@@ -37,8 +37,8 @@ type foreignKey struct {
 	child, parent string
 	onDelete      OnDelete
 
-	// check returns an error if child row v refers to a missing parent.
-	check func(r Reader, v any) error
+	// check returns an error if a child row refers to a missing parent.
+	check func(r Reader, row any) error
 	// children returns the keys of the child rows that refer to parentKey.
 	children func(r Reader, parentKey string) []string
 	// remove deletes a child row; clear removes its reference.
@@ -58,6 +58,17 @@ type foreignKey struct {
 // transaction made on top of a parent's deletion runs again on the new state
 // and fails its check (F4).
 func References[C, P any](child *Table[C], name string, parent *Table[P], ref func(C) (string, bool), onDelete OnDelete, clear func(C) C) {
+	var clearRow func(row any) any
+	if clear != nil {
+		clearRow = func(row any) any {
+			c := clear(*row.(*C))
+			return &c
+		}
+	}
+	references(child.t, name, parent.t, func(row any) (string, bool) { return ref(*row.(*C)) }, onDelete, clearRow)
+}
+
+func references(child *table, name string, parent *table, ref func(row any) (string, bool), onDelete OnDelete, clear func(row any) any) {
 	s := child.schema
 	s.checkOpen()
 	if parent.schema != s {
@@ -66,46 +77,45 @@ func References[C, P any](child *Table[C], name string, parent *Table[P], ref fu
 	if onDelete == SetNull && clear == nil {
 		panic(fmt.Sprintf("filestore: foreign key %s: SetNull needs clear", name))
 	}
-	ix := child.Index("_fk_"+name, func(c C) []string {
-		if k, ok := ref(c); ok {
+	ix := child.addIndex("_fk_"+name, func(row any) []string {
+		if k, ok := ref(row); ok {
 			return []string{k}
 		}
 		return nil
 	})
 	s.fks = append(s.fks, &foreignKey{
 		name: name, child: child.name, parent: parent.name, onDelete: onDelete,
-		check: func(r Reader, v any) error {
-			c := v.(C)
-			k, ok := ref(c)
+		check: func(r Reader, row any) error {
+			k, ok := ref(row)
 			if !ok {
 				return nil
 			}
-			if _, found := parent.Get(r, k); !found {
-				return &ForeignKeyError{Table: child.name, Key: child.keyFn(c), ForeignKey: name, Missing: true}
+			if _, found := parent.data(r).get(k); !found {
+				return &ForeignKeyError{Table: child.name, Key: child.key(row), ForeignKey: name, Missing: true}
 			}
 			return nil
 		},
 		children: func(r Reader, parentKey string) []string {
 			var keys []string
-			ix.Ascend(r, parentKey, func(c C) bool {
-				keys = append(keys, child.keyFn(c))
+			ix.ascend(child.data(r), parentKey, func(pk string) bool {
+				keys = append(keys, pk)
 				return true
 			})
 			return keys
 		},
 		remove: func(tx *Tx, childKey string) error {
-			_, err := child.Delete(tx, childKey)
+			_, err := child.delete(tx, childKey)
 			return err
 		},
 		clear: func(tx *Tx, childKey string) error {
-			c, ok := child.Get(tx, childKey)
+			row, ok := child.data(tx).get(childKey)
 			if !ok {
 				return nil
 			}
 			// Clearing a reference leaves no new one to check. The row's
 			// others may refer to a row that this delete takes away too, and
 			// their foreign keys deal with that.
-			return child.put(tx, clear(c), false)
+			return child.put(tx, clear(row), false)
 		},
 	})
 }
@@ -125,12 +135,11 @@ func (s *Schema) ForeignKeys() []ForeignKey {
 	return out
 }
 
-// checkReferences returns an error if row v of table refers to a missing
-// row.
-func (s *Schema) checkReferences(tx *Tx, table string, v any) error {
+// checkReferences returns an error if a row of table refers to a missing row.
+func (s *Schema) checkReferences(tx *Tx, table string, row any) error {
 	for _, fk := range s.fks {
 		if fk.child == table {
-			if err := fk.check(tx, v); err != nil {
+			if err := fk.check(tx, row); err != nil {
 				return err
 			}
 		}

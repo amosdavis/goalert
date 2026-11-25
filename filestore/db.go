@@ -76,10 +76,10 @@ func (o Options) withDefaults() Options {
 type View struct {
 	index  uint64
 	time   time.Time // of the last commit, on a Delta table
-	tables map[string]tableData
+	tables map[string]*tableData
 }
 
-func (v *View) tableData(name string) tableData { return v.tables[name] }
+func (v *View) tableData(name string) *tableData { return v.tables[name] }
 
 // Index returns the log index of the last commit included in the view.
 func (v *View) Index() uint64 { return v.index }
@@ -94,8 +94,8 @@ type DB struct {
 	lock    io.Closer
 	wal     *wal
 
-	sem    chan struct{}        // held by the one writer
-	master map[string]tableData // writer-owned; never seen by readers
+	sem    chan struct{}         // held by the one writer
+	master map[string]*tableData // writer-owned; never seen by readers
 	view   atomic.Pointer[View]
 
 	mu          sync.Mutex // guards the fields below
@@ -163,7 +163,7 @@ func Open(dir string, schema *Schema, opts Options) (_ *DB, err error) {
 		return nil, err
 	}
 	if !found {
-		tables = make(map[string]tableData, len(schema.names))
+		tables = make(map[string]*tableData, len(schema.names))
 		for _, name := range schema.names {
 			tables[name] = schema.tables[name].newData()
 		}
@@ -195,7 +195,7 @@ func Open(dir string, schema *Schema, opts Options) (_ *DB, err error) {
 
 // applyPayload applies one replayed log record to tables, which nothing else
 // can see yet.
-func applyPayload(tables map[string]tableData, index uint64, payload []byte) error {
+func applyPayload(tables map[string]*tableData, index uint64, payload []byte) error {
 	got, _, muts, err := decodePayload(payload)
 	if err != nil {
 		return err
@@ -314,9 +314,9 @@ func writeFileAtomic(fsys fileSystem, dir, name string, data []byte) error {
 // publish makes the writer's tables visible to readers as of index. Only the
 // tables a commit changed are cloned; the rest are shared with the previous
 // view.
-func (db *DB) publish(index uint64, changed map[string]tableData) {
+func (db *DB) publish(index uint64, changed map[string]*tableData) {
 	old := db.view.Load()
-	tables := make(map[string]tableData, len(db.master))
+	tables := make(map[string]*tableData, len(db.master))
 	if old == nil {
 		for name, d := range db.master {
 			tables[name] = d.clone()
@@ -374,7 +374,7 @@ func (db *DB) Update(ctx context.Context, fn func(tx *Tx) error) error {
 	tx := &Tx{
 		schema:  db.schema,
 		base:    db.master,
-		working: make(map[string]tableData),
+		working: make(map[string]*tableData),
 		now:     db.opts.Clock.Now().UTC().Truncate(time.Microsecond),
 	}
 	err := fn(tx)

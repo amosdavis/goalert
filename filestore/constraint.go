@@ -57,12 +57,14 @@ func (e *CheckError) Hint() string           { return e.HintText }
 
 // Insert adds a row, and unlike Put refuses to replace one: it returns a
 // *UniqueError for pkey, the name of the primary key constraint.
-func (t *Table[V]) Insert(tx *Tx, v V, pkey string) error {
-	key := t.keyFn(v)
-	if _, ok := t.Get(tx, key); ok {
+func (t *Table[V]) Insert(tx *Tx, v V, pkey string) error { return t.t.insert(tx, &v, pkey) }
+
+func (t *table) insert(tx *Tx, row any, pkey string) error {
+	key := t.key(row)
+	if _, ok := t.data(tx).get(key); ok {
 		return &UniqueError{Table: t.name, Index: pkey, Key: key}
 	}
-	return t.Put(tx, v)
+	return t.put(tx, row, true)
 }
 
 // Ref returns an optional reference as References takes it.

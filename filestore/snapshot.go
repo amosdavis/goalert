@@ -157,7 +157,7 @@ func (r *reader) u64() uint64 {
 }
 
 // decodeSnapshot validates a snapshot and rebuilds its tables.
-func decodeSnapshot(data []byte, storeID [16]byte, schema *Schema) (index uint64, tables map[string]tableData, err error) {
+func decodeSnapshot(data []byte, storeID [16]byte, schema *Schema) (index uint64, tables map[string]*tableData, err error) {
 	if len(data) < 8+4 || string(data[:8]) != snapMagic {
 		return 0, nil, corruptf("not a snapshot")
 	}
@@ -183,7 +183,7 @@ func decodeSnapshot(data []byte, storeID [16]byte, schema *Schema) (index uint64
 		return 0, nil, r.err
 	}
 
-	tables = make(map[string]tableData, len(schema.names))
+	tables = make(map[string]*tableData, len(schema.names))
 	for i := uint32(0); i < count; i++ {
 		name := string(r.take(int(r.u16())))
 		rows := r.u64()
@@ -246,7 +246,7 @@ func listSnapshots(fs fileSystem, dir string) ([]uint64, error) {
 // is damaged it falls back to an older one; the caller checks that the log
 // still covers everything after the snapshot it got, so falling back never
 // loses data. An unknown format version stops startup instead.
-func loadSnapshot(fs fileSystem, dir string, storeID [16]byte, schema *Schema, logf func(string, ...any)) (index uint64, tables map[string]tableData, found bool, err error) {
+func loadSnapshot(fs fileSystem, dir string, storeID [16]byte, schema *Schema, logf func(string, ...any)) (index uint64, tables map[string]*tableData, found bool, err error) {
 	idx, err := listSnapshots(fs, dir)
 	if err != nil {
 		return 0, nil, false, err

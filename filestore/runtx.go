@@ -28,7 +28,7 @@ func (tx *Tx) Try(fn func() error) (err error) {
 	if err := tx.check(); err != nil {
 		return err
 	}
-	working := make(map[string]tableData, len(tx.working))
+	working := make(map[string]*tableData, len(tx.working))
 	for name, d := range tx.working {
 		working[name] = d.clone()
 	}
