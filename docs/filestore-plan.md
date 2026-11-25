@@ -61,10 +61,12 @@ Cosmos DB and Firestore, with atomic manifests and immutable chunks.
 
 **Other storage.** Two ports separate the store from where it keeps its data:
 `objstore.Store` for objects and `tablelog.Log` for what decides commits. Cosmos
-DB and Firestore implement the first, through `objstore/chunkstore`, and an
-Iceberg catalog the second (`iceberglog`). All of it is optional and picked by
-URL at deployment (`storagebackend`). [storage-backends.md](storage-backends.md)
-describes them, and how to add another.
+DB and Firestore implement the first, through `objstore/chunkstore`. BigQuery and
+an Iceberg catalog decide commits (`bigquerylog`, `iceberglog`, on
+`managedlog`), and whatever decides them, the result is the same Delta table. All
+of it is optional and picked by URL at deployment (`storagebackend`).
+[storage-backends.md](storage-backends.md) describes them, and how to add
+another.
 
 A running GoAlert uses one backend for everything, never a mix (F23). Until
 Postgres is removed, both backends sit behind the same interfaces, and
@@ -484,3 +486,10 @@ holder while it is sending.
   at a version that exists; a directory store could not replace a file in use on
   Windows. Open: none has been run against its service, the emulators in CI have
   not run yet, and no server flag selects a backend before Phase 5.
+- 2026-11-25: BigQuery as a backend: it decides commits by the ID of a job, with
+  the Delta table in a bucket and registered in BigQuery (F50). What it shares
+  with Iceberg is now `managedlog`: staging a commit, having an arbiter decide,
+  and copying it into the Delta log, with one suite for arbiters. Breaking
+  managedlog and bigquerylog on purpose in 27 places made a test fail in all but
+  one, where the arbiter refuses anyway. An Iceberg table refuses a data file that does not say how many
+  rows it has, which Iceberg readers would skip (F47).

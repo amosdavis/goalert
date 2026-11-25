@@ -1,8 +1,9 @@
 # Storage Backends
 
-GoAlert's data is one table that every pod shares. Where it is kept is a
-deployment's choice. Every backend below is optional: a deployment names the one
-it uses, and nothing of the others is configured, contacted or needed.
+GoAlert's data is one Delta table that every pod shares. Where it is kept, and
+what decides its commits, is a deployment's choice. Every backend below is
+optional: a deployment names the one it uses, and nothing of the others is
+configured, contacted or needed.
 [filestore-failure-modes.md](filestore-failure-modes.md) has the rules they
 follow (section I).
 
@@ -27,6 +28,7 @@ Two URLs say where the data is and what decides commits
 | `Log` | Commits are decided by |
 | --- | --- |
 | empty, or `delta` | the Delta log in the object store |
+| `bigquery://PROJECT/DATASET?location=US&connection=...` | BigQuery, where the Delta table is registered too ([bigquery.md](bigquery.md)) |
 | `iceberg+https://HOST/PATH?namespace=NS` | an Iceberg REST catalog (package `icebergrest` lists its parameters) |
 
 `Objects` has no default, and nothing falls back to anything else, so a pod that
@@ -35,20 +37,23 @@ table records what decides its commits, and a pod configured otherwise is
 refused (F43). URLs can't hold secrets, since they end up in logs (F20).
 
 Build tags leave a driver and its SDK out of a build: `goalert_no_gcs`,
-`goalert_no_azure`, `goalert_no_cosmosdb`, `goalert_no_firestore` and
-`goalert_no_iceberg`.
+`goalert_no_azure`, `goalert_no_cosmosdb`, `goalert_no_firestore`,
+`goalert_no_iceberg` and `goalert_no_bigquery`.
 
-| Backend | A commit is | Needs | Other software can read it as |
+| Backend | A commit is decided by | Needs | Other software can read it as |
 | --- | --- | --- | --- |
-| Delta on GCS | an object created with `ifGenerationMatch=0` | the settings in filestore-plan.md | Delta; BigQuery through BigLake |
-| Delta on Azure | a blob created with `If-None-Match: *` | the settings in filestore-plan.md | Delta |
-| Delta on Cosmos DB | one document created | Strong consistency as the account's default, so one write region | nothing: export it |
-| Delta on Firestore | one document created | a database in Native mode, with no time-to-live policy | nothing: export it |
-| Iceberg, with GCS or Azure | a snapshot the catalog swaps in | a catalog that checks `assert-ref-snapshot-id`, and an existing namespace | Iceberg and Delta |
+| GCS | an object created with `ifGenerationMatch=0` | the settings in filestore-plan.md | Delta, with BigQuery among others |
+| BigQuery, with GCS | a job created with the version's ID | one project and location, for good | Delta, registered in BigQuery |
+| GCS and Iceberg | a snapshot the catalog swaps in | a catalog that checks `assert-ref-snapshot-id`, and an existing namespace | Delta and Iceberg |
+| Azure Blob Storage | a blob created with `If-None-Match: *` | the settings in filestore-plan.md | Delta; with an Iceberg catalog, Iceberg too |
+| Cosmos DB | one document created | Strong consistency as the account's default, so one write region | nothing: export it |
+| Firestore | one document created | a database in Native mode, with no time-to-live policy | nothing: export it |
 
-Cosmos DB and Firestore suit an installation that already runs on one of them
-and wants no bucket. Their records cost more per byte, and no analytics tool
-reads them. Use a bucket otherwise.
+Every backend holds the same Delta table: the same log, data files and
+checkpoints. In a bucket, any Delta reader can open it. In Cosmos DB and
+Firestore its files are records, which only GoAlert reads, and cost more per byte,
+so those suit an installation that already runs on one of them and wants no
+bucket.
 
 ## Concurrency
 
@@ -107,20 +112,28 @@ no time to live.
 Exempt the fields `inline` and `data` from indexing, which would only cost
 writes, and turn on delete protection.
 
-**An Iceberg catalog** decides commits in three steps (`iceberglog`). The commit
-is staged as an object, with the manifests it changes. The catalog is asked to
-add a snapshot on top of the one the commit is based on, which succeeds for one
-writer only. Then the commit is copied from its staged object into the Delta
-log. A crash after the second step loses nothing: the next pod to read or write
-does the third. The table is therefore a Delta table too, at most one commit
-behind for a moment.
+**Commits decided elsewhere** (`managedlog`) take three steps. The commit is
+staged as an object. What decides, the arbiter, is asked to give it its version,
+which it does for one commit only. Then the commit is copied from its staged
+object into the Delta log. A crash after the second step loses nothing: the next
+pod to read or write does the third, and no version is asked for until the one
+before it is in the Delta log. So the Delta table is at most one commit behind
+for a moment, and never holds what did not happen (F43).
 
-A snapshot's summary identifies the commit, and the commit is elsewhere, because
-a catalog rewrites all its metadata for every commit. It keeps the newest 100
-snapshots, and 32 manifests list the files, whatever the table's age (F46).
-Data files have no field IDs, so the table has a name mapping
-(`schema.name-mapping.default`), and it is not partitioned. Its property
-`gc.enabled` is false, so that other tools delete nothing.
+**BigQuery** as the arbiter makes a job whose ID names the table and the version
+(`bigquerylog`). BigQuery refuses a job with an ID that was used before, so one
+pod gets the version, and the job's labels say for which commit. The table is
+registered in BigQuery as an external Delta table when it is created.
+[bigquery.md](bigquery.md) has the details.
+
+**An Iceberg catalog** as the arbiter adds a snapshot on top of the one the commit
+is based on, which succeeds for one writer only (`iceberglog`). A snapshot's
+summary identifies the commit, and the commit is elsewhere, because a catalog
+rewrites all its metadata for every commit. It keeps the newest 100 snapshots, and
+32 manifests list the files, whatever the table's age (F46). Data files have no
+field IDs, so the table has a name mapping (`schema.name-mapping.default`), and it
+is not partitioned. Its property `gc.enabled` is false, so that other tools delete
+nothing.
 
 `CheckSettings` reports settings that break a backend: lifecycle rules,
 retention, time to live, indexes, weak consistency (F34, F44).
@@ -131,15 +144,20 @@ retention, time to live, indexes, weak consistency (F34, F44).
    - Storage for whole objects with an atomic create: `objstore.Store`.
    - A document database: `chunkstore.RecordStore`, nine small operations on
      records. `chunkstore.New` makes an `objstore.Store` of it.
-   - Something that decides commits: `tablelog.Log`.
+   - Something that decides commits, while the files and the Delta log stay in an
+     object store: `managedlog.Arbiter`, four operations. `managedlog.New` makes
+     a `tablelog.Log` of it. BigQuery and Iceberg are two. Anything with an
+     atomic create-if-absent or compare-and-swap can be another.
+   - A log of another kind altogether: `tablelog.Log`.
 2. Get the errors right, since that is where data is lost. A write that did not
    happen, one that may have, and refused credentials are three different
    errors, and a record is missing only if the service says that it is the
    record. SDKs retry on their own: see `TestHiddenRetry` (F14, F32).
-3. Pass the port's suite, `objstoretest`, `chunkstoretest` or `tablelogtest`, and
-   `backendtest`, which runs several pods at once. Use the real SDK, against the
-   service's emulator or a server that speaks its protocol, as
-   `cosmosstore/fake_test.go` and `firestorestore/fake_test.go` do.
+3. Pass the port's suite, `objstoretest`, `chunkstoretest`, `managedlogtest` or
+   `tablelogtest`, and `backendtest`, which runs several pods at once. Use the
+   real SDK, against the service's emulator or a server that speaks its protocol,
+   as `cosmosstore/fake_test.go`, `firestorestore/fake_test.go` and
+   `bigquerylog/fake_test.go` do.
 4. Register a driver for its URLs (`storagebackend.RegisterObjects` or
    `RegisterLog`), add it to `storagebackend/all` with a build tag, and check its
    settings.
@@ -155,6 +173,7 @@ Nothing in the stores, the engine or the API changes.
 | Azure Blob Storage | yes | Azurite, in CI | `GOALERT_TEST_AZURE_CONNECTION_STRING` |
 | Cosmos DB | yes, real SDK and a fake server | the preview emulator, in CI, for information | `GOALERT_TEST_COSMOS_ENDPOINT`, `GOALERT_TEST_COSMOS_KEY` |
 | Firestore | yes, real SDK and a fake server | Google's emulator, in CI | `GOALERT_TEST_FIRESTORE_PROJECT` |
+| BigQuery | yes, real client and a fake server | none | `GOALERT_TEST_BIGQUERY_PROJECT`, `GOALERT_TEST_BIGQUERY_LOCATION` |
 | Iceberg REST catalog | yes, real client and a fake server; pyiceberg and delta-rs read the table, in CI | Apache's reference server, in CI, for information | `GOALERT_TEST_ICEBERG_URL`, `GOALERT_TEST_ICEBERG_OBJECTS` |
 
 Set the variables in the last column to run a backend's tests against the
@@ -164,8 +183,3 @@ service, for example:
 
 They write under prefixes, or to tables, of their own. No backend has been run
 against its service yet; do so before relying on one.
-
-## BigQuery
-
-BigQuery reads GoAlert's tables and is not a backend. See
-[bigquery.md](bigquery.md).

@@ -1,4 +1,5 @@
--- Read-only BigQuery access to GoAlert's table in GCS, whether its commits are
+-- Registers GoAlert's table in GCS with BigQuery, read only. The BigQuery backend does
+-- this itself; this is for other backends, whether a table's commits are
 -- decided by the Delta log or by an Iceberg catalog: see ../bigquery.md.
 --
 -- Replace every placeholder. The URI is the prefix that holds _delta_log.

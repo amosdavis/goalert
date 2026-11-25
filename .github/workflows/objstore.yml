@@ -7,9 +7,9 @@ name: Delta backend
 on:
   push:
     branches: ['filestore-backend', 'master']
-    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'bigquerylog/**', 'managedlog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
   pull_request:
-    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'bigquerylog/**', 'managedlog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
 
 jobs:
   conformance:
@@ -44,16 +44,16 @@ jobs:
           GOALERT_TEST_GCS_BUCKET: goalert-test
           FIRESTORE_EMULATOR_HOST: localhost:8085
           GOALERT_TEST_FIRESTORE_PROJECT: goalert-test
-        run: go test -race -count=1 -v ./objstore/... ./deltalog/... ./deltatable/... ./tablelog/... ./iceberglog/... ./storagebackend/...
+        run: go test -race -count=1 -v ./objstore/... ./deltalog/... ./deltatable/... ./tablelog/... ./iceberglog/... ./bigquerylog/... ./managedlog/... ./storagebackend/...
       - name: Leave out each driver
         # Every driver is optional, and so is its SDK (F48).
         run: |
-          for tag in goalert_no_gcs goalert_no_azure goalert_no_cosmosdb goalert_no_firestore goalert_no_iceberg; do
+          for tag in goalert_no_gcs goalert_no_azure goalert_no_cosmosdb goalert_no_firestore goalert_no_iceberg goalert_no_bigquery; do
             echo "$tag" && go vet -tags "$tag" ./storagebackend/...
           done
-          tags="goalert_no_gcs,goalert_no_azure,goalert_no_cosmosdb,goalert_no_firestore,goalert_no_iceberg"
+          tags="goalert_no_gcs,goalert_no_azure,goalert_no_cosmosdb,goalert_no_firestore,goalert_no_iceberg,goalert_no_bigquery"
           go build -tags "$tags" ./storagebackend/all
-          if go list -tags "$tags" -deps ./storagebackend/all | grep -E 'cloud\.google\.com/go/(storage|firestore)|azure-sdk-for-go|aws-sdk-go|iceberg-go'; then
+          if go list -tags "$tags" -deps ./storagebackend/all | grep -E 'cloud\.google\.com/go/(storage|firestore)|azure-sdk-for-go|aws-sdk-go|iceberg-go|google\.golang\.org/api/bigquery'; then
             echo "a build without drivers still links an SDK"; exit 1
           fi
 
