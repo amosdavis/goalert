@@ -103,6 +103,7 @@ type RowType[V any] struct {
 	schema  *parquet.Schema
 	field   json.RawMessage // this table's column in the Delta schema
 	times   bool            // whether rows can hold times, which are checked
+	norm    normalizer      // nil if only the round trip is known to be right
 }
 
 // NewRowType describes table name, whose rows are V. V's fields use parquet
@@ -134,7 +135,7 @@ func NewRowType[V any](name string) (*RowType[V], error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RowType[V]{name: name, wrapper: wrapper, schema: schema, field: raw, times: hasTimes(vType)}, nil
+	return &RowType[V]{name: name, wrapper: wrapper, schema: schema, field: raw, times: hasTimes(vType), norm: structNormalizer(vType)}, nil
 }
 
 // Name returns the table's name.
@@ -201,6 +202,22 @@ func (rt *RowType[V]) Decode(data []byte) ([]V, error) {
 // with times at microsecond precision in UTC. Every pod builds its state
 // from decoded files, so a writer stores the normalized value too (F25).
 func (rt *RowType[V]) Normalize(v V) (V, error) {
+	if rt.norm == nil {
+		return rt.roundTrip(v)
+	}
+	src := reflect.ValueOf(&v).Elem()
+	if rt.times {
+		if err := checkTimes(src); err != nil {
+			return v, fmt.Errorf("deltatable: %s: %w", rt.name, err)
+		}
+	}
+	var out V
+	rt.norm(reflect.ValueOf(&out).Elem(), src)
+	return out, nil
+}
+
+// roundTrip writes v to a Parquet file and reads it back.
+func (rt *RowType[V]) roundTrip(v V) (V, error) {
 	// One row needs small buffers; the defaults are sized for whole files.
 	data, err := rt.encode([]V{v}, parquet.PageBufferSize(4<<10), parquet.WriteBufferSize(4<<10))
 	if err != nil {
@@ -247,11 +264,15 @@ func deltaType(n parquet.Node) (any, error) {
 		if lt := n.Type().LogicalType(); lt != nil {
 			if _, ok := lt.Value.(*format.ListType); ok {
 				elem := n.Fields()[0].Fields()[0] // list.element
+				if elem.Optional() {
+					// parquet-go reads some elements back as nil.
+					return nil, fmt.Errorf("list elements can't be optional (pointers)")
+				}
 				et, err := deltaType(elem)
 				if err != nil {
 					return nil, err
 				}
-				return deltaArray{Type: "array", ElementType: et, ContainsNull: elem.Optional()}, nil
+				return deltaArray{Type: "array", ElementType: et, ContainsNull: false}, nil
 			}
 			return nil, fmt.Errorf("unsupported group type %s", lt)
 		}

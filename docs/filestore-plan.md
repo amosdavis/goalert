@@ -425,3 +425,8 @@ holder while it is sending.
   `DeltaDB.Now` for reads). GitHub started no workflow runs for `fc53c8e37`,
   `b3f4ef9ef` and `c1f2e631c` on 2026-11-22, so CI has not checked them on
   their own; the next run covers them.
+- 2026-11-25: Rows are normalized by reflection instead of through a Parquet
+  file: 1.8 µs and 448 bytes per write instead of about 500 µs and 247 KB. Shapes
+  the fast way doesn't cover still go through a file. GitHub has started no
+  workflow runs since 2026-11-21, so nothing after `f95b178be` has been checked
+  by CI.

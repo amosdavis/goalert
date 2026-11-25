@@ -117,7 +117,9 @@ the switchover system (`swo/`), and River.
   as Go's zero time, comes back wrong (while other Delta readers get it
   right, F35). *Rule:* applying a commit is deterministic. The writer stamps
   IDs and timestamps into the commit, every row is kept exactly as it
-  decodes, a time outside that range is refused when written (a time that
+  decodes (a shortcut for that is used only where tests show it gives the same
+  result, and shapes that lose data, such as lists of pointers, are refused),
+  a time outside that range is refused when written (a time that
   can be unset is a pointer), and a test replays the log and compares the
   state.
 
