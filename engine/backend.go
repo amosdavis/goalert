@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation/validate"
 
@@ -12,6 +13,8 @@ import (
 
 type backend struct {
 	db *sql.DB
+
+	delta *deltaEngine // the Delta backend, instead of db
 
 	findOne *sql.Stmt
 
@@ -51,6 +54,10 @@ func (b *backend) FindOne(ctx context.Context, id string) (*callback, error) {
 		return nil, err
 	}
 
+	if b.delta != nil {
+		return b.delta.findCallback(ctx, id)
+	}
+
 	var c callback
 	var alertID sql.NullInt64
 	var serviceID sql.NullString
@@ -63,4 +70,12 @@ func (b *backend) FindOne(ctx context.Context, id string) (*callback, error) {
 	c.ServiceID = serviceID.String
 	c.ContactMethodID = cmID.UUID
 	return &c, nil
+}
+
+// signalParams are the parameters of the signal that a message sends, as JSON.
+func (b *backend) signalParams(ctx context.Context, messageID uuid.UUID) ([]byte, error) {
+	if b.delta != nil {
+		return b.delta.signalParams(ctx, messageID.String())
+	}
+	return gadb.New(b.db).EngineGetSignalParams(ctx, uuid.NullUUID{Valid: true, UUID: messageID})
 }

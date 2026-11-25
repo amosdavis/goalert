@@ -9,13 +9,13 @@ import (
 	"github.com/pkg/errors"
 	"github.com/target/goalert/alert/alertlog"
 	"github.com/target/goalert/engine/message"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/util/log"
 )
 
-func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notification.SendResult, error) {
+// messageContext is the context in which a message is sent, and logged.
+func (p *Engine) messageContext(ctx context.Context, msg *message.Message) context.Context {
 	ctx = log.WithField(ctx, "CallbackID", msg.ID)
 
 	if msg.DestID.IsUserCM() {
@@ -30,18 +30,22 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 			ID:   msg.DestID.String(),
 		})
 	}
+	return ctx
+}
 
-	var notifMsg notification.Message
-	var isFirstAlertMessage bool
+// buildMessage looks up what a message says. If there is nothing to send, there
+// is a result instead. isFirstAlertMessage is whether its destination has not been
+// notified of its alert before.
+func (p *Engine) buildMessage(ctx context.Context, msg *message.Message) (notifMsg notification.Message, isFirstAlertMessage bool, res *notification.SendResult, err error) {
 	switch msg.Type {
 	case notification.MessageTypeAlertBundle:
 		name, count, err := p.a.ServiceInfo(ctx, msg.ServiceID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup service info")
+			return nil, false, nil, errors.Wrap(err, "lookup service info")
 		}
 		if count == 0 {
 			// already acked/closed, don't send bundled notification
-			return &notification.SendResult{
+			return nil, false, &notification.SendResult{
 				ID: msg.ID,
 				Status: notification.Status{
 					Details: "alerts acked/closed before message sent",
@@ -58,15 +62,15 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 	case notification.MessageTypeAlert:
 		name, _, err := p.a.ServiceInfo(ctx, msg.ServiceID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup service info")
+			return nil, false, nil, errors.Wrap(err, "lookup service info")
 		}
 		a, err := p.a.FindOne(ctx, msg.AlertID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup alert")
+			return nil, false, nil, errors.Wrap(err, "lookup alert")
 		}
 		stat, err := p.cfg.NotificationStore.OriginalMessageStatus(ctx, msg.AlertID, msg.DestID)
 		if err != nil {
-			return nil, fmt.Errorf("lookup original message: %w", err)
+			return nil, false, nil, fmt.Errorf("lookup original message: %w", err)
 		}
 		if stat != nil && stat.ID == msg.ID {
 			// set to nil if it's the current message
@@ -74,7 +78,7 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 		}
 		meta, err := p.a.Metadata(ctx, nil, msg.AlertID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup alert metadata")
+			return nil, false, nil, errors.Wrap(err, "lookup alert metadata")
 		}
 		notifMsg = notification.Alert{
 			Base:        msg.Base(),
@@ -91,26 +95,26 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 	case notification.MessageTypeAlertStatus:
 		e, err := p.cfg.AlertLogStore.FindOne(ctx, msg.AlertLogID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup alert log entry")
+			return nil, false, nil, errors.Wrap(err, "lookup alert log entry")
 		}
 		a, err := p.cfg.AlertStore.FindOne(ctx, msg.AlertID)
 		if err != nil {
-			return nil, fmt.Errorf("lookup original alert: %w", err)
+			return nil, false, nil, fmt.Errorf("lookup original alert: %w", err)
 		}
 		stat, err := p.cfg.NotificationStore.OriginalMessageStatus(ctx, msg.AlertID, msg.DestID)
 		if err != nil {
-			return nil, fmt.Errorf("lookup original message: %w", err)
+			return nil, false, nil, fmt.Errorf("lookup original message: %w", err)
 		}
 		if stat == nil {
-			return nil, fmt.Errorf("could not find original notification for alert %d to %s", msg.AlertID, msg.Dest.String())
+			return nil, false, nil, fmt.Errorf("could not find original notification for alert %d to %s", msg.AlertID, msg.Dest.String())
 		}
 		name, _, err := p.a.ServiceInfo(ctx, a.ServiceID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup service info")
+			return nil, false, nil, errors.Wrap(err, "lookup service info")
 		}
 		meta, err := p.a.Metadata(ctx, nil, msg.AlertID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup alert metadata")
+			return nil, false, nil, errors.Wrap(err, "lookup alert metadata")
 		}
 
 		var status notification.AlertState
@@ -142,7 +146,7 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 	case notification.MessageTypeVerification:
 		code, err := p.cfg.NotificationStore.Code(ctx, msg.VerifyID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup verification code")
+			return nil, false, nil, errors.Wrap(err, "lookup verification code")
 		}
 		notifMsg = notification.Verification{
 			Base: msg.Base(),
@@ -151,11 +155,11 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 	case notification.MessageTypeScheduleOnCallUsers:
 		users, err := p.cfg.OnCallStore.OnCallUsersBySchedule(ctx, msg.ScheduleID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup on call users by schedule")
+			return nil, false, nil, errors.Wrap(err, "lookup on call users by schedule")
 		}
 		sched, err := p.cfg.ScheduleStore.FindOne(ctx, msg.ScheduleID)
 		if err != nil {
-			return nil, errors.Wrap(err, "lookup schedule by id")
+			return nil, false, nil, errors.Wrap(err, "lookup schedule by id")
 		}
 
 		var onCallUsers []notification.User
@@ -177,17 +181,17 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 	case notification.MessageTypeSignalMessage:
 		id, err := uuid.Parse(msg.ID)
 		if err != nil {
-			return nil, errors.Wrap(err, "parse signal message id")
+			return nil, false, nil, errors.Wrap(err, "parse signal message id")
 		}
-		rawParams, err := gadb.New(p.b.db).EngineGetSignalParams(ctx, uuid.NullUUID{Valid: true, UUID: id})
+		rawParams, err := p.b.signalParams(ctx, id)
 		if err != nil {
-			return nil, errors.Wrap(err, "get signal message params")
+			return nil, false, nil, errors.Wrap(err, "get signal message params")
 		}
 
 		var params map[string]string
 		err = json.Unmarshal(rawParams, &params)
 		if err != nil {
-			return nil, errors.Wrap(err, "parse signal message params")
+			return nil, false, nil, errors.Wrap(err, "parse signal message params")
 		}
 
 		notifMsg = notification.SignalMessage{
@@ -196,14 +200,23 @@ func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notifi
 		}
 	default:
 		log.Log(ctx, errors.New("SEND NOT IMPLEMENTED FOR MESSAGE TYPE "+string(msg.Type)))
-		return &notification.SendResult{ID: msg.ID, Status: notification.Status{State: notification.StateFailedPerm}}, nil
+		return nil, false, &notification.SendResult{ID: msg.ID, Status: notification.Status{State: notification.StateFailedPerm}}, nil
+	}
+	return notifMsg, isFirstAlertMessage, nil, nil
+}
+
+func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notification.SendResult, error) {
+	ctx = p.messageContext(ctx, msg)
+	notifMsg, isFirstAlertMessage, res, err := p.buildMessage(ctx, msg)
+	if err != nil || res != nil {
+		return res, err
 	}
 
 	meta := alertlog.NotificationMetaData{
 		MessageID: msg.ID,
 	}
 
-	res, err := p.cfg.NotificationManager.SendMessage(ctx, notifMsg)
+	res, err = p.cfg.NotificationManager.SendMessage(ctx, notifMsg)
 	if err != nil {
 		return nil, err
 	}

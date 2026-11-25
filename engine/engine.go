@@ -59,6 +59,10 @@ type Engine struct {
 	runCtx context.Context
 
 	triggerPauseCh chan *pauseReq
+
+	// delta, if set, is the Delta backend's part. There is no River then, and no
+	// processing locks.
+	delta *deltaEngine
 }
 
 var _ notification.ResultReceiver = &Engine{}
@@ -68,14 +72,8 @@ type pauseReq struct {
 	ctx context.Context
 }
 
-// NewEngine will create a new Engine using the passed *sql.DB as a backend. Outgoing
-// notifications will be passed to Sender.
-//
-// Context is only used for preparing and initializing.
-func NewEngine(ctx context.Context, db *sql.DB, c *Config) (*Engine, error) {
-	var err error
-
-	p := &Engine{
+func newEngine(c *Config) *Engine {
+	return &Engine{
 		cfg:            c,
 		shutdownCh:     make(chan struct{}),
 		triggerCh:      make(chan struct{}),
@@ -85,6 +83,16 @@ func NewEngine(ctx context.Context, db *sql.DB, c *Config) (*Engine, error) {
 
 		a: c.AlertStore,
 	}
+}
+
+// NewEngine will create a new Engine using the passed *sql.DB as a backend. Outgoing
+// notifications will be passed to Sender.
+//
+// Context is only used for preparing and initializing.
+func NewEngine(ctx context.Context, db *sql.DB, c *Config) (*Engine, error) {
+	var err error
+
+	p := newEngine(c)
 
 	p.mgr = lifecycle.NewManager(p._run, p._shutdown)
 	err = p.mgr.SetPauseResumer(lifecycle.PauseResumerFunc(
@@ -254,9 +262,11 @@ func (p *Engine) Pause(ctx context.Context) error {
 func (p *Engine) _pause(ctx context.Context) error {
 	ch := make(chan error, 1)
 
-	err := p.cfg.River.Stop(ctx)
-	if err != nil {
-		return errors.Wrap(err, "pause river")
+	if p.delta == nil {
+		err := p.cfg.River.Stop(ctx)
+		if err != nil {
+			return errors.Wrap(err, "pause river")
+		}
 	}
 
 	select {
@@ -281,7 +291,7 @@ func (p *Engine) Resume(ctx context.Context) error {
 }
 
 func (p *Engine) _resume(ctx context.Context) error {
-	if p.cfg.DisableCycle {
+	if p.cfg.DisableCycle || p.delta != nil {
 		return nil
 	}
 
@@ -312,7 +322,10 @@ func (p *Engine) Shutdown(ctx context.Context) error {
 func (p *Engine) _shutdown(ctx context.Context) (err error) {
 	close(p.shutdownCh)
 	<-p.runLoopExit
-	if !p.cfg.DisableCycle {
+	switch {
+	case p.delta != nil:
+		err = p.delta.stop(ctx)
+	case !p.cfg.DisableCycle:
 		err = p.cfg.River.Stop(ctx)
 	}
 	return err
@@ -322,6 +335,10 @@ func (p *Engine) _shutdown(ctx context.Context) (err error) {
 func (p *Engine) SetSendResult(ctx context.Context, res *notification.SendResult) error {
 	var err error
 	permission.SudoContext(ctx, func(ctx context.Context) {
+		if p.delta != nil {
+			err = p.delta.msg.UpdateMessageStatus(ctx, res)
+			return
+		}
 		err = p.msg.UpdateMessageStatus(ctx, res)
 	})
 	return err
@@ -543,6 +560,17 @@ func (p *Engine) cycle(ctx context.Context) {
 	startAll := time.Now()
 	defer monitorCycle(ctx, startAll)()
 
+	if p.delta != nil {
+		func() {
+			defer recoverPanic(ctx, "Engine")
+			p.deltaCycle(ctx)
+		}()
+		p.delta.maintain(ctx)
+		metricModuleDuration.WithLabelValues("Engine").Observe(time.Since(startAll).Seconds())
+		metricCycleTotal.Inc()
+		return
+	}
+
 	aborted := p.processAll(ctx)
 	if aborted || p.mgr.IsPausing() {
 		log.Logf(ctx, "Engine cycle aborted (paused or shutting down).")
@@ -556,7 +584,11 @@ func (p *Engine) cycle(ctx context.Context) {
 }
 
 func (p *Engine) handlePause(ctx context.Context, respCh chan error) {
-	// nothing special to do currently
+	if p.delta != nil {
+		// Another pod goes on meanwhile.
+		respCh <- p.delta.stop(ctx)
+		return
+	}
 	respCh <- nil
 }
 
@@ -590,7 +622,9 @@ func (p *Engine) _run(ctx context.Context) error {
 	}
 
 	p.runCtx = ctx
-	p.startRiver()
+	if p.delta == nil {
+		p.startRiver()
+	}
 
 	dur := p.cfg.CycleTime
 	if dur == 0 {

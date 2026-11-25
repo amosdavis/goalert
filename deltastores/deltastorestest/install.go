@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 	_ "time/tzdata" // some systems have none
@@ -24,6 +25,7 @@ import (
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/nfydest"
+	"github.com/target/goalert/notification/nfymsg"
 	"github.com/target/goalert/objstore"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule"
@@ -51,7 +53,20 @@ type Install struct {
 	// Wrap, if set, is what a pod sees of the store.
 	Wrap func(objstore.Store) objstore.Store
 
+	// OnSend, if set, is called for each message that is sent to a destination of
+	// DestType. It may return an error.
+	OnSend func(nfymsg.Message) error
+
+	mu   sync.Mutex
+	sent []nfymsg.Message
 	pods int
+}
+
+// Sent are the messages that were sent to destinations of DestType, by any pod.
+func (in *Install) Sent() []nfymsg.Message {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return slices.Clone(in.sent)
 }
 
 // New creates a table.
@@ -104,7 +119,7 @@ func (in *Install) Pod(t testing.TB) *Pod {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	reg := nfydest.NewRegistry()
-	reg.RegisterProvider(ctx, dests{})
+	reg.RegisterProvider(ctx, dests{in})
 	s, err := deltastores.New(ctx, db, tables, deltastores.Options{
 		Logger: log.NewLogger(), Registry: reg,
 		Config: config.StoreConfig{Keys: keyring.Keys{[]byte("key")}, FallbackURL: "http://localhost"},
@@ -293,7 +308,19 @@ func RotationDest(id string) gadb.DestV1 { return rotation.DestFromID(id) }
 func UserDest(id string) gadb.DestV1     { return user.DestFromID(id) }
 
 // dests is the provider of DestType.
-type dests struct{}
+type dests struct{ in *Install }
+
+func (d dests) SendMessage(_ context.Context, m nfymsg.Message) (*nfymsg.SentMessage, error) {
+	if d.in.OnSend != nil {
+		if err := d.in.OnSend(m); err != nil {
+			return nil, err
+		}
+	}
+	d.in.mu.Lock()
+	defer d.in.mu.Unlock()
+	d.in.sent = append(d.in.sent, m)
+	return &nfymsg.SentMessage{ExternalID: m.MsgID(), State: nfymsg.StateSent}, nil
+}
 
 func (dests) ID() string { return DestType }
 
