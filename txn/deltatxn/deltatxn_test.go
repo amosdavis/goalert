@@ -2,7 +2,9 @@ package deltatxn_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,4 +132,31 @@ func TestReadAndWrite(t *testing.T) {
 		assert.ErrorIs(t, err, deltatxn.ErrReadOnly)
 		return nil
 	}))
+}
+
+// TestConstraintFailsTransaction checks that a transaction in which a
+// constraint failed can't commit, even if its function ignores that (F8).
+func TestConstraintFailsTransaction(t *testing.T) {
+	ctx := context.Background()
+	db, rows := open(t)
+	limit := &filestore.CheckError{Table: "rows", Constraint: "rows_limit", Message: "limit exceeded"}
+
+	err := db.Run(ctx, nil, func(tx txn.Tx) error {
+		_ = deltatxn.Write(ctx, db, tx, func(s deltatxn.Scope) error {
+			if err := rows.Put(s.Tx, row{ID: "over"}); err != nil {
+				return err
+			}
+			return fmt.Errorf("add row: %w", limit)
+		})
+		return nil
+	})
+	require.ErrorIs(t, err, limit)
+	assert.Zero(t, rows.Len(db.DB.View()), "the row that broke the limit is not committed")
+
+	// Other errors don't: a missing row doesn't abort a transaction.
+	require.NoError(t, db.Run(ctx, nil, func(tx txn.Tx) error {
+		_ = deltatxn.Write(ctx, db, tx, func(deltatxn.Scope) error { return sql.ErrNoRows })
+		return deltatxn.Write(ctx, db, tx, func(s deltatxn.Scope) error { return rows.Put(s.Tx, row{ID: "a"}) })
+	}))
+	assert.Equal(t, 1, rows.Len(db.DB.View()))
 }

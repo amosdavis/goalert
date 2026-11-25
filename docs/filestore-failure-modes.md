@@ -102,8 +102,10 @@ the switchover system (`swo/`), and River.
   *Rule:* every foreign key and cascade has an explicit Go equivalent with a test.
 - **F8 Dropped constraints.** The limit triggers (`fn_enforce_*_limit`), the
   `UNIQUE` and `CHECK` constraints and the no-reopen rule (`fn_prevent_reopen`)
-  stop being enforced. *Rule:* every constraint in the inventory gets a Go
-  check with a test.
+  stop being enforced, or code that ignores a constraint's error commits the
+  row anyway, which Postgres prevents by aborting the transaction. *Rule:*
+  every constraint in the inventory gets a Go check with a test, and a
+  transaction in which a constraint failed can't commit.
 - **F9 No usable backup.** Object storage keeps data, but a mistake (a bad
   release, a deleted prefix) has no undo. *Rule:* a documented backup and
   restore: copying the table at a version, or restoring from Delta history
@@ -261,3 +263,8 @@ the switchover system (`swo/`), and River.
 - **F40 Commit storms.** Pods that keep conflicting retry each other into a
   standstill. *Rule:* only the lease holder runs the engine. Other writes
   retry with backoff and a cap, and conflicts are counted in metrics.
+- **F41 A panic takes the pod down.** Transactions run on a goroutine of their
+  own, where the HTTP server's and GraphQL's handling of panics doesn't reach:
+  one panic would end every request and the engine. *Rule:* a panic in a
+  transaction undoes that transaction only, and goes on in its caller. Tests
+  cover that the rest of its batch still commits.

@@ -686,7 +686,7 @@ func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, er
 	for {
 		select {
 		case r := <-p.done:
-			return r.version, r.err
+			return r.finish()
 		case db.sem <- struct{}{}:
 			// Commit whatever is waiting, this transaction included unless an
 			// earlier batch took it. The batch runs on its own goroutine, so
@@ -701,7 +701,7 @@ func (db *DeltaDB) Update(ctx context.Context, fn func(tx *Tx) error) (int64, er
 			}
 			select {
 			case r := <-p.done:
-				return r.version, r.err
+				return r.finish()
 			default:
 				return 0, objstore.Unknown(fmt.Errorf("filestore: %w while the transaction was being committed", ctx.Err()))
 			}
@@ -780,9 +780,10 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		errs = make([]error, len(batch))
 		for i, p := range batch {
 			tx := &Tx{schema: db.schema, base: base, working: make(map[string]tableData), now: now}
-			err := p.fn(tx)
-			tx.done = true
-			if err != nil {
+			if err := runTx(p.fn, tx); err != nil {
+				if pe, ok := err.(*TxPanic); ok {
+					db.opts.Logf("filestore: a transaction panicked: %v", pe.Value)
+				}
 				errs[i] = err
 				continue
 			}

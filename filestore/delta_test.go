@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -930,4 +931,95 @@ func TestDeltaNow(t *testing.T) {
 
 	behind := openPod(t, store, sch, dOpts("behind"))
 	assert.Equal(t, dStart.Add(time.Hour), behind.Now(), "a read is never earlier than the commits it sees (F13)")
+}
+
+// TestDeltaPanic checks that a panic in a transaction ends only that
+// transaction, and goes on in its caller (F41).
+func TestDeltaPanic(t *testing.T) {
+	ctx := context.Background()
+	sch := newDSchema()
+	db := openPod(t, newDeltaStore(t), sch, dOpts("a"))
+
+	boom := errors.New("boom")
+	func() {
+		defer func() {
+			p, ok := recover().(*TxPanic)
+			require.True(t, ok, "the caller panics")
+			assert.ErrorIs(t, p, boom)
+			assert.Contains(t, string(p.Stack), "TestDeltaPanic", "with the stack of the transaction")
+		}()
+		_, err := db.Update(ctx, func(tx *Tx) error {
+			require.NoError(t, putUser(sch, "gone")(tx))
+			panic(boom)
+		})
+		t.Errorf("Update returned %v", err)
+	}()
+
+	// Transactions in the same batch are not affected.
+	var wg sync.WaitGroup
+	var panics, oks atomic.Int64
+	for i := range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if recover() != nil {
+					panics.Add(1)
+				}
+			}()
+			_, err := db.Update(ctx, func(tx *Tx) error {
+				if i%4 == 0 {
+					panic("boom")
+				}
+				return putUser(sch, fmt.Sprintf("u%d", i))(tx)
+			})
+			if err == nil {
+				oks.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	assert.EqualValues(t, 10, panics.Load())
+	assert.EqualValues(t, 30, oks.Load())
+	assert.Equal(t, 30, sch.users.Len(db.View()), "and nothing of those that panicked is kept")
+}
+
+// TestDeltaGoexit checks that runtime.Goexit in a transaction, which a failed
+// require in a test calls, ends the caller instead of hanging it.
+func TestDeltaGoexit(t *testing.T) {
+	ctx := context.Background()
+	sch := newDSchema()
+	db := openPod(t, newDeltaStore(t), sch, dOpts("a"))
+	ended := make(chan bool, 1)
+	go func() {
+		returned := false
+		defer func() { ended <- returned }()
+		_, _ = db.Update(ctx, func(tx *Tx) error {
+			runtime.Goexit()
+			return nil
+		})
+		returned = true
+	}()
+	select {
+	case returned := <-ended:
+		assert.False(t, returned)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Update hangs")
+	}
+	_, err := db.Update(ctx, putUser(sch, "u1"))
+	require.NoError(t, err, "the pod goes on")
+}
+
+func TestDeltaFail(t *testing.T) {
+	ctx := context.Background()
+	sch := newDSchema()
+	db := openPod(t, newDeltaStore(t), sch, dOpts("a"))
+	first := errors.New("first")
+	_, err := db.Update(ctx, func(tx *Tx) error {
+		tx.Fail(first)
+		tx.Fail(errors.New("second"))
+		return putUser(sch, "u1")(tx)
+	})
+	require.ErrorIs(t, err, first)
+	assert.Zero(t, sch.users.Len(db.View()))
 }

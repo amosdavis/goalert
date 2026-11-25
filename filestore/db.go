@@ -379,6 +379,9 @@ func (db *DB) Update(ctx context.Context, fn func(tx *Tx) error) error {
 	}
 	err := fn(tx)
 	tx.done = true
+	if err == nil {
+		err = tx.failed
+	}
 	if err != nil {
 		return err
 	}

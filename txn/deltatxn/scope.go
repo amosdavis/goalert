@@ -33,12 +33,20 @@ func Read(ctx context.Context, db txn.DB, tx txn.Tx, fn func(s Scope) error) err
 // Write runs fn in tx, or in a transaction of its own on db when tx is nil.
 // It can run more than once, so it must do no I/O (F3, F4), and must set, not
 // add to, what it hands out through captured variables.
+//
+// If fn returns a constraint error, the whole transaction fails, even if the
+// caller ignores the error, as on Postgres (F8).
 func Write(ctx context.Context, db txn.DB, tx txn.Tx, fn func(s Scope) error) error {
 	return in(ctx, db, tx, false, func(s Scope) error {
 		if s.Tx == nil {
 			return ErrReadOnly
 		}
-		return fn(s)
+		err := fn(s)
+		var broken interface{ SQLState() string }
+		if errors.As(err, &broken) {
+			s.Tx.Fail(err)
+		}
+		return err
 	})
 }
 

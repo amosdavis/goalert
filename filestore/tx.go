@@ -28,6 +28,7 @@ type Tx struct {
 	muts    []mutation
 	now     time.Time
 	done    bool
+	failed  error // set by Fail
 }
 
 func (tx *Tx) tableData(name string) tableData {
