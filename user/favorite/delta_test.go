@@ -85,8 +85,9 @@ func TestDeltaUsers(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, many, 2, "each user once, like `where id = any($1)`")
 
-	_, err = e.users.Search(ctx, &user.SearchOptions{})
-	assert.ErrorContains(t, err, "not available on the Delta backend yet", "unported methods refuse rather than fail strangely")
+	found, err := e.users.Search(ctx, &user.SearchOptions{})
+	require.NoError(t, err)
+	assert.Len(t, found, 2, "search is available on the Delta backend")
 }
 
 func TestDeltaFavorites(t *testing.T) {

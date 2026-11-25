@@ -11,7 +11,6 @@ import (
 	"github.com/golang/groupcache"
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
-	"github.com/target/goalert/txn/deltatxn"
 )
 
 func timeKey(key string, dur time.Duration) string {
@@ -44,12 +43,12 @@ func (c checker) UserExistsUUID(id uuid.UUID) bool { _, ok := c[id]; return ok }
 
 // UserExists returns an ExistanceChecker.
 func (s *Store) UserExists(ctx context.Context) (ExistanceChecker, error) {
-	if s.delta != nil {
-		return nil, deltatxn.ErrNotPorted
-	}
 	err := permission.LimitCheckAny(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.delta != nil {
+		return s.delta.userExists(ctx)
 	}
 	m, err := s.userExistMap(ctx)
 	if err != nil {

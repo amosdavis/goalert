@@ -13,7 +13,6 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/retry"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/deltatxn"
 	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/sqlutil"
@@ -183,9 +182,6 @@ func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 
 // SetAuthSubject will add or update the auth subject for the provider/subject pair to point to the provided user ID.
 func (s *Store) SetAuthSubject(ctx context.Context, providerID, subjectID, userID string) error {
-	if s.delta != nil {
-		return deltatxn.ErrNotPorted
-	}
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -199,6 +195,9 @@ func (s *Store) SetAuthSubject(ctx context.Context, providerID, subjectID, userI
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.setAuthSubject(ctx, AuthSubject{ProviderID: providerID, SubjectID: subjectID, UserID: userID})
+	}
 
 	_, err = s.setAuthSubject.ExecContext(ctx, providerID, subjectID, userID)
 	if err != nil {
@@ -211,9 +210,6 @@ func (s *Store) SetAuthSubject(ctx context.Context, providerID, subjectID, userI
 // WithoutAuthProviderFunc will call forEachFn for each user that is missing an auth subject for the given provider ID.
 // If an error is returned by forEachFn it will stop reading and be returned. Favorites information will not be included (always false).
 func (s *Store) WithoutAuthProviderFunc(ctx context.Context, providerID string, forEachFn func(User) error) error {
-	if s.delta != nil {
-		return deltatxn.ErrNotPorted
-	}
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -221,6 +217,9 @@ func (s *Store) WithoutAuthProviderFunc(ctx context.Context, providerID string, 
 	err = validate.SubjectID("ProviderID", providerID)
 	if err != nil {
 		return err
+	}
+	if s.delta != nil {
+		return s.delta.withoutAuthProviderFunc(ctx, providerID, forEachFn)
 	}
 
 	rows, err := s.usersMissingProvider.QueryContext(ctx, providerID)
@@ -252,9 +251,6 @@ func (s *Store) WithoutAuthProviderFunc(ctx context.Context, providerID string, 
 // providerID, if not empty, will limit AuthSubjects to those with the same providerID.
 // userID, if not empty, will limit AuthSubjects to those assigned to the given userID(s).
 func (s *Store) AuthSubjectsFunc(ctx context.Context, providerID string, userIDs []string, forEachFn func(AuthSubject) error) error {
-	if s.delta != nil {
-		return deltatxn.ErrNotPorted
-	}
 	checks := []permission.Checker{permission.Admin}
 	if len(userIDs) == 1 {
 		checks = append(checks, permission.MatchUser(userIDs[0]))
@@ -269,6 +265,9 @@ func (s *Store) AuthSubjectsFunc(ctx context.Context, providerID string, userIDs
 	err = validate.Many(err, validate.ManyUUID("UserID", userIDs, 100))
 	if err != nil {
 		return err
+	}
+	if s.delta != nil {
+		return s.delta.authSubjectsFunc(ctx, providerID, userIDs, forEachFn)
 	}
 
 	pID := sql.NullString{
@@ -308,10 +307,6 @@ func (s *Store) AuthSubjectsFunc(ctx context.Context, providerID string, userIDs
 // DeleteManyTx will delete multiple users within the same transaction. If tx is nil,
 // a transaction will be started and committed before returning.
 func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error {
-	if s.delta != nil {
-		return deltatxn.ErrNotPorted
-	}
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -324,7 +319,11 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) error
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.deleteMany(ctx, tx, ids)
+	}
 
+	stx := sqltxn.Unwrap(tx)
 	var ownsTx bool
 	if stx == nil {
 		ownsTx = true
@@ -633,9 +632,6 @@ func (s *Store) FindOneTx(ctx context.Context, tx txn.Tx, id string, forUpdate b
 
 // FindOneBySubject will find a user matching the subjectID for the given providerID.
 func (s *Store) FindOneBySubject(ctx context.Context, providerID, subjectID string) (*User, error) {
-	if s.delta != nil {
-		return nil, deltatxn.ErrNotPorted
-	}
 	err := permission.LimitCheckAny(ctx, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -647,6 +643,9 @@ func (s *Store) FindOneBySubject(ctx context.Context, providerID, subjectID stri
 	)
 	if err != nil {
 		return nil, err
+	}
+	if s.delta != nil {
+		return s.delta.findOneBySubject(ctx, providerID, subjectID)
 	}
 
 	row := s.findOneBySubject.QueryRowContext(ctx, providerID, subjectID)
@@ -665,9 +664,6 @@ func (s *Store) FindOneBySubject(ctx context.Context, providerID, subjectID stri
 //
 // afterSubjectID can be specified for paginating responses. Results are sorted by subject id.
 func (s *Store) FindSomeAuthSubjectsForProvider(ctx context.Context, limit int, afterSubjectID, providerID string) ([]AuthSubject, error) {
-	if s.delta != nil {
-		return nil, deltatxn.ErrNotPorted
-	}
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return nil, err
@@ -686,6 +682,9 @@ func (s *Store) FindSomeAuthSubjectsForProvider(ctx context.Context, limit int, 
 	}
 	if limit == 0 {
 		limit = 50
+	}
+	if s.delta != nil {
+		return s.delta.findSomeAuthSubjects(ctx, limit, afterSubjectID, providerID)
 	}
 
 	q := fmt.Sprintf(`
@@ -718,9 +717,6 @@ func (s *Store) FindSomeAuthSubjectsForProvider(ctx context.Context, limit int, 
 
 // FindAllAuthSubjectsForUser returns all auth subjects associated with a given userID.
 func (s *Store) FindAllAuthSubjectsForUser(ctx context.Context, userID string) ([]AuthSubject, error) {
-	if s.delta != nil {
-		return nil, deltatxn.ErrNotPorted
-	}
 	var result []AuthSubject
 	err := s.AuthSubjectsFunc(ctx, "", []string{userID}, func(sub AuthSubject) error {
 		result = append(result, sub)
@@ -735,10 +731,6 @@ func (s *Store) FindAllAuthSubjectsForUser(ctx context.Context, userID string) (
 
 // AddAuthSubjectTx adds an auth subject for a user.
 func (s *Store) AddAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubject) error {
-	if s.delta != nil {
-		return deltatxn.ErrNotPorted
-	}
-	stx := sqltxn.Unwrap(tx)
 	var userID string
 	if a != nil {
 		userID = a.UserID
@@ -752,7 +744,11 @@ func (s *Store) AddAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubject)
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.addAuthSubject(ctx, tx, *n)
+	}
 
+	stx := sqltxn.Unwrap(tx)
 	_, err = withTx(ctx, stx, s.insertUserAuthSubject).ExecContext(ctx, a.UserID, n.ProviderID, n.SubjectID)
 	return err
 }
@@ -761,10 +757,6 @@ func (s *Store) AddAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubject)
 //
 // If the subject does not exist, nil is returned.
 func (s *Store) DeleteAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubject) error {
-	if s.delta != nil {
-		return deltatxn.ErrNotPorted
-	}
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin)
 	if err != nil {
 		return err
@@ -774,7 +766,11 @@ func (s *Store) DeleteAuthSubjectTx(ctx context.Context, tx txn.Tx, a *AuthSubje
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.deleteAuthSubject(ctx, tx, *n)
+	}
 
+	stx := sqltxn.Unwrap(tx)
 	_, err = withTx(ctx, stx, s.deleteUserAuthSubject).ExecContext(ctx, a.UserID, n.ProviderID, n.SubjectID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		// do not return error if auth subject doesn't exist
