@@ -417,6 +417,9 @@ func (l *Log) Load(ctx context.Context) (*Snapshot, error) {
 		if err := l.catchUp(ctx, s); err != nil {
 			return nil, err
 		}
+		if m := s.MetaData.Configuration[ManagerKey]; m != l.Manager {
+			return nil, fmt.Errorf("%w: by %q, not %q (F43)", ErrManaged, m, l.Manager)
+		}
 		return s, nil
 	}
 	var skipped []error

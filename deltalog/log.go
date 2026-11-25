@@ -26,6 +26,12 @@ const (
 
 	// GoAlertFormat is the GoAlert data format this code reads and writes.
 	GoAlertFormat = 1
+
+	// ManagerKey is the table configuration that names what decides which
+	// commit holds a version, if that is not the log itself. A log that does
+	// not know the manager refuses the table: its commits would not be the
+	// manager's, and two writers could both win a version (F43).
+	ManagerKey = "goalert.commits"
 )
 
 var (
@@ -47,6 +53,10 @@ var (
 	// ErrForeign means a commit was not written by GoAlert for this table
 	// (F11).
 	ErrForeign = errors.New("deltalog: commit was not written by GoAlert for this table")
+
+	// ErrManaged means something else decides the table's commits, such as an
+	// Iceberg catalog, so this log must not be used on its own (F43).
+	ErrManaged = errors.New("deltalog: the table's commits are decided elsewhere")
 
 	// ErrCorrupt means the log is inconsistent.
 	ErrCorrupt = errors.New("deltalog: log is inconsistent")
@@ -80,6 +90,10 @@ type Log struct {
 	// Warn, if set, receives the problems Load works around, such as a
 	// checkpoint it skipped, so they are not hidden (F21).
 	Warn func(error)
+
+	// Manager is the ManagerKey of the tables this log can be used for. It is
+	// empty for a log that decides commits itself.
+	Manager string
 }
 
 func (l *Log) warn(err error) {
@@ -94,9 +108,20 @@ func New(store objstore.Store, writerID string) *Log {
 	return &Log{store: store, writerID: writerID, MaxAttempts: 8, Backoff: 100 * time.Millisecond}
 }
 
-// encode writes a commit file: commitInfo first, as Spark does, then the
-// actions, one JSON object per line.
-func encode(info CommitInfo, actions []Action) ([]byte, error) {
+// SetRetry sets how often an unclear commit is tried, and its first delay.
+// Values that are not positive change nothing.
+func (l *Log) SetRetry(attempts int, backoff time.Duration) {
+	if attempts > 0 {
+		l.MaxAttempts = attempts
+	}
+	if backoff > 0 {
+		l.Backoff = backoff
+	}
+}
+
+// Encode returns the contents of a commit file: commitInfo first, as Spark
+// does, then the actions, one JSON object per line.
+func Encode(info CommitInfo, actions []Action) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	if err := enc.Encode(Action{CommitInfo: &info}); err != nil {
@@ -113,8 +138,8 @@ func encode(info CommitInfo, actions []Action) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decode parses a commit file into its commitInfo and other actions.
-func decode(data []byte) (CommitInfo, []Action, error) {
+// Decode parses a commit file into its commitInfo and other actions.
+func Decode(data []byte) (CommitInfo, []Action, error) {
 	var info CommitInfo
 	var actions []Action
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -161,19 +186,20 @@ func (l *Log) Read(ctx context.Context, version int64) (CommitInfo, []Action, er
 	if err != nil {
 		return CommitInfo{}, nil, err
 	}
-	return decode(data)
+	return Decode(data)
 }
 
-// Create creates the table at version 0 with the given metadata. It returns
-// ErrTableExists if a table is already there.
-func (l *Log) Create(ctx context.Context, meta MetaData, at time.Time) error {
+// CheckMeta prepares the metadata a table is created with.
+func CheckMeta(meta MetaData, at time.Time) (MetaData, error) {
 	if meta.ID == "" {
-		return fmt.Errorf("deltalog: table ID is required")
+		return MetaData{}, errors.New("deltalog: table ID is required")
 	}
-	if meta.Configuration == nil {
-		meta.Configuration = map[string]string{}
+	conf := make(map[string]string, len(meta.Configuration)+1)
+	for k, v := range meta.Configuration {
+		conf[k] = v
 	}
-	meta.Configuration[FormatKey] = strconv.Itoa(GoAlertFormat)
+	conf[FormatKey] = strconv.Itoa(GoAlertFormat)
+	meta.Configuration = conf
 	if meta.Format.Provider == "" {
 		meta.Format = Format{Provider: "parquet", Options: map[string]string{}}
 	}
@@ -181,11 +207,28 @@ func (l *Log) Create(ctx context.Context, meta MetaData, at time.Time) error {
 		meta.PartitionColumns = []string{}
 	}
 	meta.CreatedTime = at.UnixMilli()
-	actions := []Action{
+	return meta, nil
+}
+
+// CreateActions are the actions of version 0.
+func CreateActions(meta MetaData) []Action {
+	return []Action{
 		{Protocol: &Protocol{MinReaderVersion: ReaderVersion, MinWriterVersion: WriterVersion}},
 		{MetaData: &meta},
 	}
-	_, err := l.commit(ctx, 0, meta.ID, "CREATE TABLE", at, actions)
+}
+
+// Create creates the table at version 0 with the given metadata. It returns
+// ErrTableExists if a table is already there.
+func (l *Log) Create(ctx context.Context, meta MetaData, at time.Time) error {
+	meta, err := CheckMeta(meta, at)
+	if err != nil {
+		return err
+	}
+	if m := meta.Configuration[ManagerKey] + l.Manager; m != "" {
+		return fmt.Errorf("%w: by %q", ErrManaged, m)
+	}
+	_, err = l.commit(ctx, 0, meta.ID, "CREATE TABLE", at, CreateActions(meta))
 	if errors.Is(err, ErrConflict) {
 		return ErrTableExists
 	}
@@ -205,21 +248,29 @@ func (l *Log) Commit(ctx context.Context, version int64, storeID, operation stri
 	if version < 1 {
 		return CommitInfo{}, fmt.Errorf("deltalog: commits start at version 1")
 	}
+	if l.Manager != "" {
+		return CommitInfo{}, fmt.Errorf("%w: by %q", ErrManaged, l.Manager)
+	}
 	return l.commit(ctx, version, storeID, operation, at, actions)
 }
 
-func (l *Log) commit(ctx context.Context, version int64, storeID, operation string, at time.Time, actions []Action) (CommitInfo, error) {
-	info := CommitInfo{
+// NewCommitInfo identifies a commit that is about to be made.
+func NewCommitInfo(storeID, writerID, operation string, at time.Time) CommitInfo {
+	return CommitInfo{
 		Timestamp:       at.UnixMilli(),
 		Operation:       operation,
 		EngineInfo:      "GoAlert",
 		GoAlertStoreID:  storeID,
-		GoAlertWriterID: l.writerID,
+		GoAlertWriterID: writerID,
 		GoAlertCommitID: uuid.NewString(),
 		GoAlertFormat:   GoAlertFormat,
 		GoAlertTime:     at.UnixMicro(),
 	}
-	data, err := encode(info, actions)
+}
+
+func (l *Log) commit(ctx context.Context, version int64, storeID, operation string, at time.Time, actions []Action) (CommitInfo, error) {
+	info := NewCommitInfo(storeID, l.writerID, operation, at)
+	data, err := Encode(info, actions)
 	if err != nil {
 		return CommitInfo{}, err
 	}
@@ -249,7 +300,7 @@ func (l *Log) commit(ctx context.Context, version int64, storeID, operation stri
 			// attempt of ours whose reply was lost.
 			ours, rerr := l.isOurs(ctx, name, info.GoAlertCommitID)
 			if rerr != nil {
-				lastErr = rerr
+				lastErr, unsure = rerr, true
 				continue
 			}
 			if ours {
@@ -289,7 +340,7 @@ func (l *Log) isOurs(ctx context.Context, name, commitID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	info, _, err := decode(data)
+	info, _, err := Decode(data)
 	if err != nil {
 		return false, err
 	}
@@ -453,6 +504,9 @@ func (s *Snapshot) Apply(version int64, info CommitInfo, actions []Action) error
 			}
 			if version > 0 && m.ID != s.MetaData.ID {
 				return fmt.Errorf("%w: version %d changes the table ID", ErrCorrupt, version)
+			}
+			if version > 0 && m.Configuration[ManagerKey] != s.MetaData.Configuration[ManagerKey] {
+				return fmt.Errorf("%w: version %d changes what decides the table's commits", ErrCorrupt, version)
 			}
 			next.MetaData, sawMeta = m, true
 		case a.Add != nil:

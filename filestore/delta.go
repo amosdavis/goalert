@@ -2,6 +2,7 @@ package filestore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"github.com/target/goalert/deltalog"
 	"github.com/target/goalert/deltatable"
 	"github.com/target/goalert/objstore"
+	"github.com/target/goalert/tablelog"
 )
 
 // This file keeps the store in a Delta table that several pods share
@@ -41,6 +43,10 @@ const (
 	bucketsKey = "goalert.buckets."
 
 	bucketIndex = "_bucket"
+
+	// minChunkGrace is the shortest grace period a chunked object store
+	// accepts (chunkstore.MinGracePeriod).
+	minChunkGrace = time.Hour
 )
 
 // deltaDef is what a Delta table needs from a table definition.
@@ -235,6 +241,11 @@ type DeltaOptions struct {
 	// deltalog.DefaultTombstoneRetention.
 	TombstoneRetention time.Duration
 
+	// ChunkGracePeriod is how long an object store that splits objects into
+	// chunks, such as a document database's, keeps chunks nobody uses (F42).
+	// It defaults to TombstoneRetention, and is never under an hour.
+	ChunkGracePeriod time.Duration
+
 	// LogRetention is how long commits and checkpoints are kept before
 	// CleanLog deletes them. The default is 7 days. A pod that goes half of
 	// the shorter retention without confirming it is current reloads from a
@@ -244,6 +255,26 @@ type DeltaOptions struct {
 	// MaxConflicts is how often Update tries a transaction that loses to
 	// other pods' commits before it returns ErrConflicts. The default is 20.
 	MaxConflicts int
+
+	// MaxBatch is the most transactions one commit groups. BatchTimeout
+	// bounds the storage work of a batch. The defaults are 256 and one minute.
+	MaxBatch     int
+	BatchTimeout time.Duration
+
+	// ConflictBackoff is the first delay after another pod wins a commit.
+	// It doubles to MaxConflictBackoff, with jitter. The defaults are 5 ms
+	// and one second.
+	ConflictBackoff    time.Duration
+	MaxConflictBackoff time.Duration
+
+	// CommitAttempts bounds retries after an unclear commit result, and
+	// CommitBackoff is their first delay. The defaults are 8 and 100 ms.
+	CommitAttempts int
+	CommitBackoff  time.Duration
+
+	// UploadConcurrency is how many of a commit's data files are uploaded at
+	// once. The default is 8.
+	UploadConcurrency int
 
 	// PollInterval is how often the store looks for other pods' commits.
 	// The default is 1s; a negative value turns following off. While the
@@ -271,11 +302,36 @@ func (o DeltaOptions) withDefaults() DeltaOptions {
 	if o.TombstoneRetention == 0 {
 		o.TombstoneRetention = deltalog.DefaultTombstoneRetention
 	}
+	if o.ChunkGracePeriod == 0 {
+		o.ChunkGracePeriod = o.TombstoneRetention
+	}
+	o.ChunkGracePeriod = max(o.ChunkGracePeriod, minChunkGrace)
 	if o.LogRetention == 0 {
 		o.LogRetention = 7 * 24 * time.Hour
 	}
 	if o.MaxConflicts == 0 {
 		o.MaxConflicts = 20
+	}
+	if o.MaxBatch <= 0 {
+		o.MaxBatch = 256
+	}
+	if o.BatchTimeout <= 0 {
+		o.BatchTimeout = time.Minute
+	}
+	if o.ConflictBackoff <= 0 {
+		o.ConflictBackoff = 5 * time.Millisecond
+	}
+	if o.MaxConflictBackoff < o.ConflictBackoff {
+		o.MaxConflictBackoff = max(time.Second, o.ConflictBackoff)
+	}
+	if o.CommitAttempts <= 0 {
+		o.CommitAttempts = 8
+	}
+	if o.CommitBackoff <= 0 {
+		o.CommitBackoff = 100 * time.Millisecond
+	}
+	if o.UploadConcurrency <= 0 {
+		o.UploadConcurrency = 8
 	}
 	if o.PollInterval == 0 {
 		o.PollInterval = time.Second
@@ -299,7 +355,7 @@ type bucketID struct {
 type DeltaDB struct {
 	schema *Schema
 	store  objstore.Store
-	log    *deltalog.Log
+	log    tablelog.Log
 	opts   DeltaOptions
 	want   deltalog.MetaData
 
@@ -337,6 +393,22 @@ type DeltaDB struct {
 // at the wrong location can't start a second GoAlert (F27).
 func CreateDelta(ctx context.Context, store objstore.Store, schema *Schema, opts DeltaOptions) error {
 	opts = opts.withDefaults()
+	return createBackend(ctx, store, deltalog.New(store, opts.WriterID), schema, opts)
+}
+
+// CreateBackend creates a table through log, whose implementation stores the
+// commit sequence. Store holds its data files. Like CreateDelta, this is an
+// explicit operation, never something opening a pod does on its own (F27).
+func CreateBackend(ctx context.Context, store objstore.Store, log tablelog.Log, schema *Schema, opts DeltaOptions) error {
+	opts = opts.withDefaults()
+	return createBackend(ctx, store, log, schema, opts)
+}
+
+func createBackend(ctx context.Context, store objstore.Store, log tablelog.Log, schema *Schema, opts DeltaOptions) error {
+	if log == nil {
+		return errors.New("filestore: nil table log")
+	}
+	log.SetRetry(opts.CommitAttempts, opts.CommitBackoff)
 	if err := schema.deltaInit(); err != nil {
 		return err
 	}
@@ -348,13 +420,31 @@ func CreateDelta(ctx context.Context, store objstore.Store, schema *Schema, opts
 		return err
 	}
 	meta.ID = uuid.NewString()
-	return deltalog.New(store, opts.WriterID).Create(ctx, meta, opts.Clock.Now())
+	return log.Create(ctx, meta, opts.Clock.Now())
 }
 
 // OpenDelta opens the store in the Delta table in store, which CreateDelta
 // made. It returns an error matching deltalog.ErrNoTable if there is none.
 func OpenDelta(ctx context.Context, store objstore.Store, schema *Schema, opts DeltaOptions) (*DeltaDB, error) {
 	opts = opts.withDefaults()
+	log := deltalog.New(store, opts.WriterID)
+	log.Warn = func(err error) { opts.Logf("filestore: %v", err) }
+	return openBackend(ctx, store, log, schema, opts)
+}
+
+// OpenBackend opens a store through log, whose implementation stores the
+// commit sequence, and store, which holds its data files. DeltaDB's name is
+// kept for compatibility; the commit log need not use Delta's representation.
+func OpenBackend(ctx context.Context, store objstore.Store, log tablelog.Log, schema *Schema, opts DeltaOptions) (*DeltaDB, error) {
+	opts = opts.withDefaults()
+	return openBackend(ctx, store, log, schema, opts)
+}
+
+func openBackend(ctx context.Context, store objstore.Store, log tablelog.Log, schema *Schema, opts DeltaOptions) (*DeltaDB, error) {
+	if log == nil {
+		return nil, errors.New("filestore: nil table log")
+	}
+	log.SetRetry(opts.CommitAttempts, opts.CommitBackoff)
 	if err := schema.deltaInit(); err != nil {
 		return nil, err
 	}
@@ -364,11 +454,9 @@ func OpenDelta(ctx context.Context, store objstore.Store, schema *Schema, opts D
 		return nil, err
 	}
 	db := &DeltaDB{
-		schema: schema, store: store, opts: opts, want: want,
+		schema: schema, store: store, opts: opts, want: want, log: log,
 		sem: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
-	db.log = deltalog.New(store, opts.WriterID)
-	db.log.Warn = func(err error) { opts.Logf("filestore: %v", err) }
 	// Find broken credentials or a store that can't do what the log needs
 	// now, not at the first page (F33).
 	if err := objstore.SelfTest(ctx, store); err != nil {
@@ -642,13 +730,6 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// maxBatch bounds how many transactions go into one commit.
-const maxBatch = 256
-
-// batchTimeout bounds the storage work of one commit, which may serve
-// several callers.
-const batchTimeout = time.Minute
-
 type pendingTx struct {
 	ctx  context.Context
 	fn   func(tx *Tx) error
@@ -726,7 +807,7 @@ func (db *DeltaDB) dequeue(p *pendingTx) bool {
 // and gives each its result. The caller holds the writer lock.
 func (db *DeltaDB) commitQueued() {
 	db.queueMu.Lock()
-	n := min(len(db.queue), maxBatch)
+	n := min(len(db.queue), db.opts.MaxBatch)
 	batch := slices.Clone(db.queue[:n])
 	db.queue = slices.Delete(db.queue, 0, n)
 	db.queueMu.Unlock()
@@ -744,7 +825,7 @@ func (db *DeltaDB) commitQueued() {
 	}
 	// The batch serves several callers, so no single caller's cancellation
 	// stops it halfway.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(live[0].ctx), batchTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(live[0].ctx), db.opts.BatchTimeout)
 	defer cancel()
 	version, errs, err := db.commitBatch(ctx, live)
 	for i, p := range live {
@@ -768,7 +849,8 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 	if err := db.writeErr(); err != nil {
 		return 0, nil, err
 	}
-	delay := 5 * time.Millisecond
+	delay := db.opts.ConflictBackoff
+	uploads := make(map[bucketID]uploaded)
 	for attempt := 1; ; attempt++ {
 		if err := db.catchUp(ctx); err != nil {
 			return 0, nil, err
@@ -794,7 +876,7 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		}
 
 		all := &Tx{schema: db.schema, base: db.master, working: working, muts: muts, now: now, done: true}
-		actions, files, err := db.prepare(ctx, all)
+		actions, files, err := db.prepare(ctx, all, uploads)
 		if err != nil {
 			db.noteStorage(err, true)
 			return 0, nil, err
@@ -813,6 +895,7 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		if !errors.Is(err, deltalog.ErrConflict) {
 			// A definite failure, or an unknown outcome that the next catch
 			// up settles by reading the version.
+			db.failIfFatal(err)
 			return 0, nil, err
 		}
 		db.conflicts.Add(1)
@@ -824,7 +907,7 @@ func (db *DeltaDB) commitBatch(ctx context.Context, batch []*pendingTx) (version
 		if err := sleepCtx(ctx, delay/2+rand.N(delay)); err != nil {
 			return 0, nil, err
 		}
-		delay = min(2*delay, time.Second)
+		delay = min(2*delay, db.opts.MaxConflictBackoff)
 	}
 }
 
@@ -844,10 +927,20 @@ func (db *DeltaDB) commitTime() time.Time {
 	return t
 }
 
+// uploaded is a data file that no commit has added yet.
+type uploaded struct {
+	digest [sha256.Size]byte
+	add    deltalog.Add
+}
+
 // prepare uploads a new data file for every bucket the transaction changed,
 // before the commit that adds it (F6), and returns the commit's actions and
 // each changed bucket's new files.
-func (db *DeltaDB) prepare(ctx context.Context, tx *Tx) ([]deltalog.Action, map[bucketID][]string, error) {
+//
+// uploads holds the files of the batch's attempts that lost to another pod's
+// commit. A bucket that comes out the same again, as most do when pods change
+// different rows, keeps its file, so a lost race costs little (F37, F40).
+func (db *DeltaDB) prepare(ctx context.Context, tx *Tx, uploads map[bucketID]uploaded) ([]deltalog.Action, map[bucketID][]string, error) {
 	touched := make(map[bucketID]bool)
 	for _, m := range tx.muts {
 		n := db.schema.tables[m.table].deltaBuckets()
@@ -864,20 +957,16 @@ func (db *DeltaDB) prepare(ctx context.Context, tx *Tx) ([]deltalog.Action, map[
 		return ids[i].bucket < ids[j].bucket
 	})
 
+	adds, err := db.upload(ctx, tx, ids, uploads)
+	if err != nil {
+		return nil, nil, err
+	}
 	var actions []deltalog.Action
 	files := make(map[bucketID][]string, len(ids))
-	for _, id := range ids {
-		data, n, err := tx.tableData(id.table).(deltaData).encodeBucket(id.bucket)
-		if err != nil {
-			return nil, nil, fmt.Errorf("filestore: %s: %w", id.table, err)
-		}
+	for i, id := range ids {
 		files[id] = nil
-		if n > 0 {
-			add, err := deltatable.Upload(ctx, db.store, id.table, id.bucket, data, n, tx.now)
-			if err != nil {
-				return nil, nil, err
-			}
-			actions = append(actions, deltalog.Action{Add: &add})
+		if add := adds[i]; add != nil {
+			actions = append(actions, deltalog.Action{Add: add})
 			files[id] = []string{add.Path}
 		}
 		for _, p := range db.buckets[id] {
@@ -889,6 +978,87 @@ func (db *DeltaDB) prepare(ctx context.Context, tx *Tx) ([]deltalog.Action, map[
 		}
 	}
 	return actions, files, nil
+}
+
+// upload uploads the buckets' data files, several at once (F15). It returns one
+// for each bucket, or nil for an empty one.
+func (db *DeltaDB) upload(ctx context.Context, tx *Tx, ids []bucketID, uploads map[bucketID]uploaded) ([]*deltalog.Add, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	adds := make([]*deltalog.Add, len(ids))
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
+	fail := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if first == nil {
+			first = err
+			cancel()
+		}
+	}
+	sem := make(chan struct{}, db.opts.UploadConcurrency)
+	for i, id := range ids {
+		// Encoded only once it can be uploaded, so that no more files than are
+		// uploaded at once are in memory (F17).
+		sem <- struct{}{}
+		if ctx.Err() != nil {
+			<-sem
+			break
+		}
+		data, n, err := tx.tableData(id.table).(deltaData).encodeBucket(id.bucket)
+		if err != nil {
+			fail(fmt.Errorf("filestore: %s: %w", id.table, err))
+		}
+		digest := sha256.Sum256(data)
+		mu.Lock()
+		prior, ok := uploads[id]
+		mu.Unlock()
+		switch {
+		case err != nil || n == 0:
+			<-sem
+			continue
+		case ok && prior.digest == digest:
+			adds[i] = &prior.add
+			<-sem
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			add, err := deltatable.Upload(ctx, db.store, id.table, id.bucket, data, n, tx.now)
+			if err != nil {
+				fail(err)
+				return
+			}
+			adds[i] = &add
+			mu.Lock()
+			defer mu.Unlock()
+			uploads[id] = uploaded{digest: digest, add: add}
+		}()
+	}
+	wg.Wait()
+	if first == nil {
+		first = ctx.Err()
+	}
+	return adds, first
+}
+
+// failIfFatal stops writes if an error means that this pod may not write to
+// the table, or can't: it was written to by something else (F11), it is
+// damaged, or a newer version's (F30).
+func (db *DeltaDB) failIfFatal(err error) {
+	for _, fatal := range []error{
+		ErrCorrupt, ErrVersion, deltalog.ErrForeign, deltalog.ErrCorrupt, deltalog.ErrUnsupported, deltalog.ErrManaged,
+	} {
+		if errors.Is(err, fatal) {
+			db.fail(err)
+			return
+		}
+	}
 }
 
 // committed applies this pod's own commit, whose rows are already in
@@ -926,9 +1096,7 @@ func (db *DeltaDB) catchUp(ctx context.Context) error {
 		// reading on could take a missing one for the end of the log, and
 		// the next commit could write that version again (F16).
 		if err := db.load(ctx); err != nil {
-			if errors.Is(err, ErrCorrupt) || errors.Is(err, ErrVersion) {
-				db.fail(err)
-			}
+			db.failIfFatal(err)
 			db.noteStorage(err, false)
 			return err
 		}
@@ -943,17 +1111,12 @@ func (db *DeltaDB) catchUp(ctx context.Context) error {
 		}
 		db.noteStorage(err, false)
 		if err != nil {
-			if errors.Is(err, deltalog.ErrCorrupt) {
-				db.fail(err)
-			}
+			db.failIfFatal(err)
 			return err
 		}
 		if err := db.apply(ctx, version, info, actions); err != nil {
 			db.noteStorage(err, false)
-			if errors.Is(err, ErrCorrupt) || errors.Is(err, ErrVersion) || errors.Is(err, deltalog.ErrForeign) ||
-				errors.Is(err, deltalog.ErrCorrupt) || errors.Is(err, deltalog.ErrUnsupported) {
-				db.fail(err)
-			}
+			db.failIfFatal(err)
 			return err
 		}
 	}
@@ -1175,6 +1338,10 @@ func (db *DeltaDB) Vacuum(ctx context.Context) (int, error) {
 		}
 		deleted++
 	}
+	if err := db.collectChunks(ctx); err != nil {
+		db.noteStorage(err, true)
+		return deleted, err
+	}
 	return deleted, nil
 }
 
@@ -1184,8 +1351,26 @@ func (db *DeltaDB) CleanLog(ctx context.Context) (int, error) {
 	n, err := db.log.Cleanup(ctx, db.opts.Clock.Now(), db.opts.LogRetention)
 	if err != nil {
 		db.noteStorage(err, true)
+		return n, err
 	}
-	return n, err
+	if err := db.collectChunks(ctx); err != nil {
+		db.noteStorage(err, true)
+		return n, err
+	}
+	return n, nil
+}
+
+// collectChunks lets a chunked object store remove old, unreferenced chunks.
+// Other object stores have nothing extra to do after their objects are deleted.
+func (db *DeltaDB) collectChunks(ctx context.Context) error {
+	gc, ok := db.store.(interface {
+		CollectGarbage(ctx context.Context, gracePeriod time.Duration) (int, error)
+	})
+	if !ok {
+		return nil
+	}
+	_, err := gc.CollectGarbage(ctx, db.opts.ChunkGracePeriod)
+	return err
 }
 
 // Close stops following the log and waits for background work. Writes in

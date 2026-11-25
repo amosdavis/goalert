@@ -53,11 +53,11 @@ func newDeltaStore(t *testing.T) *objstore.Mem {
 	return store
 }
 
-func openPod(t *testing.T, store objstore.Store, sch dSchema, opts DeltaOptions) *DeltaDB {
+func openPod(t testing.TB, store objstore.Store, sch dSchema, opts DeltaOptions) *DeltaDB {
 	t.Helper()
 	db, err := OpenDelta(context.Background(), store, sch.s, opts)
 	require.NoError(t, err)
-	db.log.Backoff = time.Millisecond
+	db.log.(*deltalog.Log).Backoff = time.Millisecond
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
@@ -569,8 +569,8 @@ func TestDeltaCrashAtEveryWrite(t *testing.T) {
 			opts.CheckpointEvery = 3
 			pod, err := OpenDelta(ctx, store, sch.s, opts)
 			require.NoError(t, err)
-			pod.log.Backoff = time.Millisecond
-			pod.log.MaxAttempts = 2
+			pod.log.(*deltalog.Log).Backoff = time.Millisecond
+			pod.log.(*deltalog.Log).MaxAttempts = 2
 			store.arm(writes)
 
 			acked := 0
