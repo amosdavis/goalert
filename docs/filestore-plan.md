@@ -501,3 +501,9 @@ holder while it is sending.
   managedlog and bigquerylog on purpose in 27 places made a test fail in all but
   one, where the arbiter refuses anyway. An Iceberg table refuses a data file that
   does not say how many rows it has, which Iceberg readers would skip (F47).
+- 2026-11-25: `deltastores` assembles every store and foreign key, and
+  `engine/enginetables` adds notification cycles, module state and a lease that
+  only one pod can hold. Tests compare the assembled schema with the inventory,
+  build every store, and race four pods for the lease. The full backend suites
+  pass; the only remaining local test failures need Postgres or Unix-only
+  devtools, and live-service verification is still open.

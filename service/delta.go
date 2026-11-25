@@ -76,6 +76,22 @@ func DeclareDeltaForeignKeys[EP any](t *DeltaTables, policies *filestore.Table[E
 		func(r serviceRow) (string, bool) { return r.EscalationPolicyID, true }, filestore.Restrict, nil)
 }
 
+// PolicyServices returns, in r, the ids of the services that use an escalation
+// policy.
+func (t *DeltaTables) PolicyServices(r filestore.Reader, policyID string) []string {
+	var ids []string
+	t.ByEP.Ascend(r, policyID, func(row serviceRow) bool {
+		ids = append(ids, row.ID)
+		return true
+	})
+	return ids
+}
+
+// EachName calls fn for every service in r, by id, until it returns false.
+func (t *DeltaTables) EachName(r filestore.Reader, fn func(id, name string) bool) {
+	t.Services.Ascend(r, func(row serviceRow) bool { return fn(row.ID, row.Name) })
+}
+
 // DeltaLookups are the reads of other packages' tables, and the trigger that
 // changes one, that the store needs. They run in the store's transaction, so
 // they must do no I/O.

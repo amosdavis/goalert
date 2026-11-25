@@ -524,7 +524,9 @@ Unique:
 
 - notification_policy_cycles_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `engine/enginetables/tables.go`, with `InsertCycle`. The engine's
+lease and module state use the new `engine_lease` and `engine_state` tables;
+`engine_processing_versions` is superseded by `engine_state`.
 
 ### outgoing_messages
 

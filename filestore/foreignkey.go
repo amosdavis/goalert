@@ -110,6 +110,21 @@ func References[C, P any](child *Table[C], name string, parent *Table[P], ref fu
 	})
 }
 
+// ForeignKey describes a foreign key that was declared.
+type ForeignKey struct {
+	Name, Child, Parent string
+	OnDelete            OnDelete
+}
+
+// ForeignKeys returns the foreign keys that were declared, in that order.
+func (s *Schema) ForeignKeys() []ForeignKey {
+	out := make([]ForeignKey, len(s.fks))
+	for i, fk := range s.fks {
+		out[i] = ForeignKey{fk.name, fk.child, fk.parent, fk.onDelete}
+	}
+	return out
+}
+
 // checkReferences returns an error if row v of table refers to a missing
 // row.
 func (s *Schema) checkReferences(tx *Tx, table string, v any) error {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -45,6 +46,7 @@ func NewSchema() *Schema {
 
 type tableDef interface {
 	newData() tableData
+	uniqueNames() []string
 	deltaDef // delta.go
 }
 
@@ -123,10 +125,31 @@ func newTable[V any](s *Schema, name string, key func(V) string) *Table[V] {
 	return t
 }
 
+// TableNames returns the names of the tables that were defined, sorted.
+func (s *Schema) TableNames() []string {
+	return slices.DeleteFunc(slices.Clone(s.names), func(name string) bool { return strings.HasPrefix(name, "_") })
+}
+
+// UniqueNames returns the names of a table's unique indexes.
+func (s *Schema) UniqueNames(table string) []string {
+	if def, ok := s.tables[table]; ok {
+		return def.uniqueNames()
+	}
+	return nil
+}
+
 func (s *Schema) checkOpen() {
 	if s.frozen {
 		panic("filestore: schema changed after Open")
 	}
+}
+
+func (t *Table[V]) uniqueNames() []string {
+	var names []string
+	for _, u := range t.uniques {
+		names = append(names, u.name)
+	}
+	return names
 }
 
 // Name returns the table's name.
