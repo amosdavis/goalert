@@ -1,4 +1,4 @@
-//go:build !goalert_no_gcs && !goalert_no_azure && !goalert_no_cosmosdb && !goalert_no_firestore && !goalert_no_iceberg
+//go:build !goalert_no_bigquery && !goalert_no_gcs && !goalert_no_azure && !goalert_no_cosmosdb && !goalert_no_firestore && !goalert_no_iceberg
 
 package all
 
@@ -13,5 +13,5 @@ import (
 func TestDrivers(t *testing.T) {
 	objects, logs := storagebackend.Drivers()
 	assert.Equal(t, []string{"az", "cosmos", "file", "firestore", "gs"}, objects)
-	assert.Equal(t, []string{"iceberg+http", "iceberg+https"}, logs)
+	assert.Equal(t, []string{"bigquery", "iceberg+http", "iceberg+https"}, logs)
 }

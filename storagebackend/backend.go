@@ -62,15 +62,20 @@ func (b *Backend) Open(ctx context.Context, schema *filestore.Schema, opts files
 }
 
 // CheckSettings reports settings of the storage that break or weaken the table
-// (F34), if the object store can check them. An error matching
-// objstore.ErrDenied means that the settings are unchecked.
+// (F34), as far as the object store and the log can check them. An error
+// matching objstore.ErrDenied means that some settings are unchecked.
 func (b *Backend) CheckSettings(ctx context.Context) ([]objstore.SettingProblem, error) {
-	if c, ok := b.Store.(interface {
-		CheckSettings(ctx context.Context) ([]objstore.SettingProblem, error)
-	}); ok {
-		return c.CheckSettings(ctx)
+	var out []objstore.SettingProblem
+	var errs []error
+	for _, part := range []any{b.Store, b.Log} {
+		if c, ok := part.(interface {
+			CheckSettings(ctx context.Context) ([]objstore.SettingProblem, error)
+		}); ok {
+			problems, err := c.CheckSettings(ctx)
+			out, errs = append(out, problems...), append(errs, err)
+		}
 	}
-	return nil, nil
+	return out, errors.Join(errs...)
 }
 
 // Close closes the backend's connections. Close databases that use it first.
