@@ -42,6 +42,19 @@ the switchover system (`swo/`), and River.
   the next `_delta_log` version, which only one pod can win (optimistic
   concurrency). Every pod keeps the whole current state in memory and follows
   the log.
+- **Other storage is optional, chosen at deployment** (2026-11-25). Cosmos DB
+  and Firestore can hold the objects, and an Iceberg catalog can decide the
+  commits. Two ports separate them from everything else, `objstore.Store` and
+  `tablelog.Log`, and a deployment picks one driver for each
+  ([storage-backends.md](storage-backends.md)). Every installation still has
+  one serializable sequence of commits: no backend trades that for speed (F2,
+  F4).
+- **With an Iceberg catalog the table is Delta as well.** The catalog's atomic
+  swap decides a commit, and the Delta log gets a copy of it afterwards, so
+  readers of both formats see one table over the same files.
+- **BigQuery only reads.** It allows one mutating statement at a time on a
+  managed Iceberg table and has no low-latency conditional writes, so it can't
+  decide commits ([bigquery.md](bigquery.md)).
 - **Fresh installs only.** There is no Postgres import, so F18 is out of scope.
 - **Superseded:** the local log on disk (chosen 2026-11-20). The in-memory
   tables, indexes and transactions in `filestore/` stay; the Delta log
@@ -94,9 +107,11 @@ the switchover system (`swo/`), and River.
 - **F6 Commits that point at missing data.** A commit references a data file that
   failed to upload, or cleanup deletes a file a pod still needs. *Rule:* data
   files are uploaded, and the upload confirmed, before the commit that adds
-  them. Commit files are written with a single request, so they are complete
-  or absent. VACUUM deletes a file only when it is unreferenced and older than
-  the retention window.
+  them. Every part of a commit object is uploaded before one atomic metadata
+  operation publishes it, whether that operation is an object create, a catalog
+  snapshot swap, or a document-store manifest write, so commits are complete or
+  absent. VACUUM deletes a file only when it is unreferenced and older than the
+  retention window.
 - **F7 Broken references.** For example, deleting a user leaves dangling rotation
   participants or escalation steps (75 cascades handle this today).
   *Rule:* every foreign key and cascade has an explicit Go equivalent with a test.
@@ -142,11 +157,17 @@ the switchover system (`swo/`), and River.
   go backwards and timers fire early or late. *Rule:* a commit's time is the
   later of the pod's clock and the previous commit's time. Pods compare their
   clock with the object store's `Date` header and go red beyond a threshold.
-- **F14 Platform and SDK differences.** The GCS and Azure SDKs report conflicts,
-  throttling and timeouts differently, and the local implementation behaves
-  differently again. *Rule:* one conformance test suite runs against every
-  object-store implementation: the emulators (fake-gcs-server, Azurite) in CI,
-  and the real services before release.
+  What may be deleted from a document database is judged by the database's
+  clock, never a pod's.
+- **F14 Platform and SDK differences.** The GCS, Azure, Cosmos DB, Firestore
+  and Iceberg catalog APIs report conflicts, throttling and timeouts
+  differently, and the local implementations behave differently again. *Rule:*
+  every implementation passes the suite of its port (`objstoretest`,
+  `chunkstoretest`, `tablelogtest`), and every backend passes one that runs
+  several pods at once (`backendtest`). CI runs them on emulators (GCS, Azure,
+  Firestore) and on servers that speak the real protocol to the real SDK
+  (Cosmos DB, Firestore, an Iceberg REST catalog), and the real services are
+  tested before release.
 
 ### D. Performance
 
@@ -230,7 +251,9 @@ the switchover system (`swo/`), and River.
   returns a server error, and the commit may or may not exist. *Rule:* read
   that version back and compare its commit ID before reporting success or
   trying again. Never apply a commit twice, and never report one that doesn't
-  exist.
+  exist. An SDK that retries on its own hides this: once any attempt may have
+  been applied, a later one being refused does not make it a failure, so every
+  adapter sees each attempt, or turns the retries off.
 - **F33 Credentials or permissions break.** Expired keys or SAS tokens, a rotated
   service account, or a missing permission for conditional writes. *Rule:* at
   startup, a self-test reads, creates-if-absent and deletes in a scratch prefix.
@@ -262,9 +285,65 @@ the switchover system (`swo/`), and River.
   are benchmarked.
 - **F40 Commit storms.** Pods that keep conflicting retry each other into a
   standstill. *Rule:* only the lease holder runs the engine. Other writes
-  retry with backoff and a cap, and conflicts are counted in metrics.
+  retry with backoff and a cap, and conflicts are counted in metrics. A retry
+  uploads only the files that the other pod's commit changed for it.
 - **F41 A panic takes the pod down.** Transactions run on a goroutine of their
   own, where the HTTP server's and GraphQL's handling of panics doesn't reach:
   one panic would end every request and the engine. *Rule:* a panic in a
   transaction undoes that transaction only, and goes on in its caller. Tests
   cover that the rest of its batch still commits.
+
+### I. Optional storage backends
+
+- **F42 A collector deletes live chunks.** A document database's records are
+  small, so a large object is split into chunks, and chunks that failed uploads
+  left behind have to be deleted. A collector that trusts an incomplete
+  listing, a pod's clock, or a chunk another upload shares, deletes data in
+  use; so does one that runs while a paused pod is about to publish chunks it
+  uploaded hours ago. *Rule:* a chunk belongs to one upload of one object and is
+  never reused. It is deleted only if it is older than the grace period (an hour
+  or more) by the database's clock, and a strongly consistent read of its
+  object's manifest shows that it is unused. A read that fails deletes nothing.
+  An upload that took more than half the grace period starts over, and one whose
+  publication did stores its chunks again. Objects are checked against their
+  digest when they are read.
+- **F43 Two things decide commits.** A pod is configured to use the Delta log of
+  a table whose commits an Iceberg catalog decides, or the reverse, and both
+  win the same version. *Rule:* the table's metadata names what decides its
+  commits, and any other log refuses it. A commit is in the Delta log only if
+  the catalog has it, and the next commit is made only once the one before is in
+  the Delta log, so whichever pod comes next can finish what a crashed one left.
+  A Delta version the catalog does not have stops writes.
+- **F44 Stale reads of the latest version.** With weaker than strong
+  consistency, a database answers with old data: a pod takes an old version for
+  the newest, misses its own commit when it looks for it (F32), or reads a
+  deleted commit as the end of the log (F16). *Rule:* a backend needs strongly
+  consistent reads. Cosmos DB is asked for Strong with every read, which an
+  account set to less refuses, and is checked at startup. "Not found" counts
+  only if it is the record that is missing, not the database or the container.
+- **F45 A database's limits.** A Cosmos DB logical partition holds 20 GB and an
+  item 2 MB; a Firestore document holds 1 MiB, and its index 1500 bytes of a
+  name. A table that outgrows one stops taking writes. *Rule:* data is spread
+  over many partitions, no record comes near its limit, and what can't be stored
+  is refused before it is sent.
+- **F46 Catalog metadata grows.** An Iceberg catalog rewrites all of a table's
+  metadata for every commit, so anything kept per commit makes each one slower,
+  and the total grows with the square of their number. *Rule:* a snapshot holds
+  the commit's identity and nothing else, the catalog keeps a fixed number of
+  snapshots, manifests are a fixed number of shards, and a commit writes only
+  those it changes. A test counts them.
+- **F47 Iceberg readers see other rows.** The snapshot's manifests and GoAlert's
+  state differ, and a report is wrong without anyone noticing. *Rule:* opening a
+  table compares the two file by file, a commit that removes a file Iceberg does
+  not have fails, and tests compare the rows an Iceberg reader finds with
+  GoAlert's.
+- **F48 A backend nobody chose gets in the way.** GoAlert asks for credentials of
+  a cloud that is not used, contacts it, fails to start without it, or falls
+  back to it. *Rule:* every backend is optional. Only the configured one is
+  opened, there is no default location and no fallback (F27), and build tags
+  leave out any driver with its SDK. CI builds without each.
+- **F49 The catalog and the object store are different places.** Iceberg's
+  metadata names files where GoAlert does not write them, so its readers find
+  nothing, or another installation's data. *Rule:* a table's location is
+  checked against the object store's whenever it is created or opened, and
+  storage that Iceberg readers can't reach is refused.
