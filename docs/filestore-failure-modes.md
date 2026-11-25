@@ -49,12 +49,17 @@ the switchover system (`swo/`), and River.
   ([storage-backends.md](storage-backends.md)). Every installation still has
   one serializable sequence of commits: no backend trades that for speed (F2,
   F4).
-- **With an Iceberg catalog the table is Delta as well.** The catalog's atomic
-  swap decides a commit, and the Delta log gets a copy of it afterwards, so
-  readers of both formats see one table over the same files.
-- **BigQuery only reads.** It allows one mutating statement at a time on a
-  managed Iceberg table and has no low-latency conditional writes, so it can't
-  decide commits ([bigquery.md](bigquery.md)).
+- **Every backend gives a Delta table** (2026-11-25). With GCS, Azure or a
+  document database the Delta log itself decides commits. With an Iceberg
+  catalog or BigQuery, that decides them, and the Delta log in the bucket gets
+  a copy of each (`managedlog`). So with Iceberg, one table is both formats, and
+  with BigQuery, the Delta table is in the bucket and registered in BigQuery.
+- **BigQuery decides a commit by a job's ID** (2026-11-25). It "rejects any job
+  creation request that reuses a previous job ID", which is the create-if-absent
+  a log needs, and documented. A conditional `UPDATE` is not documented to be a
+  compare-and-swap, streams of the Storage Write API allow one connection, and
+  multi-statement transactions are not queued
+  ([bigquery.md](bigquery.md)).
 - **Fresh installs only.** There is no Postgres import, so F18 is out of scope.
 - **Superseded:** the local log on disk (chosen 2026-11-20). The in-memory
   tables, indexes and transactions in `filestore/` stay; the Delta log
@@ -308,12 +313,13 @@ the switchover system (`swo/`), and River.
   publication did stores its chunks again. Objects are checked against their
   digest when they are read.
 - **F43 Two things decide commits.** A pod is configured to use the Delta log of
-  a table whose commits an Iceberg catalog decides, or the reverse, and both
-  win the same version. *Rule:* the table's metadata names what decides its
-  commits, and any other log refuses it. A commit is in the Delta log only if
-  the catalog has it, and the next commit is made only once the one before is in
-  the Delta log, so whichever pod comes next can finish what a crashed one left.
-  A Delta version the catalog does not have stops writes.
+  a table whose commits an Iceberg catalog or BigQuery decides, or the reverse,
+  or another project's BigQuery, and both win the same version. *Rule:* the
+  table's metadata names what decides its commits, and any other log refuses
+  it. A commit is in the Delta log only if it was decided, and the next one is
+  asked for only once the one before is in the Delta log, so whichever pod comes
+  next can finish what a crashed one left. Every commit names the one it is on
+  top of, and a Delta version that was not decided stops writes.
 - **F44 Stale reads of the latest version.** With weaker than strong
   consistency, a database answers with old data: a pod takes an old version for
   the newest, misses its own commit when it looks for it (F32), or reads a
@@ -347,3 +353,14 @@ the switchover system (`swo/`), and River.
   nothing, or another installation's data. *Rule:* a table's location is
   checked against the object store's whenever it is created or opened, and
   storage that Iceberg readers can't reach is refused.
+- **F50 BigQuery's decisions are lost or someone else's.** BigQuery keeps a job
+  for six months, in one project and location. Someone deletes a job's
+  metadata, a pod asks in another location, or another program's job has the
+  ID; a quota refuses a job, which looks like a lost permission. *Rule:* the
+  table's metadata names the project and the location (F43). A job's labels name
+  its table, version and commit, and a job with an ID of ours that has others
+  stops the pod. Only the newest decision depends on its job, since every older
+  one is in the Delta log, and a table nobody used for months is opened from the
+  Delta log. At startup a pod checks that a used ID is refused (F33). A refusal
+  by quota is told from one of permission, and tried again. Nobody may be
+  allowed to delete job metadata.
