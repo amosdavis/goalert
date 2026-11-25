@@ -220,7 +220,9 @@ Unique:
 
 - config_limits_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `limit/delta.go`. The limits the Postgres migrations set on a new
+install come from `InsertDefaults`, which the command that creates the Delta
+table must run once: without it nothing is limited (F8).
 
 ### engine_processing_versions
 
@@ -462,7 +464,8 @@ Unique:
 - notification_channel_duplicates_id_key: `(id)`
 - notification_channel_duplicates_pkey (index): `(old_id)`
 
-**Go:** not ported yet.
+**Go:** defined, `notificationchannel/delta.go`. Only Postgres migrations write it, so
+it may go (F24).
 
 ### notification_channels
 
@@ -481,7 +484,9 @@ Unique:
 - notification_channels_dest_key: `(dest)`
 - notification_channels_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `notificationchannel/delta.go`. Both insert triggers are in
+`DeltaTables.Insert`; only `name` is updated, which leaves the update triggers
+nothing to do. The unique index on `dest` replaces the table lock.
 
 ### notification_policy_cycles
 
@@ -908,7 +913,11 @@ Unique:
 - user_contact_methods_type_value_key (index): `(type, value)`
 - user_contact_methods_type_value_key: `(type, value)`
 
-**Go:** not ported yet.
+**Go:** ported, `user/contactmethod/delta.go`. The insert triggers and the limit are
+in `DeltaTables.Insert`, and verifying on enable is in `Row.setDisabled`.
+`trg_10_compat_set_type_val_on_update` needs no code, since nothing updates
+`dest`, and `trg_10_cm_set_dest_on_update` is an AFTER trigger without effect.
+The unique keys are hashed, which keeps phone numbers out of errors (F20).
 
 ### user_favorites
 
@@ -962,7 +971,8 @@ Unique:
 - user_notification_rules_contact_method_id_delay_minutes_key: `(contact_method_id, delay_minutes)`
 - user_notification_rules_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `user/notificationrule/delta.go`. Both triggers are in
+`DeltaTables.Insert`; rules are never updated.
 
 ### user_overrides
 

@@ -25,6 +25,10 @@ type ContactMethod struct {
 	StatusUpdates bool
 
 	lastTestVerifyAt sql.NullTime
+
+	// validDest is the key of the destination that Normalize validated. On
+	// the Delta backend, Create relies on it in a transaction.
+	validDest string
 }
 
 // LastTestVerifyAt will return the timestamp of the last test/verify request.
@@ -33,6 +37,23 @@ func (c ContactMethod) LastTestVerifyAt() time.Time { return c.lastTestVerifyAt.
 // Normalize will validate and 'normalize' the ContactMethod -- such as making email lower-case
 // and setting carrier to "" (for non-phone types).
 func (c ContactMethod) Normalize(ctx context.Context, reg *nfydest.Registry) (*ContactMethod, error) {
+	n, err := c.normalizeFields(ctx, reg)
+	if err != nil {
+		return nil, err
+	}
+
+	err = reg.ValidateDest(ctx, n.Dest)
+	if err != nil {
+		return nil, err
+	}
+	n.validDest = destKey(n.Dest)
+
+	return n, nil
+}
+
+// normalizeFields does what Normalize does, except validating the
+// destination, which can call the provider's API.
+func (c ContactMethod) normalizeFields(ctx context.Context, reg *nfydest.Registry) (*ContactMethod, error) {
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
 	}
@@ -54,11 +75,6 @@ func (c ContactMethod) Normalize(ctx context.Context, reg *nfydest.Registry) (*C
 		c.StatusUpdates = false
 	} else if info.StatusUpdatesRequired {
 		c.StatusUpdates = true
-	}
-
-	err = reg.ValidateDest(ctx, c.Dest)
-	if err != nil {
-		return nil, err
 	}
 
 	return &c, nil

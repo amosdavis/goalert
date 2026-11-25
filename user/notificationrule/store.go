@@ -15,6 +15,8 @@ import (
 
 // Store allows the lookup and management of NotificationRules.
 type Store struct {
+	delta *deltaRules // set when the store runs on the Delta backend
+
 	db *sql.DB
 
 	insert           *sql.Stmt
@@ -48,7 +50,6 @@ func (s *Store) Insert(ctx context.Context, n *NotificationRule) (*NotificationR
 // CreateTx implements the NotificationRuleStore interface by inserting the new NotificationRule into the database.
 // A new ID is always created.
 func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, n *NotificationRule) (*NotificationRule, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.System, permission.Admin, permission.MatchUser(n.UserID))
 	if err != nil {
 		return nil, err
@@ -61,7 +62,15 @@ func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, n *NotificationRule) (*
 
 	n.ID = uuid.New().String()
 
-	_, err = wrapTx(ctx, stx, s.insert).ExecContext(ctx, n.ID, n.UserID, n.DelayMinutes, n.ContactMethodID)
+	if s.delta != nil {
+		err = s.delta.insert(ctx, tx, n)
+		if err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+
+	_, err = wrapTx(ctx, sqltxn.Unwrap(tx), s.insert).ExecContext(ctx, n.ID, n.UserID, n.DelayMinutes, n.ContactMethodID)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +89,6 @@ func wrapTx(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
 
 // DeleteTx will delete notification rules with the provided ids.
 func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, ids ...string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -94,6 +102,10 @@ func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, ids ...string) error {
 	if err != nil {
 		return err
 	}
+	if s.delta != nil {
+		return s.delta.delete(ctx, tx, ids)
+	}
+	stx := sqltxn.Unwrap(tx)
 
 	if permission.Admin(ctx) {
 		_, err = wrapTx(ctx, stx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
@@ -136,6 +148,10 @@ func (s *Store) FindAll(ctx context.Context, userID string) ([]NotificationRule,
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findByUsers(ctx, userID)
+	}
+
 	rows, err := s.findAll.QueryContext(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -166,6 +182,10 @@ func (s *Store) FindAllByUserIDs(ctx context.Context, userIDs []string) ([]Notif
 	err = permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.delta != nil {
+		return s.delta.findByUsers(ctx, userIDs...)
 	}
 
 	rows, err := s.findAllByUserIDs.QueryContext(ctx, sqlutil.UUIDArray(userIDs))

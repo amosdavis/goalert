@@ -434,3 +434,10 @@ holder while it is sending.
   checks, deletion, the on-call overview). Porting deletion found that the
   Postgres code could skip the participant on call when a deleted user was in a
   rotation twice; fixed (F5).
+- 2026-11-25: Phase 3: limits, contact methods, notification rules and
+  notification channels. Wiring still to do: the create command calls
+  `limit.DeltaTables.InsertDefaults`, and the GraphQL mutations that map
+  destinations or create contact methods in a transaction
+  (`SetScheduleOnCallNotificationRules`, escalation policy actions, the
+  integration key config, `createUserContactMethod`) call `ResolveDests` or
+  `Normalize` before it. Until then those return an error on the Delta backend.
