@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
@@ -35,9 +36,30 @@ import (
 type Store struct {
 	c      *container.Client
 	prefix string
+	clock  objstore.ClockWatch
 }
 
-var _ objstore.Store = (*Store)(nil)
+var (
+	_ objstore.Store       = (*Store)(nil)
+	_ objstore.ServerClock = (*Store)(nil)
+)
+
+// ClockOffset tells how Azure's clock compares with this pod's, from the Date
+// of its replies (F13).
+func (s *Store) ClockOffset() (min, max time.Duration, ok bool) { return s.clock.ClockOffset() }
+
+// observe records what a reply, or the error it was, says of Azure's clock.
+func (s *Store) observe(start time.Time, date *time.Time, err error) {
+	end := time.Now()
+	if date != nil {
+		s.clock.Observe(start, end, *date)
+		return
+	}
+	var rerr *azcore.ResponseError
+	if errors.As(err, &rerr) && rerr.RawResponse != nil {
+		s.clock.ObserveHeader(start, end, rerr.RawResponse.Header)
+	}
+}
 
 // New returns a Store for the blobs under prefix in a container. An empty
 // prefix uses the whole container; otherwise it must end with "/".
@@ -52,7 +74,9 @@ func (s *Store) Get(ctx context.Context, name string) ([]byte, error) {
 	if err := objstore.CheckName(name); err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	resp, err := s.c.NewBlobClient(s.prefix+name).DownloadStream(ctx, nil)
+	s.observe(start, resp.Date, err)
 	if bloberror.HasCode(err, bloberror.BlobNotFound) {
 		return nil, fmt.Errorf("%w: %s", objstore.ErrNotFound, name)
 	}
@@ -129,10 +153,12 @@ func (s *Store) upload(ctx context.Context, name string, data []byte, cond *blob
 			return false
 		},
 	})
-	_, err := s.c.NewBlockBlobClient(s.prefix+name).Upload(ctx,
+	start := time.Now()
+	resp, err := s.c.NewBlockBlobClient(s.prefix+name).Upload(ctx,
 		streaming.NopCloser(bytes.NewReader(data)),
 		&blockblob.UploadOptions{AccessConditions: cond},
 	)
+	s.observe(start, resp.Date, err)
 	err = writeErr(name, err)
 	if err != nil && unsure.Load() && !errors.Is(err, objstore.ErrExists) && !errors.Is(err, objstore.ErrUnknown) {
 		return objstore.Unknown(fmt.Errorf("azblobstore: write %s: an earlier attempt may have been applied, then: %v", name, err))
@@ -163,7 +189,9 @@ func (s *Store) List(ctx context.Context, prefix, startAfter string) ([]string, 
 	})
 	var names []string
 	for pager.More() {
+		start := time.Now()
 		page, err := pager.NextPage(ctx)
+		s.observe(start, page.Date, err)
 		if err != nil {
 			return nil, opErr("list", prefix, err)
 		}
@@ -199,7 +227,9 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	if err := objstore.CheckName(name); err != nil {
 		return err
 	}
-	_, err := s.c.NewBlobClient(s.prefix+name).Delete(ctx, nil)
+	start := time.Now()
+	resp, err := s.c.NewBlobClient(s.prefix+name).Delete(ctx, nil)
+	s.observe(start, resp.Date, err)
 	if err == nil || bloberror.HasCode(err, bloberror.BlobNotFound) {
 		return nil
 	}

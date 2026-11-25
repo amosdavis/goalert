@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -39,6 +40,17 @@ func TestConformance(t *testing.T) {
 		s, err := azblobstore.New(c, "conformance/"+uuid.NewString()+"/")
 		require.NoError(t, err)
 		return s
+	})
+
+	t.Run("ServerClock", func(t *testing.T) {
+		// Azure dates its replies, and pods compare their clocks with it (F13).
+		s, err := azblobstore.New(c, "clock/"+uuid.NewString()+"/")
+		require.NoError(t, err)
+		require.NoError(t, s.PutIfAbsent(ctx, "x", []byte("1")))
+		_, _, ok := s.ClockOffset()
+		require.True(t, ok, "the reply had a date")
+		require.NoError(t, objstore.ClockError(s, time.Minute), "this machine's clock and the service's agree")
+		require.NoError(t, s.Delete(ctx, "x"))
 	})
 
 	t.Run("CheckSettings", func(t *testing.T) {

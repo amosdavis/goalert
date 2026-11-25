@@ -258,6 +258,13 @@ type DeltaOptions struct {
 	// (F38). The default is 16.
 	LoadConcurrency int
 
+	// MaxClockSkew is how far this pod's clock may be from the object store's,
+	// as far as the store can tell (objstore.ServerClock), before Health says so
+	// (F13). Escalations and claims of messages are timed by the pods' clocks,
+	// and a claim lasts 30 seconds. The default is 15 seconds; a negative value
+	// turns the check off.
+	MaxClockSkew time.Duration
+
 	// Logf reports background errors. The default is log.Printf.
 	Logf func(format string, args ...any)
 }
@@ -316,6 +323,9 @@ func (o DeltaOptions) withDefaults() DeltaOptions {
 	}
 	if o.LoadConcurrency <= 0 {
 		o.LoadConcurrency = 16
+	}
+	if o.MaxClockSkew == 0 {
+		o.MaxClockSkew = 15 * time.Second
 	}
 	return o
 }
@@ -671,6 +681,9 @@ func (db *DeltaDB) Health() error {
 	if err := db.writeErr(); err != nil {
 		return err
 	}
+	if err := db.ClockError(); err != nil {
+		return err
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.denied != nil {
@@ -680,6 +693,12 @@ func (db *DeltaDB) Health() error {
 		return fmt.Errorf("filestore: the log could not be read since %s: %w", db.lastRead.Format(time.RFC3339), db.readErr)
 	}
 	return nil
+}
+
+// ClockError returns an error if this pod's clock is further from the object
+// store's than MaxClockSkew allows, as far as the store can tell (F13).
+func (db *DeltaDB) ClockError() error {
+	return objstore.ClockError(db.store, db.opts.MaxClockSkew)
 }
 
 // noteRead records whether the log could be read to its end.

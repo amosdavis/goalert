@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/target/goalert/filestore"
 )
@@ -21,6 +23,11 @@ type Step struct {
 type Runner struct {
 	db    *filestore.DeltaDB
 	lease *Lease
+
+	mu sync.Mutex
+	// offSince is when this pod found its clock off and gave the lease up, by
+	// the table's time (F13).
+	offSince time.Time
 }
 
 // NewRunner returns a runner for a pod's share in the lease.
@@ -36,8 +43,13 @@ func NewRunner(db *filestore.DeltaDB, lease *Lease) *Runner {
 // lease or the table can't be written, there are none, and err says so.
 func (r *Runner) Run(ctx context.Context, steps ...Step) (errs []error, err error) {
 	// A pod that does not run the engine asks its own copy only.
-	if st := r.lease.Status(r.db.View(), r.db.Now()); !st.Mine && !st.Free {
+	now := r.db.Now()
+	st := r.lease.Status(r.db.View(), now)
+	if !st.Mine && !st.Free {
 		return nil, ErrNotHolder
+	}
+	if err := r.yield(ctx, st, now); err != nil {
+		return nil, err
 	}
 	fns := []func(tx *filestore.Tx) error{r.lease.Renew}
 	for _, s := range steps {
@@ -54,6 +66,33 @@ func (r *Runner) Run(ctx context.Context, steps ...Step) (errs []error, err erro
 		}
 	}
 	return errs, nil
+}
+
+// yield gives the lease up while this pod's clock is off from the storage's, so
+// that a pod whose clock is right runs the engine: escalations would be timed,
+// and claims of messages would expire, by the wrong clock (F13). If no other
+// pod takes it for two of its terms, this one runs the engine all the same,
+// since paging by a clock that is off is better than not paging.
+func (r *Runner) yield(ctx context.Context, st LeaseStatus, now time.Time) error {
+	clockErr := r.db.ClockError()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if clockErr == nil {
+		r.offSince = time.Time{}
+		return nil
+	}
+	if r.offSince.IsZero() {
+		if st.Mine {
+			if _, err := r.db.Update(ctx, r.lease.Release); err != nil {
+				return fmt.Errorf("give the lease up: %w", err)
+			}
+		}
+		r.offSince = now
+	}
+	if now.Sub(r.offSince) < 2*r.lease.ttl {
+		return fmt.Errorf("%w: this pod leaves the engine to one whose clock is right: %w", ErrNotHolder, clockErr)
+	}
+	return nil
 }
 
 // Do runs one step, if this pod has the lease. It does not renew it.
