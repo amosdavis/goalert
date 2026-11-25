@@ -28,7 +28,8 @@ type Config struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	delta *deltaStore // set on the Delta backend, where nothing else but reg is
 
 	log     *alertlog.Store
 	ncStore *notificationchannel.Store
@@ -153,6 +154,10 @@ func (s *Store) FindManyPolicies(ctx context.Context, ids []string) ([]Policy, e
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findManyPolicies(ctx, ids)
+	}
+
 	rows, err := s.findManyPolicies.QueryContext(ctx, sqlutil.UUIDArray(ids), permission.UserNullUUID(ctx))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -177,7 +182,6 @@ func (s *Store) FindManyPolicies(ctx context.Context, ids []string) ([]Policy, e
 
 // CreatePolicyTx creates a new escalation policy in the database.
 func (s *Store) CreatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) (*Policy, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
@@ -188,12 +192,20 @@ func (s *Store) CreatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) (*Poli
 		return nil, err
 	}
 
+	n.ID = uuid.New().String()
+
+	if s.delta != nil {
+		if err := s.delta.createPolicy(ctx, tx, n); err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.createPolicy
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
 	}
-
-	n.ID = uuid.New().String()
 
 	_, err = stmt.ExecContext(ctx, n.ID, n.Name, n.Description, n.Repeat)
 	if err != nil {
@@ -204,7 +216,6 @@ func (s *Store) CreatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) (*Poli
 
 // UpdatePolicyTx will update a single escalation policy.
 func (s *Store) UpdatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) error {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("EscalationPolicyID", p.ID)
 	if err != nil {
 		return err
@@ -219,6 +230,11 @@ func (s *Store) UpdatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) error 
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.updatePolicy(ctx, tx, n)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.updatePolicy
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -236,7 +252,6 @@ func (s *Store) UpdatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) error 
 
 // DeleteManyPoliciesTx deletes multiple policies in a single transaction.
 func (s *Store) DeleteManyPoliciesTx(ctx context.Context, tx txn.Tx, ids []string) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -246,6 +261,11 @@ func (s *Store) DeleteManyPoliciesTx(ctx context.Context, tx txn.Tx, ids []strin
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.deletePolicies(ctx, tx, ids)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.deletePolicy
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -256,7 +276,6 @@ func (s *Store) DeleteManyPoliciesTx(ctx context.Context, tx txn.Tx, ids []strin
 
 // FindOnePolicyTx returns a policy by ID.
 func (s *Store) FindOnePolicyTx(ctx context.Context, tx txn.Tx, id string) (*Policy, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("EscalationPolicyID", id)
 	if err != nil {
 		return nil, err
@@ -267,6 +286,11 @@ func (s *Store) FindOnePolicyTx(ctx context.Context, tx txn.Tx, id string) (*Pol
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOnePolicy(ctx, tx, id, false)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findOnePolicy
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -280,7 +304,6 @@ func (s *Store) FindOnePolicyTx(ctx context.Context, tx txn.Tx, id string) (*Pol
 
 // FindOnePolicyForUpdateTx returns a single policy locked to the tx for updating.
 func (s *Store) FindOnePolicyForUpdateTx(ctx context.Context, tx txn.Tx, id string) (*Policy, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("EscalationPolicyID", id)
 	if err != nil {
 		return nil, err
@@ -291,6 +314,11 @@ func (s *Store) FindOnePolicyForUpdateTx(ctx context.Context, tx txn.Tx, id stri
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOnePolicy(ctx, tx, id, true)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findOnePolicyForUpdate
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -312,6 +340,10 @@ func (s *Store) FindAllPoliciesBySchedule(ctx context.Context, scheduleID string
 	if err != nil {
 		return nil, err
 	}
+	if s.delta != nil {
+		return s.delta.findAllPoliciesBySchedule(ctx, scheduleID)
+	}
+
 	rows, err := s.findAllPoliciesBySchedule.QueryContext(ctx, scheduleID)
 	if err != nil {
 		return nil, err
@@ -333,7 +365,6 @@ func (s *Store) FindAllPoliciesBySchedule(ctx context.Context, scheduleID string
 
 // FindOneStepForUpdateTx returns a step locked within the tx for update.
 func (s *Store) FindOneStepForUpdateTx(ctx context.Context, tx txn.Tx, id string) (*Step, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -344,6 +375,11 @@ func (s *Store) FindOneStepForUpdateTx(ctx context.Context, tx txn.Tx, id string
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findOneStep(ctx, tx, id)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findOneStepForUpdate
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -365,7 +401,6 @@ func (s *Store) FindAllSteps(ctx context.Context, policyID string) ([]Step, erro
 
 // FindAllOnCallStepsForUserTx returns all steps a user is currently on-call for.
 func (s *Store) FindAllOnCallStepsForUserTx(ctx context.Context, tx txn.Tx, userID string) ([]Step, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.All)
 	if err != nil {
 		return nil, err
@@ -375,6 +410,11 @@ func (s *Store) FindAllOnCallStepsForUserTx(ctx context.Context, tx txn.Tx, user
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllOnCallSteps(ctx, tx, userID)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findAllOnCallSteps
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -400,7 +440,6 @@ func (s *Store) FindAllOnCallStepsForUserTx(ctx context.Context, tx txn.Tx, user
 
 // FindAllStepsTx returns all steps for a policy.
 func (s *Store) FindAllStepsTx(ctx context.Context, tx txn.Tx, policyID string) ([]Step, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := validate.UUID("EscalationPolicyID", policyID)
 	if err != nil {
 		return nil, err
@@ -411,6 +450,11 @@ func (s *Store) FindAllStepsTx(ctx context.Context, tx txn.Tx, policyID string) 
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllSteps(ctx, tx, policyID)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.findAllSteps
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -436,7 +480,6 @@ func (s *Store) FindAllStepsTx(ctx context.Context, tx txn.Tx, policyID string) 
 
 // CreateStepTx adds a step to an escalation policy.
 func (s *Store) CreateStepTx(ctx context.Context, tx txn.Tx, st *Step) (*Step, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return nil, err
@@ -447,12 +490,20 @@ func (s *Store) CreateStepTx(ctx context.Context, tx txn.Tx, st *Step) (*Step, e
 		return nil, err
 	}
 
+	n.ID = uuid.New()
+
+	if s.delta != nil {
+		if err := s.delta.createStep(ctx, tx, n); err != nil {
+			return nil, err
+		}
+		return n, nil
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.createStep
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
 	}
-
-	n.ID = uuid.New()
 
 	err = stmt.QueryRowContext(ctx, n.ID, n.PolicyID, n.DelayMinutes, n.MultiAck).Scan(&n.StepNumber)
 	if err != nil {
@@ -465,12 +516,16 @@ func (s *Store) CreateStepTx(ctx context.Context, tx txn.Tx, st *Step) (*Step, e
 
 // UpdateStepNumberTx updates the step number for a step.
 func (s *Store) UpdateStepNumberTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, stepNumber int) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.updateStepNumber(ctx, tx, stepID, stepNumber)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	numStmt := s.updateStepNumber
 	if stx != nil {
 		numStmt = stx.StmtContext(ctx, numStmt)
@@ -486,7 +541,6 @@ func (s *Store) UpdateStepNumberTx(ctx context.Context, tx txn.Tx, stepID uuid.U
 
 // UpdateStepDelayTx updates the delay for a step.
 func (s *Store) UpdateStepDelayTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, stepDelay int) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
@@ -497,6 +551,11 @@ func (s *Store) UpdateStepDelayTx(ctx context.Context, tx txn.Tx, stepID uuid.UU
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.updateStepDelay(ctx, tx, stepID, stepDelay)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.updateStepDelay
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -512,12 +571,16 @@ func (s *Store) UpdateStepDelayTx(ctx context.Context, tx txn.Tx, stepID uuid.UU
 
 // UpdateStepMultiAckTx updates the multi-ack setting for a step.
 func (s *Store) UpdateStepMultiAckTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, multiAck bool) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return err
 	}
 
+	if s.delta != nil {
+		return s.delta.updateStepMultiAck(ctx, tx, stepID, multiAck)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.updateStepMultiAck
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)
@@ -533,11 +596,15 @@ func (s *Store) UpdateStepMultiAckTx(ctx context.Context, tx txn.Tx, stepID uuid
 
 // DeleteStepTx deletes a step from an escalation policy.
 func (s *Store) DeleteStepTx(ctx context.Context, tx txn.Tx, id uuid.UUID) (string, error) {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.Admin, permission.User)
 	if err != nil {
 		return "", err
 	}
+	if s.delta != nil {
+		return s.delta.deleteStep(ctx, tx, id)
+	}
+
+	stx := sqltxn.Unwrap(tx)
 	stmt := s.deleteStep
 	if stx != nil {
 		stmt = stx.StmtContext(ctx, stmt)

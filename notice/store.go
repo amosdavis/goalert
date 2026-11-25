@@ -15,6 +15,8 @@ import (
 
 // Store allows identifying notices for various targets.
 type Store struct {
+	delta *deltaNotices // set on the Delta backend, where nothing else is
+
 	db                        *sql.DB
 	findServicesByPolicyID    *sql.Stmt
 	findPolicyDurationMinutes *sql.Stmt
@@ -51,23 +53,38 @@ func (s *Store) FindAllPolicyNotices(ctx context.Context, policyID string) ([]No
 		return nil, err
 	}
 
+	if s.delta != nil {
+		numServices, mins, err := s.delta.policyStats(ctx, policyID)
+		if err != nil {
+			return nil, err
+		}
+		return policyNotices(ctx, numServices, mins), nil
+	}
+
 	var numServices int
 	err = s.findServicesByPolicyID.QueryRowContext(ctx, policyID).Scan(&numServices)
 	if err != nil {
 		return nil, err
 	}
 
+	var mins int
+	err = s.findPolicyDurationMinutes.QueryRowContext(ctx, policyID).Scan(&mins)
+	if err != nil {
+		return nil, err
+	}
+
+	return policyNotices(ctx, numServices, mins), nil
+}
+
+// policyNotices returns the notices for a policy that numServices services use
+// and that goes on for a number of minutes.
+func policyNotices(ctx context.Context, numServices, mins int) []Notice {
 	var notices []Notice
 	if numServices == 0 {
 		notices = append(notices, Notice{
 			Message: "Not assigned to a service",
 			Details: "To receive alerts for this configuration, assign this escalation policy to its relevant service.",
 		})
-	}
-	var mins int
-	err = s.findPolicyDurationMinutes.QueryRowContext(ctx, policyID).Scan(&mins)
-	if err != nil {
-		return nil, err
 	}
 
 	cfg := config.FromContext(ctx)
@@ -80,7 +97,7 @@ func (s *Store) FindAllPolicyNotices(ctx context.Context, policyID string) ([]No
 		})
 	}
 
-	return notices, nil
+	return notices
 }
 
 // FindAllServiceNotices returns any relevant notices for the given service. Currently returns
@@ -96,15 +113,27 @@ func (s *Store) FindAllServiceNotices(ctx context.Context, serviceID string) ([]
 		return nil, err
 	}
 
+	if s.delta != nil {
+		count, limit, err := s.delta.unackedAlerts(ctx, serviceID)
+		if err != nil {
+			return nil, err
+		}
+		return serviceNotices(float32(count), float32(limit)), nil
+	}
+
 	res, err := gadb.New(s.db).NoticeUnackedAlertsByService(ctx, uuid.MustParse(serviceID))
 	if err != nil {
 		return nil, err
 	}
 
-	count := float32(res.Count)
-	limit := float32(res.Max)
+	return serviceNotices(float32(res.Count), float32(res.Max)), nil
+}
+
+// serviceNotices returns the notices for a service with count unacknowledged
+// alerts.
+func serviceNotices(count, limit float32) []Notice {
 	if limit < 0 { // limit is disabled
-		return nil, nil
+		return nil
 	}
 	details := fmt.Sprintf("New alerts will be rejected while at or above the limit (%v), acknowledge or close alerts to resolve.", count)
 
@@ -116,7 +145,7 @@ func (s *Store) FindAllServiceNotices(ctx context.Context, serviceID string) ([]
 				Message: "Unacknowledged alert limit reached",
 				Details: details,
 			},
-		}, nil
+		}
 	}
 
 	// nearing system limit notice
@@ -127,8 +156,8 @@ func (s *Store) FindAllServiceNotices(ctx context.Context, serviceID string) ([]
 				Message: "Near unacknowledged alert limit",
 				Details: details,
 			},
-		}, nil
+		}
 	}
 
-	return nil, nil
+	return nil
 }

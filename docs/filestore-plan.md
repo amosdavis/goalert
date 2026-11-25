@@ -453,3 +453,8 @@ holder while it is sending.
   for phase 4: a commit's time can equal the previous one's when another pod's
   clock was ahead (F13), so ending a shift at its exact start would break
   `schedule_on_call_users_check` until the clock passes it.
+- 2026-11-25: Phase 3: escalation policies, their state, and notices. An alert
+  whose service moves from a policy without steps to one with steps starts to
+  escalate, which it never did on Postgres (F2). Wiring still to do: the GraphQL
+  mutations that add escalation policy actions call `ResolveDests` before their
+  transaction.

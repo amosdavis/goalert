@@ -17,8 +17,37 @@ import (
 	"github.com/target/goalert/validation/validate"
 )
 
+// actionTarget is what an action notifies; exactly one is set.
+type actionTarget struct {
+	userID, scheduleID, rotationID, channelID uuid.NullUUID
+}
+
+// parseTarget returns what dest notifies. channelID returns the id of the
+// notification channel with that destination.
+func parseTarget(dest gadb.DestV1, channelID func() (uuid.UUID, error)) (t actionTarget, err error) {
+	var id uuid.UUID
+	target := &t.channelID
+	switch dest.Type {
+	case user.DestTypeUser:
+		target = &t.userID
+		id, err = validate.ParseUUID("ID", dest.Arg(user.FieldUserID))
+	case schedule.DestTypeSchedule:
+		target = &t.scheduleID
+		id, err = validate.ParseUUID("ID", dest.Arg(schedule.FieldScheduleID))
+	case rotation.DestTypeRotation:
+		target = &t.rotationID
+		id, err = validate.ParseUUID("ID", dest.Arg(rotation.FieldRotationID))
+	default:
+		id, err = channelID()
+	}
+	if err != nil {
+		return actionTarget{}, err
+	}
+	*target = uuid.NullUUID{UUID: id, Valid: true}
+	return t, nil
+}
+
 func (s *Store) AddStepActionTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, dest gadb.DestV1) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
@@ -32,95 +61,61 @@ func (s *Store) AddStepActionTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID
 		return validation.NewGenericError("not a valid escalation policy destination")
 	}
 
-	var userID, scheduleID, rotationID, channelID uuid.NullUUID
-	switch dest.Type {
-	case user.DestTypeUser:
-		id, err := validate.ParseUUID("ID", dest.Arg(user.FieldUserID))
-		if err != nil {
-			return err
-		}
-		userID = uuid.NullUUID{UUID: id, Valid: true}
-	case schedule.DestTypeSchedule:
-		id, err := validate.ParseUUID("ID", dest.Arg(schedule.FieldScheduleID))
-		if err != nil {
-			return err
-		}
-		scheduleID = uuid.NullUUID{UUID: id, Valid: true}
-	case rotation.DestTypeRotation:
-		id, err := validate.ParseUUID("ID", dest.Arg(rotation.FieldRotationID))
-		if err != nil {
-			return err
-		}
-		rotationID = uuid.NullUUID{UUID: id, Valid: true}
-	default:
-		id, err := s.ncStore.MapDestToID(ctx, stx, dest)
-		if err != nil {
-			return err
-		}
-		channelID = uuid.NullUUID{UUID: id, Valid: true}
+	if s.delta != nil {
+		return s.delta.addAction(ctx, tx, stepID, dest)
+	}
+
+	stx := sqltxn.Unwrap(tx)
+	tgt, err := parseTarget(dest, func() (uuid.UUID, error) { return s.ncStore.MapDestToID(ctx, stx, dest) })
+	if err != nil {
+		return err
 	}
 
 	return gadb.New(stx).EPStepActionsAddAction(ctx, gadb.EPStepActionsAddActionParams{
 		EscalationPolicyStepID: stepID,
-		UserID:                 userID,
-		ScheduleID:             scheduleID,
-		RotationID:             rotationID,
-		ChannelID:              channelID,
+		UserID:                 tgt.userID,
+		ScheduleID:             tgt.scheduleID,
+		RotationID:             tgt.rotationID,
+		ChannelID:              tgt.channelID,
 	})
 }
 
 func (s *Store) DeleteStepActionTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID, dest gadb.DestV1) error {
-	stx := sqltxn.Unwrap(tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return err
 	}
 
-	var userID, scheduleID, rotationID, channelID uuid.NullUUID
-	switch dest.Type {
-	case user.DestTypeUser:
-		id, err := validate.ParseUUID("ID", dest.Arg(user.FieldUserID))
-		if err != nil {
-			return err
-		}
-		userID = uuid.NullUUID{UUID: id, Valid: true}
-	case schedule.DestTypeSchedule:
-		id, err := validate.ParseUUID("ID", dest.Arg(schedule.FieldScheduleID))
-		if err != nil {
-			return err
-		}
-		scheduleID = uuid.NullUUID{UUID: id, Valid: true}
-	case rotation.DestTypeRotation:
-		id, err := validate.ParseUUID("ID", dest.Arg(rotation.FieldRotationID))
-		if err != nil {
-			return err
-		}
-		rotationID = uuid.NullUUID{UUID: id, Valid: true}
-	default:
-		id, err := s.ncStore.LookupDestID(ctx, stx, dest)
-		if err != nil {
-			return err
-		}
-		channelID = uuid.NullUUID{UUID: id, Valid: true}
+	if s.delta != nil {
+		return s.delta.removeAction(ctx, tx, stepID, dest)
+	}
+
+	stx := sqltxn.Unwrap(tx)
+	tgt, err := parseTarget(dest, func() (uuid.UUID, error) { return s.ncStore.LookupDestID(ctx, stx, dest) })
+	if err != nil {
+		return err
 	}
 
 	return gadb.New(stx).EPStepActionsDeleteAction(ctx, gadb.EPStepActionsDeleteActionParams{
 		EscalationPolicyStepID: stepID,
-		UserID:                 userID,
-		ScheduleID:             scheduleID,
-		RotationID:             rotationID,
-		ChannelID:              channelID,
+		UserID:                 tgt.userID,
+		ScheduleID:             tgt.scheduleID,
+		RotationID:             tgt.rotationID,
+		ChannelID:              tgt.channelID,
 	})
 }
 
 func (s *Store) FindAllStepActionsTx(ctx context.Context, tx txn.Tx, stepID uuid.UUID) ([]gadb.DestV1, error) {
-	dbtx := sqltxn.DBTX(s.db, tx)
 	err := permission.LimitCheckAny(ctx, permission.User)
 	if err != nil {
 		return nil, err
 	}
 
+	if s.delta != nil {
+		return s.delta.findAllActions(ctx, tx, stepID)
+	}
 
+	dbtx := sqltxn.DBTX(s.db, tx)
 	actions, err := gadb.New(dbtx).EPStepActionsByStepId(ctx, stepID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

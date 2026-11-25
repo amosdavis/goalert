@@ -265,7 +265,8 @@ Unique:
 - escalation_policies_name_key: `(name)`
 - escalation_policies_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `escalation/delta.go`. `InsertStep` and `DeleteStep` keep
+`step_count`. The full-text search indexes become a table scan.
 
 ### escalation_policy_actions
 
@@ -297,7 +298,8 @@ Unique:
 - epa_no_duplicate_users: `(escalation_policy_step_id, user_id)`
 - escalation_policy_actions_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `escalation/delta.go`, with the four unique indexes, the check and the
+limit.
 
 ### escalation_policy_state
 
@@ -321,7 +323,12 @@ Unique:
 - escalation_policy_state_uniq_id (index): `(id)`
 - escalation_policy_state_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `escalation/deltastate.go`. The triggers are in `InsertState` and
+`UpdateState`; locking the service needs no code (F4). `svc_ep_fkey` is checked
+there too, and its ON UPDATE CASCADE is `ClearEscalationPolicyState`, which also
+starts the open alerts that have no state because the old policy had no steps.
+The index on `(next_escalation, force_escalation)` has no equivalent: the
+engine can scan `States`, which holds only open alerts.
 
 ### escalation_policy_steps
 
@@ -345,7 +352,11 @@ Unique:
 - escalation_policy_steps_escalation_policy_id_step_number_key: `(escalation_policy_id, step_number) DEFERRABLE INITIALLY DEFERRED`
 - escalation_policy_steps_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `escalation/delta.go`. The insert triggers and the limit are in
+`InsertStep` (with `startAlerts`), the delete triggers in `DeleteStep`, and the
+rule against gaps, which Postgres checks at commit, in `setStepNumber`, which
+swaps the two steps so that the numbers are right after every change. A test
+compares every valid reordering of four steps.
 
 ### gorp_migrations
 
