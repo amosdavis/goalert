@@ -53,10 +53,18 @@ version.
   and compacts (F16).
 
 **Object storage.** One interface (`Get`, `List`, `PutIfAbsent`, `Put` for
-`_last_checkpoint` only, and `Delete`) has four implementations: GCS (create
-with `ifGenerationMatch=0`), Azure Blob Storage (create with
-`If-None-Match: *`), a local directory for development, and an in-memory fake
-that injects conflicts, unclear results and throttling for tests.
+`_last_checkpoint` only, and `Delete`) has GCS (create with
+`ifGenerationMatch=0`), Azure Blob Storage (create with `If-None-Match: *`),
+local-directory, and in-memory implementations. `objstore/chunkstore` provides
+the same whole-object guarantees on size-limited document databases, including
+Cosmos DB and Firestore, with atomic manifests and immutable chunks.
+
+**Other storage.** Two ports separate the store from where it keeps its data:
+`objstore.Store` for objects and `tablelog.Log` for what decides commits. Cosmos
+DB and Firestore implement the first, through `objstore/chunkstore`, and an
+Iceberg catalog the second (`iceberglog`). All of it is optional and picked by
+URL at deployment (`storagebackend`). [storage-backends.md](storage-backends.md)
+describes them, and how to add another.
 
 A running GoAlert uses one backend for everything, never a mix (F23). Until
 Postgres is removed, both backends sit behind the same interfaces, and
@@ -466,3 +474,13 @@ holder while it is sending.
   cycles and jobs remain in Phase 4.
 - 2026-11-25: Phase 3: alerts, alert logs, feedback, metadata, metrics and
   status subscriptions. Every acknowledgment on a multi-ack step is logged.
+- 2026-11-25: Other storage, all optional and chosen at deployment
+  (storage-backends.md): Cosmos DB and Firestore through `objstore/chunkstore`,
+  and an Iceberg catalog through `iceberglog`, whose tables are Delta tables as
+  well. `storagebackend` opens them by URL. A commit uploads its files in
+  parallel and a lost race keeps them (F15, F40), and `backendtest` runs several
+  pods at once on every backend. Found and fixed: the Azure SDK's own retries
+  could turn a commit that happened into a failure (F32), as could a failed look
+  at a version that exists; a directory store could not replace a file in use on
+  Windows. Open: none has been run against its service, the emulators in CI have
+  not run yet, and no server flag selects a backend before Phase 5.

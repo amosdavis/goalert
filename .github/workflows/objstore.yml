@@ -1,15 +1,15 @@
 name: Delta backend
 
-# Tests the Delta Lake backend (docs/filestore-failure-modes.md): the
-# object-store conformance suite against every implementation, including the
-# GCS and Azure emulators (F14), the Delta log and table packages, and a
-# delta-rs read of a table GoAlert wrote (F35).
+# Tests the storage backends (docs/filestore-failure-modes.md): the conformance
+# suites against every implementation, including the GCS, Azure and Firestore
+# emulators (F14), the Delta and Iceberg logs, and delta-rs and pyiceberg reads
+# of tables GoAlert wrote (F35).
 on:
   push:
-    branches: ['filestore-backend']
-    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    branches: ['filestore-backend', 'master']
+    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
   pull_request:
-    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
 
 jobs:
   conformance:
@@ -32,16 +32,90 @@ jobs:
           docker run -d --name azurite -p 10000:10000 -e "AZURITE_ACCOUNTS=goalerttest:$key" \
             mcr.microsoft.com/azure-storage/azurite:3.37.0 azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
           echo "GOALERT_TEST_AZURE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=goalerttest;AccountKey=$key;BlobEndpoint=http://127.0.0.1:10000/goalerttest;" >> "$GITHUB_ENV"
+          docker run -d --name firestore -p 8085:8085 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli:594.0.1-emulators \
+            gcloud emulators firestore start --host-port=0.0.0.0:8085 --project=goalert-test
           for i in $(seq 1 30); do curl -sf http://localhost:4443/storage/v1/b > /dev/null && break; sleep 1; done
           for i in $(seq 1 30); do nc -z localhost 10000 && break; sleep 1; done
+          for i in $(seq 1 60); do curl -sf http://localhost:8085/ > /dev/null && break; sleep 1; done
       - name: Test
         env:
           STORAGE_EMULATOR_HOST: localhost:4443
           GOALERT_TEST_GCS_BUCKET: goalert-test
-        run: go test -race -count=1 -v ./objstore/... ./deltalog/... ./deltatable/...
+          FIRESTORE_EMULATOR_HOST: localhost:8085
+          GOALERT_TEST_FIRESTORE_PROJECT: goalert-test
+        run: go test -race -count=1 -v ./objstore/... ./deltalog/... ./deltatable/... ./tablelog/... ./iceberglog/... ./storagebackend/...
+      - name: Leave out each driver
+        # Every driver is optional, and so is its SDK (F48).
+        run: |
+          for tag in goalert_no_gcs goalert_no_azure goalert_no_cosmosdb goalert_no_firestore goalert_no_iceberg; do
+            echo "$tag" && go vet -tags "$tag" ./storagebackend/...
+          done
+          tags="goalert_no_gcs,goalert_no_azure,goalert_no_cosmosdb,goalert_no_firestore,goalert_no_iceberg"
+          go build -tags "$tags" ./storagebackend/all
+          if go list -tags "$tags" -deps ./storagebackend/all | grep -E 'cloud\.google\.com/go/(storage|firestore)|azure-sdk-for-go|aws-sdk-go|iceberg-go'; then
+            echo "a build without drivers still links an SDK"; exit 1
+          fi
+
+  cosmos:
+    name: Cosmos DB emulator
+    # The Linux emulator is a preview that does not do all the service does, so
+    # its result is information. The fake server in the conformance job is what
+    # must pass, and the service itself is tested before a release.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start the emulator
+        # With a key generated for this run, so no key is stored anywhere.
+        run: |
+          key="$(openssl rand -base64 64 | tr -d '\n')"
+          echo "::add-mask::$key"
+          printf '%s' "$key" > "$RUNNER_TEMP/cosmos.key"
+          docker run -d --name cosmos -p 8081:8081 -v "$RUNNER_TEMP/cosmos.key:/cosmos.key:ro" \
+            mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-preview --protocol https --key-file /cosmos.key
+          for i in $(seq 1 90); do curl -sk https://localhost:8081/ > /dev/null && break; sleep 1; done
+          echo "GOALERT_TEST_COSMOS_KEY=$key" >> "$GITHUB_ENV"
+      - name: Test
+        env:
+          GOALERT_TEST_COSMOS_ENDPOINT: https://localhost:8081
+          GOALERT_TEST_COSMOS_EMULATOR: '1'
+        run: go test -count=1 -v -run Live ./objstore/cosmosstore/
+
+  iceberg-rest:
+    name: Iceberg REST catalog
+    # Apache's reference catalog, which shares a directory with the test. Like
+    # the Cosmos DB emulator's, its result is information until it has proved
+    # dependable.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start the catalog
+        # The same path inside and outside of the container, since it is in the
+        # table's metadata. Both sides write there.
+        run: |
+          sudo mkdir -p /srv/warehouse && sudo chmod 1777 /srv/warehouse
+          docker run -d --name iceberg -p 8181:8181 -v /srv/warehouse:/srv/warehouse --user "$(id -u):$(id -g)" \
+            -e CATALOG_WAREHOUSE=file:///srv/warehouse -e CATALOG_URI=jdbc:sqlite:file:/tmp/iceberg.db \
+            apache/iceberg-rest-fixture:1.10.1
+          for i in $(seq 1 60); do curl -sf http://localhost:8181/v1/config > /dev/null && break; sleep 1; done
+      - name: Test
+        env:
+          GOALERT_TEST_ICEBERG_URL: iceberg+http://localhost:8181?namespace=goalert_test
+          GOALERT_TEST_ICEBERG_OBJECTS: file:///srv/warehouse
+        run: go test -count=1 -v -run Live ./storagebackend/icebergrest/
 
   interop:
-    name: delta-rs interop
+    name: delta-rs and pyiceberg interop
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -57,14 +131,27 @@ jobs:
           "$RUNNER_TEMP/delta-rs/bin/pip" install --no-deps --only-binary=:all: \
             deltalake==1.6.6 pyarrow==25.0.1 arro3-core==0.8.3 deprecated==1.3.1 wrapt==1.17.3
           "$RUNNER_TEMP/delta-rs/bin/pip" check
+      - name: Install pyiceberg
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pyiceberg"
+          "$RUNNER_TEMP/pyiceberg/bin/pip" install --no-deps --only-binary=:all: \
+            pyiceberg==0.12.0 pyarrow==25.0.1 annotated-types==0.8.0 cachetools==8.0.2 certifi==2026.11.20 \
+            charset-normalizer==3.5.3 click==8.5.1 fsspec==2026.9.0 idna==3.20 markdown-it-py==4.3.0 mdurl==0.1.2 \
+            mmh3==5.3.1 pydantic==2.14.4 pydantic_core==2.50.5 pygments==2.21.0 pyparsing==3.3.3 pyroaring==1.2.0 \
+            python-dateutil==4.0.0 requests==2.34.2 rich==15.0.0 strictyaml==1.7.3 tenacity==9.2.1 \
+            typing-inspection==0.4.5 typing_extensions==4.16.0 tzdata==2026.6 urllib3==2.8.0 zstandard==0.25.0
+          "$RUNNER_TEMP/pyiceberg/bin/pip" check
       - name: Write tables with GoAlert
-        # One written with deltatable directly, one by the store (DeltaDB).
+        # One written with deltatable directly, one by the store (DeltaDB), and
+        # one through an Iceberg catalog.
         run: |
           mkdir -p "$RUNNER_TEMP/interop"
           GOALERT_DELTA_INTEROP_DIR="$RUNNER_TEMP/interop" \
-            go test -count=1 -v -run '^TestWrite(Delta)?InteropTable$' ./deltatable/ ./filestore/
+            go test -count=1 -v -run '^TestWrite(Delta|Iceberg)?InteropTable$' ./deltatable/ ./filestore/ ./iceberglog/
       - name: Read them with delta-rs
         run: |
-          for d in deltatable filestore; do
+          for d in deltatable filestore iceberg; do
             "$RUNNER_TEMP/delta-rs/bin/python" -I deltatable/testdata/check_interop.py "$RUNNER_TEMP/interop/$d"
           done
+      - name: Read the Iceberg one with pyiceberg
+        run: '"$RUNNER_TEMP/pyiceberg/bin/python" -I iceberglog/testdata/check_interop.py "$RUNNER_TEMP/interop/iceberg"'
