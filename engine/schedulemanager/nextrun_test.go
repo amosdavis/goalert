@@ -42,10 +42,7 @@ func TestRuleFromRow(t *testing.T) {
 		WeekdayFilter: timeutil.EveryDay(),
 	}, ruleFromRow(row))
 
-	// ruleRowIsActive must remain equivalent to the extracted rule
-	tm := time.Date(2026, 10, 21, 23, 0, 0, 0, time.UTC) // Wednesday
-	assert.True(t, ruleRowIsActive(row, tm))
-	assert.Equal(t, ruleFromRow(row).IsActive(tm), ruleRowIsActive(row, tm))
+	assert.True(t, ruleFromRow(row).IsActive(time.Date(2026, 10, 21, 23, 0, 0, 0, time.UTC))) // Wednesday
 }
 
 func TestCeilTo(t *testing.T) {

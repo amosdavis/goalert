@@ -122,9 +122,11 @@ func (p *Pod) Admin() context.Context {
 	return p.As(uuid.Nil.String(), permission.RoleAdmin)
 }
 
-// As is a user's context.
+// As is the context of a user who is logged in.
 func (p *Pod) As(userID string, role permission.Role) context.Context {
-	return permission.UserContext(p.Config.Config().Context(context.Background()), userID, role)
+	return permission.UserSourceContext(p.Config.Config().Context(context.Background()), userID, role, &permission.SourceInfo{
+		Type: permission.SourceTypeAuthProvider, ID: "test",
+	})
 }
 
 // Update runs a transaction.

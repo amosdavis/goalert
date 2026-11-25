@@ -69,7 +69,7 @@ func calcAdvance(ctx context.Context, t time.Time, rot *rotation.Rotation, state
 	c := 0
 	for {
 		c++
-		if c > 10000 {
+		if c > 1000000 { // more than a century of hourly shifts
 			panic("too many rotation advances")
 		}
 

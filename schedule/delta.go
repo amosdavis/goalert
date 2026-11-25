@@ -68,6 +68,17 @@ func (t *DeltaTables) TimeZone(r filestore.Reader, scheduleID string) (string, b
 	return row.TimeZone, ok
 }
 
+// EachSchedule calls fn for every schedule in r, by id, until it returns false.
+func (t *DeltaTables) EachSchedule(r filestore.Reader, fn func(id, timeZone string) bool) {
+	t.Schedules.Ascend(r, func(row scheduleRow) bool { return fn(row.ID, row.TimeZone) })
+}
+
+// EachData calls fn for every schedule in r that has data, by id, until it
+// returns false. lastCleanup is nil if its data was never cleaned up.
+func (t *DeltaTables) EachData(r filestore.Reader, fn func(scheduleID string, lastCleanup *time.Time) bool) {
+	t.Data.Ascend(r, func(row dataRow) bool { return fn(row.ScheduleID, row.LastCleanupAt) })
+}
+
 // ScheduleData returns a schedule's data in r. A schedule without any has an
 // empty one.
 func (t *DeltaTables) ScheduleData(r filestore.Reader, scheduleID uuid.UUID) (*Data, error) {

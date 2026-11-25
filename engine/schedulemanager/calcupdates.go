@@ -7,8 +7,8 @@ import (
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/google/uuid"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/schedule"
+	"github.com/target/goalert/schedule/rule"
 	"github.com/target/goalert/util/jsonutil"
 )
 
@@ -18,12 +18,21 @@ type updateInfo struct {
 	RawScheduleData json.RawMessage
 	ScheduleData    schedule.Data
 	CurrentOnCall   mapset.Set[uuid.UUID]
-	Rules           []gadb.SchedMgrRulesRow
-	ActiveOverrides []gadb.SchedMgrOverridesRow
+	Rules           []ruleInfo
+	ActiveOverrides []overrideInfo
 
 	// MissingUsers contains user IDs referenced by temporary schedule shifts that no longer exist
 	MissingUsers mapset.Set[uuid.UUID]
 }
+
+// ruleInfo is a rule of a schedule, with the user that it puts on call now.
+type ruleInfo struct {
+	rule.Rule
+	UserID uuid.UUID
+}
+
+// overrideInfo is an override that is in effect.
+type overrideInfo struct{ AddUserID, RemoveUserID uuid.NullUUID }
 
 type updateResult struct {
 	ScheduleID           uuid.UUID
@@ -48,8 +57,8 @@ func (info updateInfo) calcLatestOnCall(now time.Time) mapset.Set[uuid.UUID] {
 	now = now.In(info.TimeZone)
 	newOnCall := mapset.NewThreadUnsafeSet[uuid.UUID]()
 	for _, r := range info.Rules {
-		if ruleRowIsActive(r, now) {
-			newOnCall.Add(r.ResolvedUserID)
+		if r.IsActive(now) {
+			newOnCall.Add(r.UserID)
 		}
 	}
 

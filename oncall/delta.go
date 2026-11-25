@@ -133,14 +133,19 @@ func (t *DeltaTables) StartScheduleOnCall(tx *filestore.Tx, scheduleID, userID s
 }
 
 // EndScheduleOnCall records that the user goes off call for the schedule now.
-// It does nothing for a user who isn't on call.
+// It does nothing for a user who isn't on call. A shift that started at this very
+// time, as one can when another pod's clock was ahead (F13), gets the shortest
+// length there is.
 func (t *DeltaTables) EndScheduleOnCall(tx *filestore.Tx, scheduleID, userID string) error {
 	row, ok := t.schedOpen.Get(tx, pairKey(scheduleID, userID))
 	if !ok {
 		return nil
 	}
-	now := tx.Now()
-	row.EndTime = &now
+	end := tx.Now()
+	if !end.After(row.StartTime) {
+		end = row.StartTime.Add(time.Microsecond)
+	}
+	row.EndTime = &end
 	return t.PutScheduleOnCall(tx, row)
 }
 

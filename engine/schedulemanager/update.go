@@ -29,10 +29,6 @@ func (db *DB) UpdateAll(ctx context.Context) error {
 	return err
 }
 
-func ruleRowIsActive(row gadb.SchedMgrRulesRow, t time.Time) bool {
-	return ruleFromRow(row).IsActive(t)
-}
-
 func (db *DB) update(ctx context.Context) error {
 	tx, err := db.lock.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -85,7 +81,7 @@ func (db *DB) update(ctx context.Context) error {
 	}
 	for _, o := range overrides {
 		info := getInfo(o.TgtScheduleID)
-		info.ActiveOverrides = append(info.ActiveOverrides, o)
+		info.ActiveOverrides = append(info.ActiveOverrides, overrideInfo{AddUserID: o.AddUserID, RemoveUserID: o.RemoveUserID})
 	}
 
 	rules, err := q.SchedMgrRules(ctx)
@@ -94,7 +90,7 @@ func (db *DB) update(ctx context.Context) error {
 	}
 	for _, r := range rules {
 		info := getInfo(r.ScheduleID)
-		info.Rules = append(info.Rules, r)
+		info.Rules = append(info.Rules, ruleInfo{Rule: ruleFromRow(r), UserID: r.ResolvedUserID})
 	}
 
 	tzRows, err := q.SchedMgrTimezones(ctx)

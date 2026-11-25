@@ -162,6 +162,44 @@ func (t *DeltaTables) ServiceID(r filestore.Reader, keyID string) (string, bool)
 	return row.ServiceID, ok
 }
 
+// DeltaSignal is a signal that has no message yet.
+type DeltaSignal struct {
+	ID                int64
+	ServiceID, DestID string
+	CreatedAt         time.Time
+}
+
+// EachUnsent calls fn for each signal in r that has no message, oldest first,
+// until it returns false.
+func (t *DeltaTables) EachUnsent(r filestore.Reader, fn func(DeltaSignal) bool) {
+	t.Unsent.Ascend(r, AllUnsent, func(row signalRow) bool {
+		return fn(DeltaSignal{ID: row.ID, ServiceID: row.ServiceID, DestID: row.DestID, CreatedAt: row.CreatedAt})
+	})
+}
+
+// SetSignalMessage records which message sends a signal.
+func (t *DeltaTables) SetSignalMessage(tx *filestore.Tx, id int64, messageID string) error {
+	row, ok := t.Signals.Get(tx, filestore.IntKey(id))
+	if !ok {
+		return nil
+	}
+	row.MessageID = &messageID
+	return t.Signals.Put(tx, row)
+}
+
+// SignalParams returns, in r, the parameters of the signal that a message
+// sends, as JSON.
+func (t *DeltaTables) SignalParams(r filestore.Reader, messageID string) ([]byte, bool) {
+	row, ok := t.SignalByMessage.Get(r, messageID)
+	return row.Params, ok
+}
+
+// DeleteSignal deletes a signal.
+func (t *DeltaTables) DeleteSignal(tx *filestore.Tx, id int64) error {
+	_, err := t.Signals.Delete(tx, filestore.IntKey(id))
+	return err
+}
+
 // DeltaLookups are the limits (config_limits) that the store enforces, -1 for
 // none, and the job that follows a new signal. They run in the store's
 // transaction, so they must do no I/O.

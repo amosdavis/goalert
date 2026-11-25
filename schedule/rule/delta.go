@@ -170,6 +170,21 @@ func (t *DeltaTables) ScheduleIDsByTarget(r filestore.Reader, targets ...assignm
 	return slices.Compact(ids)
 }
 
+// ScheduleRules returns a schedule's rules in r, in no particular order.
+func (t *DeltaTables) ScheduleRules(r filestore.Reader, scheduleID string) ([]Rule, error) {
+	var rules []Rule
+	var err error
+	t.bySchedule.Ascend(r, scheduleID, func(row ruleRow) bool {
+		var n Rule
+		if n, err = row.Rule(); err != nil {
+			return false
+		}
+		rules = append(rules, n)
+		return true
+	})
+	return rules, err
+}
+
 // DeltaLimits return the configured limits (config_limits), or -1 for none.
 // Adding a rule without them returns deltatxn.ErrNotPorted.
 type DeltaLimits struct {

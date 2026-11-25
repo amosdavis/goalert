@@ -96,6 +96,64 @@ func DeclareDeltaForeignKeys[Svc any](t *DeltaTables, services *filestore.Table[
 		func(r monitorRow) (string, bool) { return r.ServiceID, true }, filestore.Cascade, nil)
 }
 
+// DeltaMonitor is a monitor, as the engine needs it.
+type DeltaMonitor struct {
+	ID, Name, ServiceID, AdditionalDetails, Muted string
+	LastHeartbeat                                 time.Time
+}
+
+// Expired returns up to limit monitors in r that had no heartbeat for their
+// interval, and are not known to be unhealthy.
+func (t *DeltaTables) Expired(r filestore.Reader, now time.Time, limit int) []DeltaMonitor {
+	return t.changed(r, limit, func(m monitorRow) bool {
+		return State(m.LastState) != StateUnhealthy && !m.healthy(now)
+	}, StateInactive, StateHealthy)
+}
+
+// Recovered returns up to limit monitors in r that had a heartbeat within their
+// interval, and are not known to be healthy.
+func (t *DeltaTables) Recovered(r filestore.Reader, now time.Time, limit int) []DeltaMonitor {
+	return t.changed(r, limit, func(m monitorRow) bool {
+		return State(m.LastState) != StateHealthy && m.healthy(now)
+	}, StateInactive, StateUnhealthy)
+}
+
+// healthy reports whether a monitor that ever had a heartbeat has had one
+// within its interval.
+func (m monitorRow) healthy(now time.Time) bool {
+	return now.Sub(*m.LastHeartbeat) < time.Duration(m.HeartbeatInterval)*time.Microsecond
+}
+
+func (t *DeltaTables) changed(r filestore.Reader, limit int, ok func(m monitorRow) bool, states ...State) []DeltaMonitor {
+	var out []DeltaMonitor
+	for _, s := range states {
+		t.ByState.Ascend(r, string(s), func(m monitorRow) bool {
+			if len(out) >= limit {
+				return false
+			}
+			if ok(m) {
+				mon := m.monitor()
+				out = append(out, DeltaMonitor{
+					ID: m.ID, Name: m.Name, ServiceID: m.ServiceID,
+					AdditionalDetails: mon.AdditionalDetails, Muted: mon.Muted, LastHeartbeat: *m.LastHeartbeat,
+				})
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// SetState records what the engine found a monitor to be.
+func (t *DeltaTables) SetState(tx *filestore.Tx, id string, s State) error {
+	m, ok := t.Monitors.Get(tx, id)
+	if !ok {
+		return nil
+	}
+	m.LastState = string(s)
+	return t.Monitors.Put(tx, m)
+}
+
 // NewDeltaStore returns a heartbeat store on the Delta backend.
 // maxPerService is the heartbeat_monitors_per_service limit, or -1 for none.
 func NewDeltaStore(db txn.DB, tables *DeltaTables, maxPerService func(r filestore.Reader) int) *Store {

@@ -8,7 +8,6 @@ import (
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/util/timeutil"
 )
@@ -28,8 +27,8 @@ func TestUpdateInfo_calcUpdates_NotifyOnChange(t *testing.T) {
 		RawScheduleData: data,
 		ScheduleData:    sData,
 		CurrentOnCall:   mapset.NewThreadUnsafeSet(uuid.New()), // no rules, so no longer on-call
-		Rules:           []gadb.SchedMgrRulesRow{},
-		ActiveOverrides: []gadb.SchedMgrOverridesRow{},
+		Rules:           []ruleInfo{},
+		ActiveOverrides: []overrideInfo{},
 	}
 
 	result, err := info.calcUpdates(time.Now())
@@ -59,8 +58,8 @@ func TestUpdateInfo_calcUpdates_NotifyAtTime(t *testing.T) {
 		RawScheduleData: data,
 		ScheduleData:    sData,
 		CurrentOnCall:   mapset.NewThreadUnsafeSet[uuid.UUID](),
-		Rules:           []gadb.SchedMgrRulesRow{},
-		ActiveOverrides: []gadb.SchedMgrOverridesRow{},
+		Rules:           []ruleInfo{},
+		ActiveOverrides: []overrideInfo{},
 	}
 
 	result, err := info.calcUpdates(nextRun.Add(-1 * time.Hour))

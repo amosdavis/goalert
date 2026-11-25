@@ -87,6 +87,24 @@ func (t *DeltaTables) PolicyServices(r filestore.Reader, policyID string) []stri
 	return ids
 }
 
+// EndMaintenance ends the maintenance of the services whose time is up.
+func (t *DeltaTables) EndMaintenance(tx *filestore.Tx) error {
+	var ended []serviceRow
+	t.Services.Ascend(tx, func(row serviceRow) bool {
+		if row.MaintenanceExpiresAt != nil && !row.MaintenanceExpiresAt.After(tx.Now()) {
+			ended = append(ended, row)
+		}
+		return true
+	})
+	for _, row := range ended {
+		row.MaintenanceExpiresAt = nil
+		if err := t.Services.Put(tx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EachName calls fn for every service in r, by id, until it returns false.
 func (t *DeltaTables) EachName(r filestore.Reader, fn func(id, name string) bool) {
 	t.Services.Ascend(r, func(row serviceRow) bool { return fn(row.ID, row.Name) })
