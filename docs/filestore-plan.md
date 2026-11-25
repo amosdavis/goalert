@@ -458,3 +458,11 @@ holder while it is sending.
   escalate, which it never did on Postgres (F2). Wiring still to do: the GraphQL
   mutations that add escalation policy actions call `ResolveDests` before their
   transaction.
+- 2026-11-25: Phase 3: auth links, basic auth, sessions, API keys and calendar
+  subscriptions. GraphQL transactions no longer feed a result from one attempt
+  into the next, and `SET NULL` handles repeated references to a deleted row.
+- 2026-11-25: Phase 3: outgoing messages and their status history, verification
+  codes, Slack's table and Twilio SMS callbacks. The engine's notification
+  cycles and jobs remain in Phase 4.
+- 2026-11-25: Phase 3: alerts, alert logs, feedback, metadata, metrics and
+  status subscriptions. Every acknowledgment on a multi-ack step is logged.

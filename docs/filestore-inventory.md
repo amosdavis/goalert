@@ -45,7 +45,7 @@ Unique:
 - alert_data_id_key: `(id)`
 - alert_data_pkey (index): `(alert_id)`
 
-**Go:** not ported yet.
+**Go:** ported, `alert/delta.go`; metadata is written with its alert and cascades.
 
 ### alert_feedback
 
@@ -59,7 +59,7 @@ Unique:
 - alert_feedback_id_key: `(id)`
 - alert_feedback_pkey (index): `(alert_id)`
 
-**Go:** not ported yet.
+**Go:** ported, `alert/delta.go`.
 
 ### alert_logs
 
@@ -67,7 +67,7 @@ Unique:
 
 - alert_logs_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `alert/alertlog/delta.go`.
 
 ### alert_metrics
 
@@ -81,7 +81,7 @@ Unique:
 - alert_metrics_id_key: `(id)`
 - alert_metrics_pkey (index): `(alert_id)`
 
-**Go:** not ported yet.
+**Go:** ported, `alert/alertmetrics/delta.go`.
 
 ### alert_status_subscriptions
 
@@ -101,7 +101,9 @@ Unique:
 - alert_status_subscriptions_channel_id_contact_method_id_ale_key: `(channel_id, contact_method_id, alert_id)`
 - alert_status_subscriptions_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `alert/delta.go`, with the destination check. Here the unique
+index prevents a duplicate subscription; on Postgres its null destination lets
+duplicates through, and each gets the same status update (F3).
 
 ### alerts
 
@@ -128,7 +130,9 @@ Unique:
 - alerts_pkey (index): `(id)`
 - idx_no_alert_duplicates (index): `(service_id, dedup_key)`
 
-**Go:** not ported yet.
+**Go:** ported, `alert/delta.go` and `alert/deltasearch.go`, including status
+transitions, deduplication, the limit, and the alert log and escalation-state
+hooks. The engine's escalation and notification jobs are a later phase.
 
 ### auth_basic_users
 
@@ -474,7 +478,8 @@ Unique:
 
 - message_status_history_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `notification/deltamessages.go`; message inserts and status
+changes append history in the same transaction.
 
 ### notification_channel_duplicates
 
@@ -559,7 +564,8 @@ Unique:
 - idx_outgoing_messages_provider_msg_id (index): `(provider_msg_id)`
 - outgoing_messages_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `notification/deltamessages.go` and
+`notification/deltasearch.go`, including the checks and both history triggers.
 
 ### pending_signals
 
@@ -873,7 +879,7 @@ Unique:
 - twilio_sms_callbacks_uniq_id (index): `(id)`
 - twilio_sms_callbacks_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `notification/twilio/delta.go`, including SMS reply codes.
 
 ### twilio_sms_errors
 
@@ -882,7 +888,8 @@ Unique:
 - twilio_sms_errors_uniq_id (index): `(id)`
 - twilio_sms_errors_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** defined, `notification/twilio/delta.go`. Nothing reads or writes it, so it
+may go (F24).
 
 ### twilio_voice_errors
 
@@ -891,7 +898,8 @@ Unique:
 - twilio_voice_errors_uniq_id (index): `(id)`
 - twilio_voice_errors_uniq_id: `(id)`
 
-**Go:** not ported yet.
+**Go:** defined, `notification/twilio/delta.go`. Nothing reads or writes it, so it
+may go (F24).
 
 ### uik_config
 
@@ -1046,7 +1054,8 @@ Unique:
 
 - user_slack_data_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** defined, `notification/slack/delta.go`. Nothing reads or writes it, so it
+may go (F24).
 
 ### user_verification_codes
 
@@ -1060,7 +1069,8 @@ Unique:
 - user_verification_codes_contact_method_id_key: `(contact_method_id)`
 - user_verification_codes_pkey (index): `(id)`
 
-**Go:** not ported yet.
+**Go:** ported, `notification/delta.go`. Codes expire after 15 minutes and are
+kept out of index keys and errors (F20).
 
 ### users
 
