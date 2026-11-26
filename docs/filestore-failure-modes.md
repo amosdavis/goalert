@@ -161,15 +161,20 @@ the switchover system (`swo/`), and River.
 - **F13 Clock drift between pods.** Each pod has its own clock, so commit times can
   go backwards and timers fire early or late. *Rule:* a commit's time is the
   later of the pod's clock and the previous commit's time. Pods compare their
-  clock with the object store's `Date` header and go red beyond a threshold.
+  clock with the object store's `Date` header and go red beyond a threshold
+  (`MaxClockSkew`, 15 seconds by default, half a message claim). Such a pod
+  gives the engine's lease up, so that one whose clock is right runs the
+  engine, and takes it only if no other pod does for two of its terms.
   What may be deleted from a document database is judged by the database's
   clock, never a pod's.
 - **F14 Platform and SDK differences.** The GCS, Azure, Cosmos DB, Firestore
   and Iceberg catalog APIs report conflicts, throttling and timeouts
-  differently, and the local implementations behave differently again. *Rule:*
+  differently, and the local implementations behave differently again. An Azure account with
+  a hierarchical namespace (ADLS Gen2) lists directories like blobs. *Rule:*
   every implementation passes the suite of its port (`objstoretest`,
   `chunkstoretest`, `tablelogtest`), and every backend passes one that runs
-  several pods at once (`backendtest`). CI runs them on emulators (GCS, Azure,
+  several pods at once (`backendtest`), also while requests are refused,
+  connections break, and replies to requests that were carried out are lost. CI runs them on emulators (GCS, Azure,
   Firestore) and on servers that speak the real protocol to the real SDK
   (Cosmos DB, Firestore, an Iceberg REST catalog), and the real services are
   tested before release.

@@ -507,3 +507,15 @@ holder while it is sending.
   build every store, and race four pods for the lease. The full backend suites
   pass; the only remaining local test failures need Postgres or Unix-only
   devtools, and live-service verification is still open.
+- 2026-11-25: Several pods on one Azure table. Against Azurite 3.37.0, the
+  Azure conformance suite and `backendtest` pass, each pod opened by its
+  `az://` URL with a client of its own. `backendtest.RunUnreliable` runs three
+  pods with three writers each while the Azure SDK's transport refuses
+  requests, breaks connections, and loses the replies to requests that were
+  carried out (F32): with 10% and with 30% of requests failing, every
+  acknowledged transaction is in the table, no failed one is, none is applied
+  twice, and every pod ends with the same rows. Found and fixed: listings of an
+  ADLS Gen2 account include its directories (F14); pods did not compare their
+  clocks with Azure's (F13), and now go red, and leave the engine to another
+  pod, when theirs is off. Open: a real Azure account, and ADLS Gen2 with a
+  hierarchical namespace, which Azurite does not have.
