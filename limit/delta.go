@@ -40,11 +40,7 @@ var deltaDefaults = []limitRow{
 	{string(IntegrationKeysPerService), 30},
 	{string(UnackedAlertsPerService), 200},
 	{string(TargetsPerSchedule), 10},
-	{string(HeartbeatMonitorsPerService), 30},
 	{string(UserOverridesPerSchedule), 35},
-	{string(CalendarSubscriptionsPerUser), 15},
-	{string(PendingSignalsPerService), 50},
-	{string(PendingSignalsPerDestPerService), 5},
 }
 
 // InsertDefaults sets the limits a new install starts with, leaving any that
@@ -158,7 +154,10 @@ func (d *deltaLimits) all(ctx context.Context) (Limits, error) {
 	err := deltatxn.Read(ctx, d.db, nil, func(s deltatxn.Scope) error {
 		clear(l)
 		d.Limits.Ascend(s.Reader, func(r limitRow) bool {
-			l[ID(r.ID)] = int(r.Max)
+			// A limit whose feature was removed is not reported (F58).
+			if ID(r.ID).Valid() == nil {
+				l[ID(r.ID)] = int(r.Max)
+			}
 			return true
 		})
 		return nil

@@ -40,7 +40,6 @@ func TestTwiMLResponse(t *testing.T) {
 
 	t.Run("redirect", func(t *testing.T) {
 		var mockConfig config.Config
-		mockConfig.Twilio.VoiceLanguage = "en-US"
 		ctx := mockConfig.Context(context.Background())
 		rec := httptest.NewRecorder()
 
@@ -55,7 +54,7 @@ func TestTwiMLResponse(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-	<Say language="en-US">
+	<Say>
 		<prosody rate="slow">Hello</prosody>
 	</Say>
 	<Redirect>http://example.com</Redirect>
@@ -64,8 +63,6 @@ func TestTwiMLResponse(t *testing.T) {
 
 	t.Run("redirect-pause", func(t *testing.T) {
 		var mockConfig config.Config
-		mockConfig.Twilio.VoiceName = "Polly.Joanna-Neural"
-		mockConfig.Twilio.VoiceLanguage = "en-US"
 		ctx := mockConfig.Context(context.Background())
 		rec := httptest.NewRecorder()
 
@@ -80,7 +77,7 @@ func TestTwiMLResponse(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-	<Say language="en-US" voice="Polly.Joanna-Neural">
+	<Say>
 		<prosody rate="slow">Hello! This is GoAlert.</prosody>
 	</Say>
 	<Pause length="3"></Pause>

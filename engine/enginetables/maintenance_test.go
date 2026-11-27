@@ -8,12 +8,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/target/goalert/config"
 )
 
 // TestMaintenance checks that tasks run when they are due, on whichever pod has
 // the lease, and that one that fails is tried again and hurts no other.
 func TestMaintenance(t *testing.T) {
-	ctx := t.Context()
+	ctx := config.Config{}.Context(t.Context())
 	ps, clock := pods(t, 2)
 	ran := map[string]int{}
 	var fail error
@@ -63,4 +64,24 @@ func TestMaintenance(t *testing.T) {
 	_, err = rb.Run(ctx)
 	require.NoError(t, err)
 	require.ErrorIs(t, b.RunDue(canceled), context.Canceled)
+}
+
+func TestMaintenanceConfigChange(t *testing.T) {
+	ctx := config.Config{}.Context(t.Context())
+	ps, _ := pods(t, 1)
+	p := ps[0]
+	r := NewRunner(p.db, p.lease)
+	ran := 0
+	m := p.NewMaintenance(p.db, r, Task{Name: "daily", Every: 24 * time.Hour, Run: func(context.Context) error { ran++; return nil }})
+	_, err := r.Run(ctx)
+	require.NoError(t, err)
+	require.NoError(t, m.RunDue(ctx))
+	assert.Equal(t, 1, ran)
+	require.NoError(t, m.RunDue(ctx))
+	assert.Equal(t, 1, ran, "not due without a change")
+
+	cfg := config.Config{}
+	cfg.Maintenance.AlertCleanupDays = 1
+	require.NoError(t, m.RunDue(cfg.Context(ctx)))
+	assert.Equal(t, 2, ran, "a config change makes the task due at once")
 }

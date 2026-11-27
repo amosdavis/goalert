@@ -67,8 +67,6 @@ func TestRotation_Hourly(t *testing.T) {
 	tw := h.Twilio(t)
 	d1 := tw.Device(h.Phone("1"))
 
-	h.Escalate(1, 0)
-
 	d1.ExpectSMS("testing")
 
 	h.FastForward(time.Hour)

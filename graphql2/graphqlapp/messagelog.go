@@ -108,8 +108,7 @@ func msgTypeFriendlyName(msgType gadb.EnumOutgoingMessagesType) string {
 		return "Status Update"
 	case gadb.EnumOutgoingMessagesTypeScheduleOnCallNotification:
 		return "On-Call Notification"
-	case gadb.EnumOutgoingMessagesTypeSignalMessage:
-		return "Signal Message"
+
 	case gadb.EnumOutgoingMessagesTypeAlertStatusUpdateBundle:
 		return "Status Bundle" // deprecated
 	case gadb.EnumOutgoingMessagesTypeTestNotification:

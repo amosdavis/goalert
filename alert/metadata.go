@@ -2,15 +2,11 @@ package alert
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 
-	"github.com/sqlc-dev/pqtype"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -29,26 +25,14 @@ func (s *Store) Metadata(ctx context.Context, tx txn.Tx, alertID int) (meta map[
 		return nil, err
 	}
 
-	if s.delta != nil {
-		rows, err := s.delta.findMetadata(ctx, tx, []int{alertID})
-		if err != nil {
-			return nil, err
-		}
-		if len(rows) == 0 || rows[0].Metadata == nil {
-			return map[string]string{}, nil
-		}
-		return parseMetadata(rows[0].Metadata)
-	}
-	db := sqltxn.DBTX(s.db, tx)
-	md, err := gadb.New(db).Alert_GetAlertMetadata(ctx, int64(alertID))
-	if errors.Is(err, sql.ErrNoRows) || !md.Valid {
-		return map[string]string{}, nil
-	}
+	rows, err := s.delta.findMetadata(ctx, tx, []int{alertID})
 	if err != nil {
 		return nil, err
 	}
-
-	return parseMetadata(md.RawMessage)
+	if len(rows) == 0 || rows[0].Metadata == nil {
+		return map[string]string{}, nil
+	}
+	return parseMetadata(rows[0].Metadata)
 }
 
 func parseMetadata(md json.RawMessage) (map[string]string, error) {
@@ -81,48 +65,18 @@ func (s Store) FindManyMetadata(ctx context.Context, tx txn.Tx, alertIDs []int) 
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		rows, err := s.delta.findMetadata(ctx, tx, alertIDs)
-		if err != nil {
-			return nil, err
-		}
-		res := make([]MetadataAlertID, len(rows))
-		for i, r := range rows {
-			res[i].ID = r.AlertID
-			res[i].Meta, err = parseMetadata(r.Metadata)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return res, nil
-	}
-	db := sqltxn.DBTX(s.db, tx)
-	ids := make([]int64, len(alertIDs))
-	for i, id := range alertIDs {
-		ids[i] = int64(id)
-	}
-
-	rows, err := gadb.New(db).Alert_GetAlertManyMetadata(ctx, ids)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	rows, err := s.delta.findMetadata(ctx, tx, alertIDs)
 	if err != nil {
 		return nil, err
 	}
-
 	res := make([]MetadataAlertID, len(rows))
 	for i, r := range rows {
-		meta, err := parseMetadata(r.Metadata.RawMessage)
+		res[i].ID = r.AlertID
+		res[i].Meta, err = parseMetadata(r.Metadata)
 		if err != nil {
 			return nil, err
 		}
-
-		res[i] = MetadataAlertID{
-			ID:   r.AlertID,
-			Meta: meta,
-		}
 	}
-
 	return res, nil
 }
 
@@ -146,31 +100,13 @@ func (s Store) SetMetadataTx(ctx context.Context, tx txn.Tx, alertID int, meta m
 		return err
 	}
 
-	if s.delta != nil {
-		ok, err := s.delta.setMetadata(ctx, tx, alertID, md)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return permission.NewAccessDenied("alert closed, invalid, or wrong service")
-		}
-		return nil
-	}
-	db := sqltxn.DBTX(s.db, tx)
-	rowCount, err := gadb.New(db).Alert_SetAlertMetadata(ctx, gadb.Alert_SetAlertMetadataParams{
-		ID:        int64(alertID),
-		ServiceID: permission.ServiceNullUUID(ctx), // only provide service_id restriction if request is from a service
-		Metadata:  pqtype.NullRawMessage{Valid: true, RawMessage: json.RawMessage(md)},
-	})
+	ok, err := s.delta.setMetadata(ctx, tx, alertID, md)
 	if err != nil {
 		return err
 	}
-
-	if rowCount == 0 {
-		// shouldn't happen, but just in case
+	if !ok {
 		return permission.NewAccessDenied("alert closed, invalid, or wrong service")
 	}
-
 	return nil
 }
 

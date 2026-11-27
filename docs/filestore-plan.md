@@ -519,3 +519,18 @@ holder while it is sending.
   clocks with Azure's (F13), and now go red, and leave the engine to another
   pod, when theirs is off. Open: a real Azure account, and ADLS Gen2 with a
   hierarchical namespace, which Azurite does not have.
+- 2026-11-26: Slack and Postgres removed. Every store, the engine and the app
+  are Delta-only: no `*sql.DB`, pgx, River, migrations or switchover, and the
+  old database flags are gone. What went is listed in
+  [filestore-failure-modes.md](filestore-failure-modes.md#removed-with-postgres);
+  the types the Delta stores still took from sqlc are hand-written in
+  `gadb/values.go` (F56). Cypress uses an in-memory Delta server with fixture
+  and clock controls; Playwright uses a file-backed Delta table.
+- 2026-11-27: Smaller surface (F57-F65). Removed the alert sources other than
+  the generic API and GraphQL (Grafana, Prometheus Alertmanager, Site24x7,
+  Mailgun, the SMTP server, heartbeat monitors, universal keys and signals),
+  GitHub login, account linking, calendar subscriptions, the system API,
+  `goalert monitor`, the `/v1/...` routes, Twilio SMS reply codes (STOP and
+  START remain), carrier lookup, RCS, the admin SMS toolbox, alert metrics,
+  user avatars, Google Analytics and the feedback link; listed in
+  [filestore-failure-modes.md](filestore-failure-modes.md#removed-on-2026-11-27).

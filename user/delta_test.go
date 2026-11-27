@@ -17,7 +17,6 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
-	"github.com/target/goalert/util/sqlutil"
 )
 
 type deltaTestEnv struct {
@@ -83,11 +82,11 @@ func deltaUserExists(t *testing.T, s *Store, id string) bool {
 	return err == nil
 }
 
-// constraintName returns the name of the constraint that err says was broken,
-// as the code that turns it into a message for the user sees it.
+// constraintName returns the name of the constraint that err says was broken.
 func constraintName(err error) string {
-	if e := sqlutil.MapError(err); e != nil {
-		return e.ConstraintName
+	var e interface{ ConstraintName() string }
+	if errors.As(err, &e) {
+		return e.ConstraintName()
 	}
 	return ""
 }
@@ -446,7 +445,7 @@ func TestDeltaUserCRUD(t *testing.T) {
 	id := strings.ToLower(rawID)
 
 	inserted, err := s.Insert(ctx, &User{
-		ID: rawID, Name: "Alice", Email: "Alice@Example.COM", AvatarURL: "https://example.com/alice.png",
+		ID: rawID, Name: "Alice", Email: "Alice@Example.COM",
 		Role: permission.RoleUser, AlertStatusCMID: uuid.NewString(),
 	})
 	require.NoError(t, err)
@@ -456,7 +455,6 @@ func TestDeltaUserCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id, u.ID, "UUID keys are canonical and case-insensitive")
 	assert.Equal(t, "alice@example.com", u.Email)
-	assert.Equal(t, "https://example.com/alice.png", u.AvatarURL)
 	assert.Empty(t, u.AlertStatusCMID, "the insert query does not write this field")
 
 	require.NoError(t, s.UpdateTx(ctx, nil, &User{ID: rawID, Name: "Alice B", Email: "alice+b@example.com", Role: permission.RoleAdmin}))
@@ -465,7 +463,6 @@ func TestDeltaUserCRUD(t *testing.T) {
 	assert.Equal(t, "Alice B", u.Name)
 	assert.Equal(t, "alice+b@example.com", u.Email)
 	assert.Equal(t, permission.RoleUser, u.Role, "update changes only name and email")
-	assert.Equal(t, "https://example.com/alice.png", u.AvatarURL)
 	require.NoError(t, s.SetUserRoleTx(ctx, nil, rawID, permission.RoleAdmin))
 
 	// The profile helper used by auth providers canonicalizes IDs and leaves
@@ -534,7 +531,6 @@ func TestDeltaUserSearch(t *testing.T) {
 	users, err := s.Search(ctx, &SearchOptions{Limit: 2})
 	require.NoError(t, err)
 	assert.Equal(t, []string{alice, bob}, userIDs(users))
-	assert.Empty(t, users[0].AvatarURL, "search does not select avatar URLs")
 
 	users, err = s.Search(ctx, &SearchOptions{After: SearchCursor{Name: "Bob"}})
 	require.NoError(t, err)

@@ -56,7 +56,7 @@ func TestStatusUpdatesExpiration(t *testing.T) {
 	defer h.Close()
 
 	doClose := func(dedup string) {
-		u := h.URL() + "/v1/api/alerts?key=" + h.UUID("int1")
+		u := h.URL() + "/api/v2/generic/incoming?token=" + h.UUID("int1")
 		v := make(url.Values)
 		v.Set("dedup", dedup)
 		v.Set("action", "close")

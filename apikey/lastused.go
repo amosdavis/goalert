@@ -5,7 +5,6 @@ import (
 	"net"
 
 	"github.com/google/uuid"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/validation/validate"
 )
 
@@ -14,17 +13,5 @@ func (s *Store) _updateLastUsed(ctx context.Context, id uuid.UUID, ua, ip string
 	ua = validate.SanitizeText(ua, 1024)
 	ip, _, _ = net.SplitHostPort(ip)
 	ip = validate.SanitizeText(ip, 255)
-	if s.delta != nil {
-		return s.delta.recordUsage(ctx, id, ua, net.ParseIP(ip))
-	}
-	params := gadb.APIKeyRecordUsageParams{
-		KeyID:     id,
-		UserAgent: ua,
-	}
-	params.IpAddress.IPNet.IP = net.ParseIP(ip)
-	params.IpAddress.IPNet.Mask = net.CIDRMask(32, 32)
-	if params.IpAddress.IPNet.IP != nil {
-		params.IpAddress.Valid = true
-	}
-	return gadb.New(s.db).APIKeyRecordUsage(ctx, params)
+	return s.delta.recordUsage(ctx, id, ua, net.ParseIP(ip))
 }

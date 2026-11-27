@@ -2,7 +2,6 @@ package twilio
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	stderrors "errors"
 	"fmt"
@@ -108,15 +107,9 @@ func voiceErrorMessage(ctx context.Context, err error) (string, error) {
 	return "System error. Please visit the dashboard.", err
 }
 
-// NewVoice will send out the initial Call to Twilio, specifying all details needed for Twilio to make the first call to the end user
-// It performs operations like validating essential parameters, registering the Twilio client and db
-// and adding routes for successful and unsuccessful call connections to Twilio
-func NewVoice(ctx context.Context, db *sql.DB, c *Config) (*Voice, error) {
-	v := &Voice{
-		c: c,
-	}
-
-	return v, nil
+// NewVoice constructs a Twilio voice notification provider.
+func NewVoice(c *Config) *Voice {
+	return &Voice{c: c}
 }
 
 // SetReceiver sets the notification.Receiver for incoming calls and status updates.

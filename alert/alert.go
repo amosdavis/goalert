@@ -44,10 +44,6 @@ func (a *Alert) DedupKey() *DedupID {
 	}
 }
 
-func (a *Alert) scanFrom(scanFn func(...interface{}) error) error {
-	return scanFn(&a.ID, &a.Summary, &a.Details, &a.ServiceID, &a.Source, &a.Status, &a.CreatedAt, &a.Dedup)
-}
-
 func (a Alert) Normalize() (*Alert, error) {
 	if string(a.Source) == "" {
 		a.Source = SourceManual
@@ -61,7 +57,7 @@ func (a Alert) Normalize() (*Alert, error) {
 	err := validate.Many(
 		validate.Text("Summary", a.Summary, 1, MaxSummaryLength),
 		validate.Text("Details", a.Details, 0, MaxDetailsLength),
-		validate.OneOf("Source", a.Source, SourceManual, SourceGrafana, SourceSite24x7, SourcePrometheusAlertmanager, SourceEmail, SourceGeneric, SourceUniversal),
+		validate.OneOf("Source", a.Source, SourceManual, SourceGeneric),
 		validate.OneOf("Status", a.Status, StatusTriggered, StatusActive, StatusClosed),
 		validate.UUID("ServiceID", a.ServiceID),
 	)

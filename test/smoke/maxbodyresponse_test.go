@@ -31,7 +31,7 @@ func TestMaxBodyResponse(t *testing.T) {
 	h := harness.NewHarness(t, sql, "add-generic-integration-key")
 	defer h.Close()
 
-	u := h.URL() + "/v1/api/alerts?key=" + h.UUID("int_key")
+	u := h.URL() + "/api/v2/generic/incoming?token=" + h.UUID("int_key")
 
 	// Create a 1MB payload (1024 * 1024 bytes = 1MB)
 	// This exceeds the default 256KB limit

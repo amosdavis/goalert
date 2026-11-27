@@ -194,6 +194,10 @@ type DeltaOptions struct {
 	// Clock supplies transaction timestamps. The default is the system clock.
 	Clock Clock
 
+	// AllowTimeTravel lets tests move Clock behind the latest commit. Otherwise
+	// reads and transactions never move earlier than that commit (F13).
+	AllowTimeTravel bool
+
 	// WriterID names this pod in the commits it writes. The default is
 	// random.
 	WriterID string
@@ -656,10 +660,10 @@ func (db *DeltaDB) notifyChanged(changed map[string]*tableData) {
 
 // Now is the time for reads outside a transaction, like now() in Postgres:
 // this pod's clock, but never earlier than the latest commit it has applied
-// (F13).
+// unless AllowTimeTravel is set (F13).
 func (db *DeltaDB) Now() time.Time {
 	t := db.opts.Clock.Now().UTC().Truncate(time.Microsecond)
-	if v := db.View(); t.Before(v.time) {
+	if v := db.View(); !db.opts.AllowTimeTravel && t.Before(v.time) {
 		return v.time
 	}
 	return t
@@ -987,10 +991,11 @@ func (db *DeltaDB) Batches() (commits, transactions int64) {
 }
 
 // commitTime is the next transaction's time: the clock, but never earlier
-// than the latest commit, whichever pod's clock that came from (F13).
+// than the latest commit, whichever pod's clock that came from, unless
+// AllowTimeTravel is set (F13).
 func (db *DeltaDB) commitTime() time.Time {
 	t := db.opts.Clock.Now().UTC().Truncate(time.Microsecond)
-	if t.Before(db.snap.Time) {
+	if !db.opts.AllowTimeTravel && t.Before(db.snap.Time) {
 		t = db.snap.Time
 	}
 	return t

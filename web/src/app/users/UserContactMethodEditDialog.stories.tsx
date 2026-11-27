@@ -70,13 +70,13 @@ const meta = {
                           },
                           {
                             fieldID: 'third-field',
-                            value: 'slack',
+                            value: 'user',
                           },
                         ],
                         args: {
                           'first-field': '+11235550123',
                           'second-field': 'foobar@example.com',
-                          'third-field': 'slack',
+                          'third-field': 'user',
                         },
                         displayInfo: {
                           text: '11235550123',
@@ -137,7 +137,7 @@ const meta = {
           return HttpResponse.json({
             data: {
               destinationFieldValidate:
-                vars.input.value === '@slack' ||
+                vars.input.value === '@user' ||
                 vars.input.value === '+12225558989' ||
                 vars.input.value === 'valid@email.com',
             },
@@ -197,7 +197,7 @@ export const MultiField: Story = {
       await canvas.findByPlaceholderText('foobar@example.com'),
     ).toBeDisabled()
     await canvas.findByLabelText('Third Item')
-    expect(await canvas.findByPlaceholderText('slack user ID')).toBeDisabled()
+    expect(await canvas.findByPlaceholderText('user ID')).toBeDisabled()
   },
 }
 

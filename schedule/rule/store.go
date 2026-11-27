@@ -2,116 +2,19 @@ package rule
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
+	"github.com/google/uuid"
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
-
-	"github.com/google/uuid"
 )
 
 type ScheduleTriggerFunc func(string)
+
+// Store provides schedule rule operations on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	delta *deltaRules // the Delta backend, if set (delta.go)
-
-	add     *sql.Stmt
-	update  *sql.Stmt
-	delete  *sql.Stmt
-	findAll *sql.Stmt
-	findTgt *sql.Stmt
-}
-
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
-	p := &util.Prepare{DB: db, Ctx: ctx}
-	return &Store{
-		db: db,
-
-		add: p.P(`
-			insert into schedule_rules (
-				id,
-				schedule_id,
-				sunday,
-				monday,
-				tuesday,
-				wednesday,
-				thursday,
-				friday,
-				saturday,
-				start_time,
-				end_time,
-				tgt_user_id,
-				tgt_rotation_id
-			) values ($1, $2, ($3::Bool[])[1], ($3::Bool[])[2], ($3::Bool[])[3], ($3::Bool[])[4], ($3::Bool[])[5], ($3::Bool[])[6], ($3::Bool[])[7], $4, $5, $6, $7)
-		`),
-		update: p.P(`
-			update schedule_rules
-			set
-				schedule_id = $2,
-				sunday = ($3::Bool[])[1],
-				monday = ($3::Bool[])[2],
-				tuesday = ($3::Bool[])[3],
-				wednesday = ($3::Bool[])[4],
-				thursday = ($3::Bool[])[5],
-				friday = ($3::Bool[])[6],
-				saturday = ($3::Bool[])[7],
-				start_time = $4,
-				end_time = $5,
-				tgt_user_id = $6,
-				tgt_rotation_id = $7
-			where id = $1
-		`),
-		delete: p.P(`delete from schedule_rules where id = any($1)`),
-
-		findAll: p.P(`
-			select
-				id,
-				schedule_id,
-				ARRAY[
-					sunday,
-					monday,
-					tuesday,
-					wednesday,
-					thursday,
-					friday,
-					saturday
-				],
-				start_time,
-				end_time,
-				tgt_user_id,
-				tgt_rotation_id
-			from schedule_rules
-			where schedule_id = $1
-			order by created_at, id
-		`),
-		findTgt: p.P(`
-			select
-				id,
-				schedule_id,
-				ARRAY[
-					sunday,
-					monday,
-					tuesday,
-					wednesday,
-					thursday,
-					friday,
-					saturday
-				],
-				start_time,
-				end_time,
-				tgt_user_id,
-				tgt_rotation_id
-			from schedule_rules
-			where schedule_id = $1 AND (tgt_user_id = $2 OR tgt_rotation_id = $3)
-			order by created_at, id
-		`),
-	}, p.Err
+	delta *deltaRules
 }
 
 func (s *Store) _Add(ctx context.Context, tx txn.Tx, r *Rule) (*Rule, error) {
@@ -126,23 +29,9 @@ func (s *Store) _Add(ctx context.Context, tx txn.Tx, r *Rule) (*Rule, error) {
 	}
 
 	n.ID = uuid.New().String()
-	if s.delta != nil {
-		err = s.delta.add(ctx, tx, n)
-		if err != nil {
-			return nil, err
-		}
-		return n, nil
-	}
-
-	stmt := s.add
-	if stx := sqltxn.Unwrap(tx); stx != nil {
-		stmt = stx.Stmt(stmt)
-	}
-	_, err = stmt.ExecContext(ctx, n.readFields()...)
-	if err != nil {
+	if err := s.delta.add(ctx, tx, n); err != nil {
 		return nil, err
 	}
-
 	return n, nil
 }
 
@@ -172,45 +61,7 @@ func (s *Store) FindByTargetTx(ctx context.Context, tx txn.Tx, scheduleID string
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findByTarget(ctx, tx, scheduleID, target)
-	}
-
-	stmt := s.findTgt
-	if stx := sqltxn.Unwrap(tx); stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	var tgtUser, tgtRot sql.NullString
-	switch target.TargetType() {
-	case assignment.TargetTypeUser:
-		tgtUser.Valid = true
-		tgtUser.String = target.TargetID()
-	case assignment.TargetTypeRotation:
-		tgtRot.Valid = true
-		tgtRot.String = target.TargetID()
-	}
-
-	rows, err := stmt.QueryContext(ctx, scheduleID, tgtUser, tgtRot)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Rule
-	var r Rule
-	for rows.Next() {
-		err = r.scanFrom(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-
-	return result, nil
+	return s.delta.findByTarget(ctx, tx, scheduleID, target)
 }
 
 func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ruleIDs []string) error {
@@ -225,17 +76,7 @@ func (s *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ruleIDs []string) e
 	if err != nil {
 		return err
 	}
-	if s.delta != nil {
-		return s.delta.deleteMany(ctx, tx, ruleIDs)
-	}
-	stmt := s.delete
-	if stx := sqltxn.Unwrap(tx); stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	_, err = stmt.ExecContext(ctx, sqlutil.UUIDArray(ruleIDs))
-	return err
-
+	return s.delta.deleteMany(ctx, tx, ruleIDs)
 }
 
 func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, r *Rule) error {
@@ -247,21 +88,7 @@ func (s *Store) UpdateTx(ctx context.Context, tx txn.Tx, r *Rule) error {
 	if err != nil {
 		return err
 	}
-	if s.delta != nil {
-		return s.delta.update(ctx, tx, n)
-	}
-
-	f := n.readFields()
-
-	stmt := s.update
-	if stx := sqltxn.Unwrap(tx); stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-	_, err = stmt.ExecContext(ctx, f...)
-	if err != nil {
-		return err
-	}
-	return nil
+	return s.delta.update(ctx, tx, n)
 }
 
 func (s *Store) FindAll(ctx context.Context, scheduleID string) ([]Rule, error) {
@@ -277,28 +104,5 @@ func (s *Store) FindAllTx(ctx context.Context, tx txn.Tx, scheduleID string) ([]
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.findAll(ctx, tx, scheduleID)
-	}
-	stmt := s.findAll
-	if stx := sqltxn.Unwrap(tx); stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-	rows, err := stmt.QueryContext(ctx, scheduleID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Rule
-	var r Rule
-	for rows.Next() {
-		err = r.scanFrom(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-
-	return result, nil
+	return s.delta.findAll(ctx, tx, scheduleID)
 }

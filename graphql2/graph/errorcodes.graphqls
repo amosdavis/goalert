@@ -28,9 +28,4 @@ enum ErrorCode {
   A separate error will be returned for each invalid value.
   """
   INVALID_MAP_FIELD_VALUE
-
-  """
-  The expr expression is too complex to be converted to a Condition.
-  """
-  EXPR_TOO_COMPLEX
 }

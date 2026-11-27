@@ -30,14 +30,11 @@ var tableName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 // rootName names the root of every data file's Parquet schema.
 const rootName = "goalert"
 
-// parquet-go v0.32.0 writes a timestamp as microseconds but reads it back
-// through int64 nanoseconds, so only times from 1677-09-21 to 2262-04-11
-// read back as written. Go's zero time does not. Outside that range,
-// GoAlert would read garbage where other Delta readers see the right time
-// (F25, F35), so such times are refused when written.
+// Delta timestamps hold signed 64-bit Unix microseconds. time.Time supports
+// larger years, whose UnixMicro result can overflow (F25, F35).
 const (
-	minMicros = math.MinInt64 / 1000
-	maxMicros = math.MaxInt64 / 1000
+	minMicros = math.MinInt64
+	maxMicros = math.MaxInt64
 )
 
 var timeType = reflect.TypeFor[time.Time]()
@@ -60,8 +57,9 @@ func hasTimes(t reflect.Type) bool {
 	return false
 }
 
-// checkTimes refuses a value holding a time that would not read back as
-// written.
+// checkTimes refuses a value holding a time that cannot round-trip through the
+// signed 64-bit Unix microsecond representation. Truncation to microseconds is
+// expected; wrapping around into a different instant is not.
 func checkTimes(v reflect.Value) error {
 	switch v.Kind() {
 	case reflect.Pointer:
@@ -72,8 +70,9 @@ func checkTimes(v reflect.Value) error {
 	case reflect.Struct:
 		if v.Type() == timeType {
 			t := v.Interface().(time.Time)
-			if us := t.UnixMicro(); us < minMicros || us > maxMicros {
-				return fmt.Errorf("time %s is outside the range a data file holds (%s to %s); use a pointer for a time that can be unset",
+			us := t.UnixMicro()
+			if !time.UnixMicro(us).Equal(t.Truncate(time.Microsecond)) {
+				return fmt.Errorf("time %s is outside the range of Unix microseconds (%s to %s)",
 					t.Format(time.RFC3339), time.UnixMicro(minMicros).UTC().Format(time.DateOnly), time.UnixMicro(maxMicros).UTC().Format(time.DateOnly))
 			}
 			return nil

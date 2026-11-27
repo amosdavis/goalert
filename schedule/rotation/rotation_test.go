@@ -23,16 +23,6 @@ func TestSearchOptions_Only(t *testing.T) {
 	}
 	_, err = (*renderData)(&SearchOptions{Only: tooMany}).Normalize()
 	require.Error(t, err)
-
-	args := (*renderData)(&SearchOptions{Only: []string{validUUID}}).QueryArgs()
-	require.Condition(t, func() bool {
-		for _, a := range args {
-			if a.Name == "only" {
-				return a.Value != nil
-			}
-		}
-		return false
-	}, "QueryArgs() should include a non-nil 'only' parameter")
 }
 
 const timeFmt = "Jan 2 2006 3:04 pm"

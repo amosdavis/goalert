@@ -8,9 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 
-	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/validation/validate"
@@ -90,36 +88,5 @@ func (s *Store) Search(ctx context.Context, tx txn.Tx, opts *SearchOptions) ([]U
 		arg.AfterID = uuid.NullUUID{UUID: id, Valid: true}
 	}
 
-	if s.delta != nil {
-		return s.delta.search(ctx, tx, arg, opts.Limit)
-	}
-	rows, err := gadb.New(sqltxn.DBTX(s.db, tx)).OverrideSearch(ctx, arg)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) > opts.Limit && opts.Limit > 0 {
-		rows = rows[:opts.Limit]
-	}
-
-	result := make([]UserOverride, len(rows))
-	for i, r := range rows {
-		var add, rem string
-		if r.AddUserID.Valid {
-			add = r.AddUserID.UUID.String()
-		}
-		if r.RemoveUserID.Valid {
-			rem = r.RemoveUserID.UUID.String()
-		}
-
-		result[i] = UserOverride{
-			ID:           r.ID.String(),
-			Start:        r.StartTime,
-			End:          r.EndTime,
-			AddUserID:    add,
-			RemoveUserID: rem,
-			Target:       assignment.ScheduleTarget(r.TgtScheduleID.String()),
-		}
-	}
-
-	return result, nil
+	return s.delta.search(ctx, tx, arg, opts.Limit)
 }

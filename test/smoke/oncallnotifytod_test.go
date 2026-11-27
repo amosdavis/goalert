@@ -11,6 +11,9 @@ import (
 func TestOnCallNotifyTOD(t *testing.T) {
 	t.Parallel()
 
+	webhookURL1, ch1 := newOnCallWebhook(t)
+	webhookURL2, ch2 := newOnCallWebhook(t)
+
 	sql := `
 	insert into users (id, name, email)
 	values
@@ -26,8 +29,8 @@ func TestOnCallNotifyTOD(t *testing.T) {
 
 	insert into notification_channels (id, type, name, value)
 	values
-		({{uuid "chan1"}}, 'SLACK', '#test1', {{slackChannelID "test1"}}),
-		({{uuid "chan2"}}, 'SLACK', '#test2', {{slackChannelID "test2"}});
+		({{uuid "chan1"}}, 'WEBHOOK', 'webhook 1', '` + webhookURL1 + `'),
+		({{uuid "chan2"}}, 'WEBHOOK', 'webhook 2', '` + webhookURL2 + `');
 	
 	insert into schedule_data (schedule_id, data)
 	values
@@ -40,7 +43,7 @@ func TestOnCallNotifyTOD(t *testing.T) {
 
 	h.FastForward(24 * time.Hour)
 
-	// should only send 1 message to each channel
-	h.Slack().Channel("test1").ExpectMessage("on-call", "testschedule", "bob")
-	h.Slack().Channel("test2").ExpectMessage("on-call", "testschedule", "bob")
+	// should only send 1 notification to each webhook; cleanup checks for extras
+	expectOnCallNotification(t, h, ch1, "testschedule", "bob")
+	expectOnCallNotification(t, h, ch2, "testschedule", "bob")
 }

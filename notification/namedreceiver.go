@@ -3,7 +3,6 @@ package notification
 import (
 	"context"
 
-	"github.com/target/goalert/auth/authlink"
 	"github.com/target/goalert/gadb"
 )
 
@@ -26,11 +25,6 @@ func (nr *namedReceiver) SetMessageStatus(ctx context.Context, externalID string
 	res.ProviderMessageID.ProviderName = nr.destType
 	res.ProviderMessageID.ExternalID = externalID
 	return nr.r.SetSendResult(ctx, res)
-}
-
-// AuthLinkURL calls the underlying AuthLinkURL method.
-func (nr *namedReceiver) AuthLinkURL(ctx context.Context, providerID, subjectID string, meta authlink.Metadata) (string, error) {
-	return nr.r.AuthLinkURL(ctx, providerID, subjectID, meta)
 }
 
 // Start implements the Receiver interface by calling the underlying Receiver.Start method.

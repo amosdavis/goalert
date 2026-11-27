@@ -8,7 +8,6 @@ import (
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/notification/email"
-	"github.com/target/goalert/notification/slack"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/notification/webhook"
 	"github.com/target/goalert/schedule"
@@ -41,11 +40,6 @@ func (a *App) CompatTargetToDest(ctx context.Context, tgt assignment.Target) (ga
 			Type: webhook.DestTypeWebhook,
 			Args: map[string]string{webhook.FieldWebhookURL: tgt.TargetID()},
 		}, nil
-	case assignment.TargetTypeSlackChannel:
-		return gadb.DestV1{
-			Type: slack.DestTypeSlackChannel,
-			Args: map[string]string{slack.FieldSlackChannelID: tgt.TargetID()},
-		}, nil
 	case assignment.TargetTypeNotificationChannel:
 		id, err := validate.ParseUUID("TargetID", tgt.TargetID())
 		if err != nil {
@@ -74,8 +68,6 @@ func CompatDestToCMTypeVal(d gadb.DestV1) (graphql2.ContactMethodType, string) {
 		return graphql2.ContactMethodTypeEmail, d.Arg(email.FieldEmailAddress)
 	case webhook.DestTypeWebhook:
 		return graphql2.ContactMethodTypeWebhook, d.Arg(webhook.FieldWebhookURL)
-	case slack.DestTypeSlackDirectMessage:
-		return graphql2.ContactMethodTypeSLACkDm, d.Arg(slack.FieldSlackUserID)
 	}
 
 	return "", ""
@@ -89,8 +81,6 @@ func CompatCMTypeValToDest(cmType graphql2.ContactMethodType, value string) (gad
 		return twilio.NewSMSDest(value), nil
 	case graphql2.ContactMethodTypeVoice:
 		return twilio.NewVoiceDest(value), nil
-	case graphql2.ContactMethodTypeSLACkDm:
-		return slack.NewDirectMessageDest(value), nil
 	case graphql2.ContactMethodTypeWebhook:
 		return webhook.NewWebhookDest(value), nil
 	}
@@ -115,16 +105,6 @@ func CompatDestToTarget(d gadb.DestV1) (assignment.RawTarget, error) {
 		return assignment.RawTarget{
 			Type: assignment.TargetTypeSchedule,
 			ID:   d.Arg(schedule.FieldScheduleID),
-		}, nil
-	case slack.DestTypeSlackChannel:
-		return assignment.RawTarget{
-			Type: assignment.TargetTypeSlackChannel,
-			ID:   d.Arg(slack.FieldSlackChannelID),
-		}, nil
-	case slack.DestTypeSlackUsergroup:
-		return assignment.RawTarget{
-			Type: assignment.TargetTypeSlackUserGroup,
-			ID:   d.Arg(slack.FieldSlackUsergroupID) + ":" + d.Arg(slack.FieldSlackChannelID),
 		}, nil
 	case webhook.DestTypeWebhook:
 		return assignment.RawTarget{

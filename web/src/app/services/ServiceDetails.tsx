@@ -16,7 +16,7 @@ import AppLink from '../util/AppLink'
 import { ServiceAvatar } from '../util/avatars'
 import ServiceMaintenanceModeDialog from './ServiceMaintenanceDialog'
 import ServiceNotices from './ServiceNotices'
-import type { HeartbeatMonitor, Label } from '../../schema'
+import type { Label } from '../../schema'
 import ServiceRecentEvents from './ServiceRecentEvents'
 
 interface AlertNode {
@@ -43,10 +43,6 @@ const query = gql`
         id
         name
       }
-      heartbeatMonitors {
-        id
-        lastState
-      }
       onCallUsers {
         userID
         userName
@@ -68,13 +64,6 @@ const query = gql`
     }
   }
 `
-
-const hbStatus = (h: Partial<HeartbeatMonitor>[]): LinkStatus | null => {
-  if (!h || !h.length) return null
-  if (h.every((m) => m.lastState === 'healthy')) return 'ok'
-  if (h.some((m) => m.lastState === 'unhealthy')) return 'err'
-  return 'warn'
-}
 
 const alertStatus = (a: AlertNode[]): LinkStatus | null => {
   if (!a) return null
@@ -170,12 +159,6 @@ export default function ServiceDetails(props: {
             subText: 'Manage alerts specific to this service',
           },
           {
-            label: 'Heartbeat Monitors',
-            url: 'heartbeat-monitors',
-            status: hbStatus(data?.service?.heartbeatMonitors),
-            subText: 'Manage endpoints monitored for you',
-          },
-          {
             label: 'Integration Keys',
             url: 'integration-keys',
             subText: 'Manage keys used to create alerts',
@@ -184,11 +167,6 @@ export default function ServiceDetails(props: {
             label: 'Labels',
             url: 'labels',
             subText: 'Group together services',
-          },
-          {
-            label: 'Alert Metrics',
-            url: 'alert-metrics',
-            subText: 'Review alert activity',
           },
         ]}
       />

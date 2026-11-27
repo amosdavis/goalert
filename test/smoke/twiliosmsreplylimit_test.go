@@ -50,15 +50,6 @@ func TestTwilioSMSReplyLimit(t *testing.T) {
 
 	// only expect 5 replies before we hit the limit
 	for i := 0; i < 5; i++ {
-		d1.ExpectSMS("sorry")
+		d1.ExpectSMS("not supported")
 	}
-
-	h.CreateAlert(h.UUID("sid"), "test1")
-	d1.ExpectSMS("test1", "1c", "1a").
-		ThenReply("1a").
-		ThenExpect("Acknowledged", "#1")
-
-		// should reset after ack
-	d1.SendSMS("nonsense")
-	d1.ExpectSMS("sorry")
 }

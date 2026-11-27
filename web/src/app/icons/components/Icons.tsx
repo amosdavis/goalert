@@ -3,9 +3,6 @@ import Tooltip from '@mui/material/Tooltip'
 import AddIcon from '@mui/icons-material/Add'
 import TrashIcon from '@mui/icons-material/Delete'
 import WarningIcon from '@mui/icons-material/Warning'
-import slackIcon from '../../public/icons/slack.svg'
-import slackIconBlack from '../../public/icons/slack_monochrome_black.svg'
-import slackIconWhite from '../../public/icons/slack_monochrome_white.svg'
 import makeStyles from '@mui/styles/makeStyles'
 import { useTheme } from '@mui/material'
 import { Webhook } from '@mui/icons-material'
@@ -63,30 +60,6 @@ export function Warning(props: WarningProps): React.JSX.Element {
 
 export function Add(): React.JSX.Element {
   return <AddIcon />
-}
-
-export function Slack(): React.JSX.Element {
-  const theme = useTheme()
-  return (
-    <img
-      src={theme.palette.mode === 'light' ? slackIcon : slackIconWhite}
-      width={20}
-      height={20}
-      alt='Slack'
-    />
-  )
-}
-
-export function SlackBW(): React.JSX.Element {
-  const theme = useTheme()
-  return (
-    <img
-      src={theme.palette.mode === 'light' ? slackIconBlack : slackIconWhite}
-      width={20}
-      height={20}
-      alt='Slack'
-    />
-  )
 }
 
 export function WebhookBW(): React.JSX.Element {

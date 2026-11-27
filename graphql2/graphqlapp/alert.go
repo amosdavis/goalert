@@ -13,7 +13,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/target/goalert/alert"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/graphql2"
@@ -23,20 +22,17 @@ import (
 	"github.com/target/goalert/service"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/timeutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
 
 type (
 	Alert              App
-	AlertMetric        App
 	AlertLogEntry      App
 	AlertLogEntryState App
 )
 
 func (a *App) Alert() graphql2.AlertResolver                 { return (*Alert)(a) }
-func (a *App) AlertMetric() graphql2.AlertMetricResolver     { return (*AlertMetric)(a) }
 func (a *App) AlertLogEntry() graphql2.AlertLogEntryResolver { return (*AlertLogEntry)(a) }
 
 func (a *AlertLogEntry) MessageID(ctx context.Context, obj *alertlog.Entry) (*string, error) {
@@ -51,16 +47,6 @@ func (a *AlertLogEntry) MessageID(ctx context.Context, obj *alertlog.Entry) (*st
 func (a *AlertLogEntry) ID(ctx context.Context, obj *alertlog.Entry) (int, error) {
 	e := *obj
 	return e.ID(), nil
-}
-
-func (a *AlertMetric) TimeToAck(ctx context.Context, obj *alertmetrics.Metric) (*timeutil.ISODuration, error) {
-	dur := timeutil.ISODurationFromTime(obj.TimeToAck)
-	return &dur, nil
-}
-
-func (a *AlertMetric) TimeToClose(ctx context.Context, obj *alertmetrics.Metric) (*timeutil.ISODuration, error) {
-	dur := timeutil.ISODurationFromTime(obj.TimeToClose)
-	return &dur, nil
 }
 
 func (a *AlertLogEntry) Timestamp(ctx context.Context, obj *alertlog.Entry) (*time.Time, error) {
@@ -307,12 +293,7 @@ func (q *Query) Alerts(ctx context.Context, opts *graphql2.AlertSearchOptions) (
 		if opts.NotCreatedBefore != nil {
 			s.NotBefore = *opts.NotCreatedBefore
 		}
-		if opts.ClosedBefore != nil {
-			s.ClosedBefore = *opts.ClosedBefore
-		}
-		if opts.NotClosedBefore != nil {
-			s.NotClosedBefore = *opts.NotClosedBefore
-		}
+
 	}
 
 	s.Limit++
@@ -369,10 +350,6 @@ func (a *Alert) State(ctx context.Context, raw *alert.Alert) (*alert.State, erro
 
 func (a *Alert) Service(ctx context.Context, raw *alert.Alert) (*service.Service, error) {
 	return (*App)(a).FindOneService(ctx, raw.ServiceID)
-}
-
-func (a *Alert) Metrics(ctx context.Context, raw *alert.Alert) (*alertmetrics.Metric, error) {
-	return (*App)(a).FindOneAlertMetric(ctx, raw.ID)
 }
 
 func (m *Mutation) CloseMatchingAlert(ctx context.Context, input graphql2.CloseMatchingAlertInput) (bool, error) {

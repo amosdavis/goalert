@@ -2,42 +2,15 @@ package limit
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation/validate"
 )
 
-// A Store allows getting and setting system limits.
+// A Store allows getting and setting system limits on the Delta backend.
 type Store struct {
-	delta *deltaLimits // set when the store runs on the Delta backend
-
-	update   *sql.Stmt
-	findAll  *sql.Stmt
-	findOne  *sql.Stmt
-	setOne   *sql.Stmt
-	resetAll *sql.Stmt
-}
-
-// NewStore creates a new DB and prepares all necessary SQL statements.
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
-	p := &util.Prepare{DB: db, Ctx: ctx}
-	return &Store{
-		update:  p.P(`update config_limits set max = $2 where id = $1`),
-		findAll: p.P(`select id, max from config_limits`),
-		findOne: p.P(`select max from config_limits where id = $1`),
-		setOne: p.P(`
-			insert into config_limits (id, max)
-			values ($1, $2)
-			on conflict (id) do update
-			set max = $2
-		`),
-		resetAll: p.P(`delete from config_limits`),
-	}, p.Err
+	delta *deltaLimits
 }
 
 // UpdateLimitsTx updates all configurable limits.
@@ -46,19 +19,7 @@ func (s *Store) UpdateLimitsTx(ctx context.Context, tx txn.Tx, id string, max in
 	if err != nil {
 		return err
 	}
-	if s.delta != nil {
-		return s.delta.update(ctx, tx, id, max)
-	}
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.update
-	if stx != nil {
-		stmt = stx.Stmt(stmt)
-	}
-	_, err = stmt.ExecContext(ctx, id, max)
-	if err != nil {
-		return err
-	}
-	return err
+	return s.delta.update(ctx, tx, id, max)
 }
 
 // ResetAll will reset all configurable limits to the default (no-limit).
@@ -67,11 +28,7 @@ func (s *Store) ResetAll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if s.delta != nil {
-		return s.delta.resetAll(ctx)
-	}
-	_, err = s.resetAll.ExecContext(ctx)
-	return err
+	return s.delta.resetAll(ctx)
 }
 
 // Max will return the current max value for the given limit.
@@ -84,18 +41,7 @@ func (s *Store) Max(ctx context.Context, id ID) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if s.delta != nil {
-		return s.delta.max(ctx, id)
-	}
-	var max int
-	err = s.findOne.QueryRowContext(ctx, id).Scan(&max)
-	if errors.Is(err, sql.ErrNoRows) {
-		return -1, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return max, nil
+	return s.delta.max(ctx, id)
 }
 
 // All will get the current value of all limits.
@@ -104,25 +50,7 @@ func (s *Store) All(ctx context.Context) (Limits, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.all(ctx)
-	}
-	rows, err := s.findAll.QueryContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var id string
-	var max int
-	l := make(Limits, 8)
-	for rows.Next() {
-		err = rows.Scan(&id, &max)
-		if err != nil {
-			return nil, err
-		}
-		l[ID(id)] = max
-	}
-	return l, nil
+	return s.delta.all(ctx)
 }
 
 // SetMax allows setting the max value for a limit.
@@ -135,10 +63,5 @@ func (s *Store) SetMax(ctx context.Context, id ID, max int) error {
 	if err != nil {
 		return err
 	}
-	if s.delta != nil {
-		return s.delta.set(ctx, id, max)
-	}
-
-	_, err = s.setOne.ExecContext(ctx, id, max)
-	return err
+	return s.delta.set(ctx, id, max)
 }

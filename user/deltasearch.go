@@ -20,8 +20,8 @@ type searchHit struct {
 	fav   bool
 }
 
-// search matches users like searchTemplate. It orders names by their bytes,
-// not by the database's collation.
+// search filters, orders, and paginates users. It orders names by their bytes,
+// not by a database collation.
 func (d *deltaUsers) search(ctx context.Context, opts *renderData) ([]User, error) {
 	if len(opts.DestArgs) > 0 && d.destUsers == nil {
 		return nil, deltatxn.ErrNotPorted
@@ -133,9 +133,8 @@ func lowerSet(ids []string) map[string]bool {
 	return set
 }
 
-// nameMatcher returns the name condition of searchTemplate: the name contains
-// the search text, or words that start with the words of the search text, in
-// the same order (search.Helpers' contains and orderedPrefixSearch).
+// nameMatcher matches a name that contains the search text, or words that
+// start with the words of the search text, in the same order.
 func nameMatcher(text string) func(name string) bool {
 	text = strings.ToLower(text)
 	terms := make([][]rune, 0)

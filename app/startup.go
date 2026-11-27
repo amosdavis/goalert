@@ -3,14 +3,11 @@ package app
 import (
 	"context"
 	"log/slog"
-	"time"
 
-	"github.com/target/goalert/app/lifecycle"
 	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/notification/email"
 	"github.com/target/goalert/notification/webhook"
 	"github.com/target/goalert/permission"
-	"github.com/target/goalert/retry"
 
 	"github.com/pkg/errors"
 )
@@ -38,15 +35,11 @@ func (app *App) startup(ctx context.Context) error {
 		}
 	}
 
-	if app.storage != nil {
-		app.initStartup(ctx, "Startup.Stores", app.initStorageStores)
-	} else {
-		app.startupDB(ctx)
-	}
+	app.initStartup(ctx, "Startup.Stores", app.initStorageStores)
 	if app.startupErr != nil {
 		return app.startupErr // ConfigStore will panic if not initialized
 	}
-	if app.cfg.InitialConfig != nil && app.storage != nil {
+	if app.cfg.InitialConfig != nil {
 		app.initStartup(ctx, "Startup.InitialConfig", func(ctx context.Context) (err error) {
 			permission.SudoContext(ctx, func(ctx context.Context) {
 				err = app.ConfigStore.SetConfig(ctx, *app.cfg.InitialConfig)
@@ -59,49 +52,17 @@ func (app *App) startup(ctx context.Context) error {
 	return app.startupAll(ctx)
 }
 
-// startupDB connects to the database, and makes the stores on it.
-func (app *App) startupDB(ctx context.Context) {
-	app.initStartup(ctx, "Startup.TestDBConn", func(ctx context.Context) error {
-		err := app.db.PingContext(ctx)
-		if err == nil { // success
-			return nil
-		}
-
-		t := time.NewTicker(time.Second)
-		defer t.Stop()
-		for retry.IsTemporaryError(err) {
-			app.Logger.WarnContext(ctx, "Failed to connect to database, will retry.", slog.Any("error", err))
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-t.C:
-				err = app.db.PingContext(ctx)
-			}
-		}
-
-		return err
-	})
-
-	app.initStartup(ctx, "Startup.River", app.initRiver)
-	app.initStartup(ctx, "Startup.DBStores", app.initStores)
-}
-
 // startupAll starts everything else.
 func (app *App) startupAll(ctx context.Context) error {
 	// init twilio before engine
 	app.initStartup(
 		ctx, "Startup.Twilio", app.initTwilio)
 
-	app.initStartup(ctx, "Startup.Slack", app.initSlack)
-
 	app.initStartup(ctx, "Startup.Engine", app.initEngine)
 	app.initStartup(ctx, "Startup.Auth", app.initAuth)
 	app.initStartup(ctx, "Startup.GraphQL", app.initGraphQL)
 
 	app.initStartup(ctx, "Startup.HTTPServer", app.initHTTP)
-	app.initStartup(ctx, "Startup.SysAPI", app.initSysAPI)
-
-	app.initStartup(ctx, "Startup.SMTPServer", app.initSMTPServer)
 
 	if app.startupErr != nil {
 		return app.startupErr
@@ -113,10 +74,6 @@ func (app *App) startupAll(ctx context.Context) error {
 	app.DestRegistry.RegisterProvider(ctx, app.ScheduleStore)
 	app.DestRegistry.RegisterProvider(ctx, app.UserStore)
 	app.DestRegistry.RegisterProvider(ctx, app.RotationStore)
-	app.DestRegistry.RegisterProvider(ctx, app.AlertStore)
-	app.DestRegistry.RegisterProvider(ctx, app.slackChan)
-	app.DestRegistry.RegisterProvider(ctx, app.slackChan.DMSender())
-	app.DestRegistry.RegisterProvider(ctx, app.slackChan.UserGroupSender())
 	app.DestRegistry.RegisterProvider(ctx, webhook.NewSender(ctx, app.httpClient))
 	if app.cfg.StubNotifiers {
 		app.DestRegistry.StubNotifiers()
@@ -127,22 +84,5 @@ func (app *App) startupAll(ctx context.Context) error {
 		return err
 	}
 
-	err = app.mgr.SetPauseResumer(lifecycle.MultiPauseResume(
-		app.Engine,
-		lifecycle.PauseResumerFunc(app._pause, app._resume),
-	))
-	if err != nil {
-		return err
-	}
-
-	if app.cfg.SWO != nil {
-		app.cfg.SWO.SetPauseResumer(app)
-		app.Logger.InfoContext(ctx, "SWO Enabled.")
-	}
-
-	if app.storage == nil {
-		app.setupListenEvents()
-	}
-
-	return nil
+	return app.mgr.SetPauseResumer(app.Engine)
 }

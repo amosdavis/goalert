@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useLayoutEffect, useState } from 'react'
+import React, { Suspense, useLayoutEffect, useState } from 'react'
 import AppBar from '@mui/material/AppBar'
 import Hidden from '@mui/material/Hidden'
 import Toolbar from '@mui/material/Toolbar'
@@ -20,11 +20,8 @@ import { Theme } from '@mui/material/styles'
 import AppRoutes from './AppRoutes'
 import { useURLKey } from '../actions'
 import NavBar from './NavBar'
-import AuthLink from './components/AuthLink'
 import { useExpFlag } from '../util/useExpFlag'
 import { NotificationProvider } from './SnackbarNotification'
-import ReactGA from 'react-ga4'
-import { useConfigValue } from '../util/RequireConfig'
 import Spinner from '../loading/components/Spinner'
 
 const useStyles = makeStyles((theme: Theme) => ({
@@ -54,12 +51,6 @@ const useStyles = makeStyles((theme: Theme) => ({
 }))
 
 export default function App(): React.JSX.Element {
-  const [analyticsID] = useConfigValue('General.GoogleAnalyticsID') as [string]
-
-  useEffect(() => {
-    if (analyticsID) ReactGA.initialize(analyticsID)
-  }, [analyticsID])
-
   const classes = useStyles()
   const [showMobile, setShowMobile] = useState(false)
   const fullScreen = useIsWidthDown('md')
@@ -128,7 +119,6 @@ export default function App(): React.JSX.Element {
               <ErrorBoundary>
                 <Suspense fallback={<Spinner />}>
                   <LazyNewUserSetup />
-                  <AuthLink />
                   <Grid
                     container
                     justifyContent='center'

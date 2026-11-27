@@ -40,15 +40,6 @@ func (s *Sender) TypeInfo(ctx context.Context) (*nfydest.TypeInfo, error) {
 			InputType:          "email",
 			SupportsValidation: true,
 		}},
-		DynamicParams: []nfydest.DynamicParamConfig{{
-			ParamID: "subject",
-			Label:   "Subject",
-			Hint:    "Subject of the email message.",
-		}, {
-			ParamID: "body",
-			Label:   "Body",
-			Hint:    "Body of the email message.",
-		}},
 	}, nil
 }
 

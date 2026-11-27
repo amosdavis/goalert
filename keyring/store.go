@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"crypto/x509"
-	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"math/big"
@@ -17,10 +16,7 @@ import (
 	"time"
 
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -80,13 +76,12 @@ type Config struct {
 	Keys Keys
 }
 
-// DB implements a Keyring using postgres as the datastore.
+// DB implements a Keyring using the Delta backend as the datastore.
 type DB struct {
 	logger *log.Logger
 
-	db    *sql.DB
 	txdb  txn.DB
-	delta *DeltaTables // the Delta backend, if set (delta.go)
+	delta *DeltaTables
 
 	cfg Config
 
@@ -97,11 +92,6 @@ type DB struct {
 	mx          sync.RWMutex
 	shutdown    chan context.Context
 	forceRotate chan chan error
-
-	fetchKeys  *sql.Stmt
-	setKeys    *sql.Stmt
-	txTime     *sql.Stmt
-	insertKeys *sql.Stmt
 }
 
 func marshalVerificationKeys(keys map[byte]ecdsa.PublicKey) ([]byte, error) {
@@ -136,56 +126,6 @@ func parseVerificationKeys(data []byte) (map[byte]ecdsa.PublicKey, error) {
 	}
 
 	return res, nil
-}
-
-// NewDB creates a new postgres-backed keyring.
-func NewDB(ctx context.Context, logger *log.Logger, db *sql.DB, cfg *Config) (*DB, error) {
-	d, err := newDB(logger, cfg)
-	if err != nil {
-		return nil, err
-	}
-	p := &util.Prepare{DB: db, Ctx: ctx}
-	d.db, d.txdb = db, sqltxn.DB{DB: db}
-	d.txTime = p.P(`select now()`)
-	d.insertKeys = p.P(`
-			insert into keyring (
-				id,
-				verification_keys,
-				signing_key,
-				next_key,
-				next_rotation,
-				rotation_count
-			) values (
-				$1, $2, $3, $4, $5, 0
-			)
-			on conflict do nothing
-		`)
-	d.fetchKeys = p.P(`
-			select
-				verification_keys,
-				signing_key,
-				next_key,
-				now(),
-				next_rotation,
-				rotation_count
-			from keyring
-			where id = $1
-			for update
-		`)
-	d.setKeys = p.P(`
-			update keyring
-			set
-				verification_keys = $2,
-				signing_key = $3,
-				next_key = $4,
-				next_rotation = $5,
-				rotation_count = $6
-			where id = $1
-		`)
-	if p.Err != nil {
-		return nil, p.Err
-	}
-	return d.start(ctx)
 }
 
 // newDB checks cfg and returns a keyring with no backend yet.
@@ -301,87 +241,6 @@ func (db *DB) loadKey(encData []byte) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-func (db *DB) commitNewKeyring(ctx context.Context, tx txn.Tx) error {
-	stx := sqltxn.Unwrap(tx)
-	var t time.Time
-	err := stx.Stmt(db.txTime).QueryRowContext(ctx).Scan(&t)
-	if err != nil {
-		return err
-	}
-	signKey, signData, err := db.newKey()
-	if err != nil {
-		return err
-	}
-	nextKey, nextData, err := db.newKey()
-	if err != nil {
-		return err
-	}
-
-	v := map[byte]ecdsa.PublicKey{
-		0: signKey.PublicKey,
-		1: nextKey.PublicKey,
-	}
-
-	vData, err := marshalVerificationKeys(v)
-	if err != nil {
-		return err
-	}
-
-	var nextRotTime interface{}
-	if db.cfg.RotationDays > 0 {
-		// We want to wait an explicit amount of time, rather than rotating by date.
-		//
-		// Specifically, if multiple instances of GoAlert happen to run on systems of differing
-		// timezones, they should be able to agree on handoff times.
-		nextRotTime = t.Add(time.Hour * 24 * time.Duration(db.cfg.RotationDays))
-	}
-
-	res, err := stx.Stmt(db.insertKeys).ExecContext(ctx, db.cfg.Name, vData, signData, nextData, nextRotTime)
-	if err != nil {
-		return err
-	}
-	rowCount, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	err = stx.Commit()
-	if err != nil {
-		return err
-	}
-
-	var rotationCount int
-
-	if rowCount == 0 {
-		// failed to insert the new data, so scan old & refresh
-		var vKeysData, signKeyData, nextKeyData []byte
-		var rotateT sql.NullTime
-		err = db.fetchKeys.QueryRowContext(ctx, db.cfg.Name).Scan(&vKeysData, &signKeyData, &nextKeyData, &t, &rotateT, &rotationCount)
-		if err != nil {
-			return err
-		}
-
-		v, err = parseVerificationKeys(vKeysData)
-		if err != nil {
-			return err
-		}
-
-		signKey, err = db.loadKey(signKeyData)
-		if err != nil {
-			// if we can't get the sign key -- we will at least move forward with the verification keys
-			log.Log(ctx, errors.Wrap(err, "load signing key"))
-		}
-	}
-
-	db.mx.Lock()
-	defer db.mx.Unlock()
-
-	db.verificationKeys = v
-	db.signingKey = signKey
-	db.rotationCount = rotationCount
-
-	return nil
-}
-
 func (db *DB) rotateVerificationKeys(m map[byte]ecdsa.PublicKey, n int, newKey ecdsa.PublicKey) map[byte]ecdsa.PublicKey {
 	newM := make(map[byte]ecdsa.PublicKey, len(m)+1)
 	for i := n - db.cfg.MaxOldKeys; i <= n; i++ {
@@ -406,81 +265,7 @@ func (db *DB) RotateKeys(ctx context.Context) error {
 //
 // When a key is rotated, a new key is generated and inserted.
 func (db *DB) refreshAndRotateKeys(ctx context.Context, forceRotation bool) error {
-	if db.delta != nil {
-		return db.deltaRefreshAndRotate(ctx, forceRotation)
-	}
-	tx, err := db.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer sqlutil.Rollback(ctx, "keyring: rotate keys", tx)
-
-	row := tx.Stmt(db.fetchKeys).QueryRowContext(ctx, db.cfg.Name)
-
-	var verificationKeys map[byte]ecdsa.PublicKey
-
-	var vKeysData, signKeyData, nextKeyData []byte
-	var t time.Time
-	var rotateT sql.NullTime
-	var count int
-	err = row.Scan(&vKeysData, &signKeyData, &nextKeyData, &t, &rotateT, &count)
-	if errors.Is(err, sql.ErrNoRows) {
-		return db.commitNewKeyring(ctx, tx)
-	}
-	if err != nil {
-		return err
-	}
-
-	verificationKeys, err = parseVerificationKeys(vKeysData)
-	if err != nil {
-		return errors.Wrap(err, "unmarshal verification keys")
-	}
-
-	if forceRotation || (rotateT.Valid && !t.Before(rotateT.Time)) {
-		// perform a key rotation
-		signKeyData = nextKeyData
-		var nextKey *ecdsa.PrivateKey
-		nextKey, nextKeyData, err = db.newKey()
-		if err != nil {
-			return err
-		}
-		count++
-		verificationKeys = db.rotateVerificationKeys(verificationKeys, count, nextKey.PublicKey)
-		vKeysData, err = marshalVerificationKeys(verificationKeys)
-		if err != nil {
-			return err
-		}
-		var nextRotTime interface{}
-		if db.cfg.RotationDays > 0 {
-			// We want to wait an explicit amount of time, rather than rotating by date.
-			//
-			// Specifically, if multiple instances of GoAlert happen to run on systems of differing
-			// timezones, they should be able to agree on handoff times.
-			nextRotTime = t.Add(time.Hour * 24 * time.Duration(db.cfg.RotationDays))
-		}
-		_, err := tx.Stmt(db.setKeys).ExecContext(ctx, db.cfg.Name, vKeysData, signKeyData, nextKeyData, nextRotTime, count)
-		if err != nil {
-			return err
-		}
-		err = tx.Commit()
-		if err != nil {
-			return err
-		}
-	}
-
-	signKey, err := db.loadKey(signKeyData)
-	if err != nil {
-		log.Log(ctx, errors.Wrap(err, "load signing key"))
-	}
-
-	db.mx.Lock()
-	defer db.mx.Unlock()
-
-	db.verificationKeys = verificationKeys
-	db.signingKey = signKey
-	db.rotationCount = count
-
-	return nil
+	return db.deltaRefreshAndRotate(ctx, forceRotation)
 }
 
 func (db *DB) SignJWT(c jwt.Claims) (string, error) {

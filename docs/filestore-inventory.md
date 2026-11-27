@@ -1,6 +1,8 @@
 # Filestore Backend: Inventory of Database Behavior
 
-Everything below is enforced by Postgres today (`migrate/schema.sql`). The
+Everything below was enforced by Postgres (`migrate/schema.sql`, deleted with
+Postgres on 2026-11-26; this inventory is now its record, and
+`deltastores/schema_test.go` checks the Delta schema against it, F51). The
 file backend has no database to do it, so each item needs Go code that does
 the same thing and a test that proves it (F2, F7, F8), or a note that it is
 dropped with the feature it serves (F24). Phase 3 fills in the **Go** line
@@ -81,8 +83,7 @@ Unique:
 - alert_metrics_id_key: `(id)`
 - alert_metrics_pkey (index): `(alert_id)`
 
-**Go:** ported, `alert/alertmetrics/delta.go`.
-
+**Go:** gone with the 2026-11-27 feature strip (F60).
 ### alert_status_subscriptions
 
 Foreign keys:
@@ -161,8 +162,7 @@ Unique:
 
 - auth_link_requests_pkey (index): `(id)`
 
-**Go:** ported, `auth/authlink/delta.go`. Adding a request also deletes expired ones.
-
+**Go:** gone with the 2026-11-27 feature strip (F60).
 ### auth_nonce
 
 Unique:
@@ -420,9 +420,8 @@ Unique:
 - heartbeat_monitor_name_service_id (index): `(lower(name), service_id)`
 - heartbeat_monitors_pkey (index): `(id)`
 
-**Go:** ported, `heartbeat/delta.go`, with the limit trigger in `checkLimit`. The
+**Go:** gone with the 2026-11-27 feature strip (F60).
 interval is int64 microseconds. The engine's processing is a later phase.
-
 ### integration_keys
 
 Triggers:
@@ -590,10 +589,9 @@ Unique:
 - pending_signals_message_id_key: `(message_id)`
 - pending_signals_pkey (index): `(id)`
 
-**Go:** ported, `integrationkey/delta.go`: both limit triggers are in `insertSignal`,
+**Go:** gone with the 2026-11-27 feature strip (F60).
 and `trg_pending_signals_after_insert` is the optional `NewSignal` func. The
 engine's signal manager is a later phase.
-
 ### region_ids
 
 Unique:
@@ -883,8 +881,7 @@ Unique:
 - twilio_sms_callbacks_uniq_id (index): `(id)`
 - twilio_sms_callbacks_uniq_id: `(id)`
 
-**Go:** ported, `notification/twilio/delta.go`, including SMS reply codes.
-
+**Go:** gone with the 2026-11-27 feature strip (F60).
 ### twilio_sms_errors
 
 Unique:
@@ -919,8 +916,7 @@ Unique:
 - uik_config_secondary_token_key (index): `(secondary_token)`
 - uik_config_secondary_token_key: `(secondary_token)`
 
-**Go:** ported, `integrationkey/delta.go`, with both token constraints.
-
+**Go:** gone with the 2026-11-27 feature strip (F60).
 ### user_calendar_subscriptions
 
 Triggers:
@@ -938,9 +934,8 @@ Unique:
 - user_calendar_subscriptions_name_schedule_id_user_id_key: `(name, schedule_id, user_id)`
 - user_calendar_subscriptions_pkey (index): `(id)`
 
-**Go:** ported, `calsub/delta.go`, with the limit trigger. Last accesses are written
+**Go:** gone with the 2026-11-27 feature strip (F60).
 together, at most once a minute for each pod (F37).
-
 ### user_contact_methods
 
 Triggers:
@@ -1058,8 +1053,7 @@ Unique:
 
 - user_slack_data_pkey (index): `(id)`
 
-**Go:** defined, `notification/slack/delta.go`. Nothing reads or writes it, so it
-may go (F24).
+**Go:** gone with Slack. Delta installs do not have this table.
 
 ### user_verification_codes
 

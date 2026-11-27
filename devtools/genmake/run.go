@@ -46,7 +46,7 @@ func newTool(path string) Tool {
 	dir := filepath.Dir(path)
 	return Tool{
 		Name: filepath.Base(dir),
-		Dir:  dir,
+		Dir:  filepath.ToSlash(dir), // a Makefile's paths, wherever it is made
 	}
 }
 
@@ -70,7 +70,6 @@ func main() {
 	data.Bundles = []Bundle{
 		{Name: "goalert", Binaries: []string{
 			"goalert",
-			"goalert-slack-email-sync",
 		}},
 	}
 

@@ -17,67 +17,6 @@ type IntegrationKeyTypeInfo {
   enabled: Boolean!
 }
 
-type SWOStatus {
-  state: SWOState!
-  lastStatus: String!
-  lastError: String!
-
-  nodes: [SWONode!]!
-
-  mainDBVersion: String!
-  nextDBVersion: String!
-}
-
-enum SWOState {
-  unknown
-  resetting
-  idle
-  syncing
-  pausing
-  executing
-  done
-}
-
-type SWONode {
-  id: ID!
-
-  canExec: Boolean!
-  isLeader: Boolean!
-
-  """
-  The uptime of the node in seconds. Empty if the node/connection is *not* a GoAlert instance in SWO mode.
-  """
-  uptime: String!
-
-  configError: String!
-  connections: [SWOConnection!]
-}
-
-type SWOConnection {
-  name: String!
-  version: String!
-  type: String!
-  isNext: Boolean!
-  count: Int!
-}
-
-type LinkAccountInfo {
-  userDetails: String!
-  alertID: Int
-  alertNewStatus: AlertStatus
-}
-
-input AlertMetricsOptions {
-  rInterval: ISORInterval!
-
-  filterByServiceID: [ID!]
-}
-
-type AlertDataPoint {
-  timestamp: ISOTimestamp!
-  alertCount: Int!
-}
-
 input DebugMessagesInput {
   first: Int = 15
   createdBefore: ISOTimestamp
@@ -138,42 +77,6 @@ type TimeSeriesBucket {
   value: Float!
 }
 
-input SlackUserGroupSearchOptions {
-  first: Int = 15
-  after: String = ""
-  search: String = ""
-  omit: [ID!]
-}
-
-type SlackUserGroup {
-  id: ID!
-  name: String!
-  handle: String!
-}
-
-type SlackUserGroupConnection {
-  nodes: [SlackUserGroup!]!
-  pageInfo: PageInfo!
-}
-
-input SlackChannelSearchOptions {
-  first: Int = 15
-  after: String = ""
-  search: String = ""
-  omit: [ID!]
-}
-
-type SlackChannel {
-  id: ID!
-  name: String!
-  teamID: String!
-}
-
-type SlackChannelConnection {
-  nodes: [SlackChannel!]!
-  pageInfo: PageInfo!
-}
-
 type SystemLimit {
   id: SystemLimitID!
   description: String!
@@ -207,7 +110,6 @@ enum ConfigType {
 }
 
 enum SystemLimitID {
-  CalendarSubscriptionsPerUser
   NotificationRulesPerUser
   ContactMethodsPerUser
   EPStepsPerPolicy
@@ -217,7 +119,6 @@ enum SystemLimitID {
   IntegrationKeysPerService
   UnackedAlertsPerService
   TargetsPerSchedule
-  HeartbeatMonitorsPerService
   UserOverridesPerSchedule
 }
 
@@ -322,38 +223,6 @@ type StringConnection {
   pageInfo: PageInfo!
 }
 
-type PhoneNumberInfo {
-  id: String!
-  countryCode: String!
-  regionCode: String!
-  formatted: String!
-  valid: Boolean!
-  error: String!
-}
-
-type DebugCarrierInfo {
-  name: String!
-  type: String!
-  mobileNetworkCode: String!
-  mobileCountryCode: String!
-}
-
-input DebugCarrierInfoInput {
-  number: String!
-}
-
-input DebugSendSMSInput {
-  from: String!
-  to: String!
-  body: String!
-}
-
-type DebugSendSMSInfo {
-  id: ID!
-  providerURL: String!
-  fromNumber: String!
-}
-
 input DebugMessageStatusInput {
   providerMessageID: ID!
 }
@@ -392,11 +261,6 @@ input SetScheduleShiftInput {
   userID: ID!
   start: ISOTimestamp!
   end: ISOTimestamp!
-}
-
-enum SWOAction {
-  reset
-  execute
 }
 
 input CreateBasicAuthInput {
@@ -470,38 +334,6 @@ input CreateUserInput {
   email: String
   role: UserRole
   favorite: Boolean
-}
-
-input CreateUserCalendarSubscriptionInput {
-  name: String!
-  reminderMinutes: [Int!]
-  scheduleID: ID!
-  disabled: Boolean
-  fullSchedule: Boolean
-}
-
-input UpdateUserCalendarSubscriptionInput {
-  id: ID!
-  name: String
-  reminderMinutes: [Int!]
-  disabled: Boolean
-  fullSchedule: Boolean
-}
-
-type UserCalendarSubscription {
-  id: ID!
-  name: String!
-  reminderMinutes: [Int!]!
-  fullSchedule: Boolean!
-  scheduleID: ID!
-  schedule: Schedule
-  lastAccess: ISOTimestamp!
-  disabled: Boolean!
-
-  """
-  Subscription url, only available upon creation.
-  """
-  url: String
 }
 
 input ConfigValueInput {
@@ -595,7 +427,6 @@ input CreateServiceInput {
   newEscalationPolicy: CreateEscalationPolicyInput
   newIntegrationKeys: [CreateIntegrationKeyInput!]
   labels: [SetLabelInput!]
-  newHeartbeatMonitors: [CreateHeartbeatMonitorInput!]
 }
 
 input CreateEscalationPolicyInput {
@@ -973,8 +804,6 @@ input AlertSearchOptions {
   sort: AlertSearchSort = statusID
   createdBefore: ISOTimestamp
   notCreatedBefore: ISOTimestamp
-  closedBefore: ISOTimestamp
-  notClosedBefore: ISOTimestamp
 }
 
 enum AlertSearchSort {
@@ -1031,23 +860,11 @@ type Alert {
 
   pendingNotifications: [AlertPendingNotification!]!
 
-  """
-  Metrics are only available for closed alerts.
-  """
-  metrics: AlertMetric
-
   noiseReason: String
 
   meta: [AlertMetadata!]
 
   metaValue(key: String!): String!
-}
-
-type AlertMetric {
-  escalated: Boolean!
-  closedAt: ISOTimestamp!
-  timeToAck: ISODuration!
-  timeToClose: ISODuration!
 }
 
 type AlertPendingNotification {
@@ -1120,7 +937,6 @@ type Service {
   onCallUsers: [ServiceOnCallUser!]!
   integrationKeys: [IntegrationKey!]!
   labels: [Label!]!
-  heartbeatMonitors: [HeartbeatMonitor!]!
 
   notices: [Notice!]!
 
@@ -1139,60 +955,6 @@ input CreateIntegrationKeyInput {
   Name of the external system this key is managed by.
   """
   externalSystemName: String
-}
-
-input CreateHeartbeatMonitorInput {
-  serviceID: ID
-  name: String!
-  timeoutMinutes: Int!
-  additionalDetails: String
-
-  """
-  If non-empty, the monitor will be muted with this reason.
-
-  Muting a monitor will prevent it from triggering new alerts, but existing
-  alerts will remain active until closed or the monitor is healthy again.
-  """
-  muted: String
-}
-
-input UpdateHeartbeatMonitorInput {
-  id: ID!
-  name: String
-  timeoutMinutes: Int
-  additionalDetails: String
-
-  """
-  If non-empty, the monitor will be muted with this reason.
-
-  Muting a monitor will prevent it from triggering new alerts, but existing
-  alerts will remain active until closed or the monitor is healthy again.
-  """
-  muted: String
-}
-
-enum HeartbeatMonitorState {
-  inactive
-  healthy
-  unhealthy
-}
-
-type HeartbeatMonitor {
-  id: ID!
-  serviceID: ID!
-  name: String!
-  timeoutMinutes: Int!
-  lastState: HeartbeatMonitorState!
-  lastHeartbeat: ISOTimestamp
-  href: String!
-  additionalDetails: String!
-
-  """
-  If non-empty, the monitor is muted with this reason.
-
-  Muted monitors will not trigger new alerts, but will operate normally otherwise.
-  """
-  muted: String!
 }
 
 type Label {
@@ -1215,11 +977,6 @@ type IntegrationKey {
 
 enum IntegrationKeyType {
   generic
-  grafana
-  site24x7
-  prometheusAlertmanager
-  email
-  universal
 }
 
 type ServiceOnCallUser {
@@ -1263,8 +1020,6 @@ input TargetInput {
 enum TargetType {
   escalationPolicy
   notificationChannel
-  slackChannel
-  slackUserGroup
   notificationPolicy
   rotation
   service
@@ -1275,8 +1030,6 @@ enum TargetType {
   userOverride
   notificationRule
   contactMethod
-  heartbeatMonitor
-  calendarSubscription
   userSession
 }
 
@@ -1341,7 +1094,6 @@ type User {
 
   contactMethods: [UserContactMethod!]!
   notificationRules: [UserNotificationRule!]!
-  calendarSubscriptions: [UserCalendarSubscription!]!
 
   statusUpdateContactMethodID: ID!
     @deprecated(reason: "Use `UserContactMethod.statusUpdates` instead.")
@@ -1398,7 +1150,6 @@ enum ContactMethodType {
   VOICE
   EMAIL
   WEBHOOK
-  SLACK_DM
 }
 
 type UserContactMethod {
@@ -1454,7 +1205,6 @@ input CreateUserContactMethodInput {
   """
   If true, this contact method will receive status updates.
 
-  Note: Some contact method types, like Slack, will always receive status updates and this value is ignored.
   """
   enableStatusUpdates: Boolean
 
@@ -1481,7 +1231,6 @@ input UpdateUserContactMethodInput {
   """
   If true, this contact method will receive status updates.
 
-  Note: Some contact method types, like Slack, will always receive status updates and this value is ignored.
   """
   enableStatusUpdates: Boolean
 

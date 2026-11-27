@@ -8,15 +8,9 @@ import (
 // Type is the entity that needs an integration.
 type Type string
 
-// Types
-const (
-	TypeGrafana                Type = "grafana"
-	TypeSite24x7               Type = "site24x7"
-	TypePrometheusAlertmanager Type = "prometheusAlertmanager"
-	TypeGeneric                Type = "generic"
-	TypeEmail                  Type = "email"
-	TypeUniversal              Type = "universal"
-)
+// TypeGeneric is the only kind of integration key: alerts arrive through the
+// generic API (/api/v2/generic/incoming).
+const TypeGeneric Type = "generic"
 
 func (s Type) Value() (driver.Value, error) {
 	str := string(s)

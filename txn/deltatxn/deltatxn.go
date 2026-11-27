@@ -1,6 +1,6 @@
 // Package deltatxn adapts the Delta backend (filestore.DeltaDB) to package
-// txn, so that store implementations for it take the same txn.Tx as their
-// Postgres versions (docs/filestore-plan.md, phase 3).
+// txn, so stores share one transaction interface (docs/filestore-plan.md,
+// phase 3).
 package deltatxn
 
 import (
@@ -36,9 +36,6 @@ func (db DB) Run(ctx context.Context, opts *txn.Options, fn func(tx txn.Tx) erro
 	})
 	return err
 }
-
-// BeginTx returns ErrManaged: use Run.
-func (DB) BeginTx(context.Context, *txn.Options) (txn.Tx, error) { return nil, ErrManaged }
 
 // Tx is a transaction on the Delta backend. Store implementations get its
 // parts with Unwrap.

@@ -1,19 +1,14 @@
 package engine
 
 import (
-	"database/sql"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 	"github.com/target/goalert/alert"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/auth/authlink"
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/nfydest"
-	"github.com/target/goalert/notification/slack"
 	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/oncall"
 	"github.com/target/goalert/schedule"
@@ -32,12 +27,7 @@ type Config struct {
 	NCStore             *notificationchannel.Store
 	OnCallStore         *oncall.Store
 	ScheduleStore       *schedule.Store
-	AuthLinkStore       *authlink.Store
-	SlackStore          *slack.ChannelSender
 	DestRegistry        *nfydest.Registry
-	River               *river.Client[pgx.Tx]
-	RiverDBSQL          *river.Client[*sql.Tx]
-	RiverWorkers        *river.Workers
 
 	ConfigSource config.Source
 

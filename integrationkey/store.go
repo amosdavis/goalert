@@ -5,37 +5,17 @@ import (
 	"database/sql"
 
 	"github.com/target/goalert/auth/authtoken"
-	"github.com/target/goalert/expflag"
-	"github.com/target/goalert/gadb"
-	"github.com/target/goalert/keyring"
-	"github.com/target/goalert/notification/nfydest"
-	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 )
 
+// Store provides integration key operations on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	delta *deltaKeys // the Delta backend, if set (delta.go)
-
-	keys    keyring.Keyring
-	reg     *nfydest.Registry
-	ncStore destMapper
-}
-
-// destMapper is the part of the notification channel store that is used here.
-type destMapper interface {
-	MapDestToID(ctx context.Context, tx txn.Tx, d gadb.DestV1) (uuid.UUID, error)
-}
-
-func NewStore(ctx context.Context, db *sql.DB, keys keyring.Keyring, reg *nfydest.Registry, ncStore *notificationchannel.Store) *Store {
-	return &Store{db: db, keys: keys, reg: reg, ncStore: ncStore}
+	delta *deltaKeys
 }
 
 func (s *Store) Authorize(ctx context.Context, tok authtoken.Token, t Type) (context.Context, error) {
@@ -61,7 +41,7 @@ func (s *Store) GetServiceID(ctx context.Context, id string, t Type) (string, er
 	keyUUID, err := validate.ParseUUID("IntegrationKeyID", id)
 	err = validate.Many(
 		err,
-		validate.OneOf("IntegrationType", t, TypeGrafana, TypeSite24x7, TypePrometheusAlertmanager, TypeGeneric, TypeEmail, TypeUniversal),
+		validate.OneOf("IntegrationType", t, TypeGeneric),
 	)
 	if err != nil {
 		return "", err
@@ -71,22 +51,7 @@ func (s *Store) GetServiceID(ctx context.Context, id string, t Type) (string, er
 		return "", err
 	}
 
-	if s.delta != nil {
-		return s.delta.serviceID(ctx, keyUUID, t)
-	}
-	serviceID, err := gadb.New(s.db).IntKeyGetServiceID(ctx, gadb.IntKeyGetServiceIDParams{
-		ID:   keyUUID,
-		Type: gadb.EnumIntegrationKeysType(t),
-	})
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
-	if err != nil {
-		return "", errors.WithMessage(err, "lookup failure")
-	}
-
-	return serviceID.String(), nil
+	return s.delta.serviceID(ctx, keyUUID, t)
 }
 
 func (s *Store) Create(ctx context.Context, tx txn.Tx, i *IntegrationKey) (*IntegrationKey, error) {
@@ -100,43 +65,10 @@ func (s *Store) Create(ctx context.Context, tx txn.Tx, i *IntegrationKey) (*Inte
 		return nil, err
 	}
 
-	if i.Type == TypeUniversal && !expflag.ContextHas(ctx, expflag.UnivKeys) {
-		return nil, validation.NewGenericError("experimental flag not enabled")
-	}
-
-	serviceUUID, err := uuid.Parse(n.ServiceID)
+	n.ID = uuid.New().String()
+	err = s.delta.create(ctx, tx, n)
 	if err != nil {
 		return nil, err
-	}
-
-	keyUUID := uuid.New()
-	n.ID = keyUUID.String()
-	if s.delta != nil {
-		err = s.delta.create(ctx, tx, n)
-		if err != nil {
-			return nil, err
-		}
-		return n, nil
-	}
-	dbtx := sqltxn.DBTX(s.db, tx)
-	err = gadb.New(dbtx).IntKeyCreate(ctx, gadb.IntKeyCreateParams{
-		ID:        keyUUID,
-		Name:      n.Name,
-		Type:      gadb.EnumIntegrationKeysType(n.Type),
-		ServiceID: serviceUUID,
-
-		ExternalSystemName: sql.NullString{String: n.ExternalSystemName, Valid: n.ExternalSystemName != ""},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if n.Type == TypeUniversal {
-		// ensure a config exists
-		err = s.SetConfig(ctx, tx, keyUUID, &gadb.UIKConfigV1{})
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	return n, nil
@@ -157,12 +89,7 @@ func (s *Store) DeleteMany(ctx context.Context, tx txn.Tx, ids []string) error {
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.delete(ctx, tx, uuids)
-	}
-	dbtx := sqltxn.DBTX(s.db, tx)
-	err = gadb.New(dbtx).IntKeyDelete(ctx, uuids)
-	return err
+	return s.delta.delete(ctx, tx, uuids)
 }
 
 func (s *Store) FindOne(ctx context.Context, id string) (*IntegrationKey, error) {
@@ -176,25 +103,7 @@ func (s *Store) FindOne(ctx context.Context, id string) (*IntegrationKey, error)
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findOne(ctx, keyUUID)
-	}
-	row, err := gadb.New(s.db).IntKeyFindOne(ctx, keyUUID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return &IntegrationKey{
-		ID:        row.ID.String(),
-		Name:      row.Name,
-		Type:      Type(row.Type),
-		ServiceID: row.ServiceID.String(),
-
-		ExternalSystemName: row.ExternalSystemName.String,
-	}, nil
+	return s.delta.findOne(ctx, keyUUID)
 }
 
 func (s *Store) FindAllByService(ctx context.Context, serviceID string) ([]IntegrationKey, error) {
@@ -208,23 +117,5 @@ func (s *Store) FindAllByService(ctx context.Context, serviceID string) ([]Integ
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findAllByService(ctx, serviceUUID)
-	}
-	rows, err := gadb.New(s.db).IntKeyFindByService(ctx, serviceUUID)
-	if err != nil {
-		return nil, err
-	}
-	keys := make([]IntegrationKey, len(rows))
-	for i, row := range rows {
-		keys[i] = IntegrationKey{
-			ID:        row.ID.String(),
-			Name:      row.Name,
-			Type:      Type(row.Type),
-			ServiceID: row.ServiceID.String(),
-
-			ExternalSystemName: row.ExternalSystemName.String,
-		}
-	}
-	return keys, nil
+	return s.delta.findAllByService(ctx, serviceUUID)
 }

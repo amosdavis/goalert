@@ -2,10 +2,7 @@
 set -ex
 PREFIX=$1
 
-start_postgres $PG_VERSION
-trap "stop_postgres" EXIT
-
-make check test-all bin/goalert BUNDLE=1 CI=1 DB_URL=$DB_URL
+make check test-all bin/goalert BUNDLE=1 CI=1
 ./bin/goalert self-test --offline
 VERSION=$(./bin/goalert version | head -n 1 |awk '{print $2}')
 

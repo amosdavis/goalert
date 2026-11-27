@@ -18,7 +18,7 @@ GoAlert is already used in production environments, so any new changes/features/
 
 It should always be safe to roll out a new version of GoAlert into an existing environment/deployment without downtime.
 
-As an example, things like DB changes/migrations should preserve behavior across revisions.
+As an example, a change to how data is stored must be readable by the version before it, which may still be running (docs/filestore-failure-modes.md, F19 and F30).
 
 ## Pull Requests
 
@@ -47,5 +47,5 @@ GoAlert utilizes 3 main types of testing as tools for different purposes:
 - Unit tests are used for complicated logic and exhaustive edge-case testing and benchmarking. They live with the code being tested:
   - For backend code, a `_test.go` version of a file will contain relevant unit tests. More info [here](https://pkg.go.dev/testing)
   - For UI code, a `.test.ts` version of a file will contain relevant unit tests. More info [here](https://jestjs.io/docs/getting-started).
-- Smoke tests (in `test/smoke`) are used to ensure main functionality and things like behavioral compatibility with future versions & DB migrations. These focus on hard guarantees like deliverability and preserving intent as the application and datastore evolves and changes over time.
+- Smoke tests (in `test/smoke`) are used to ensure main functionality and things like behavioral compatibility with future versions & storage format changes. These focus on hard guarantees like deliverability and preserving intent as the application and datastore evolves and changes over time.
 - Integration tests (currently under `web/src/cypress/integration`) are primarily used to validate happy-path flows work end-to-end, and any important/common error scenarios. They are focused on UX and high-level functionality.

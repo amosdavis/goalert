@@ -22,8 +22,6 @@ var typePriority = map[gadb.EnumOutgoingMessagesType]int{
 	notification.MessageTypeAlertBundle: 4,
 
 	notification.MessageTypeAlertStatus: 5,
-
-	notification.MessageTypeSignalMessage: 99, // lowest priority
 }
 
 type queue struct {

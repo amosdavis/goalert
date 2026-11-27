@@ -2,15 +2,11 @@ package user
 
 import (
 	"context"
-	"database/sql"
 	"strings"
-	"text/template"
 
-	"github.com/pkg/errors"
 	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -62,56 +58,7 @@ type SearchCursor struct {
 	IsFavorite bool   `json:"f,omitempty"`
 }
 
-var searchTemplate = template.Must(template.New("search").Funcs(search.Helpers()).Parse(`
-	SELECT DISTINCT ON ({{ .OrderBy }})
-		usr.id, usr.name, usr.email, usr.role, fav IS DISTINCT FROM NULL
-	FROM users usr
-	{{ if gt (len .DestArgs) 0 }}
-		JOIN user_contact_methods ucm ON ucm.user_id = usr.id
-	{{ end }}
-	{{if not .FavoritesOnly}}
-		LEFT {{end}} JOIN user_favorites fav on usr.id = fav.tgt_user_id 
-			AND {{if .FavoritesUserID}} fav.user_id = :favUserID{{else}}false{{end}}
-	WHERE true
-	{{if .Omit}}
-		AND not usr.id = any(:omit)
-	{{end}}
-	{{if .Only}}
-		AND usr.id = any(:only)
-	{{end}}
-	{{if .Search}}
-		AND ({{orderedPrefixSearch "search" "usr.name"}}  OR {{contains "search" "usr.name"}})
-	{{end}}
-	{{if .After.Name}}
-		AND {{if not .FavoritesFirst}}
-			lower(usr.name) > lower(:afterName)
-		{{else if .After.IsFavorite}}
-			((fav IS DISTINCT FROM NULL AND lower(usr.name) > lower(:afterName)) OR fav isnull)
-		{{else}}
-			(fav isnull AND lower(usr.name) > lower(:afterName))
-		{{end}}
-	{{end}}
-	{{ if .Email }}
-		AND lower(usr.email) = lower(:Email)
-	{{ end }}
-	{{ if gt (len .DestArgs) 0 }}
-		AND ucm.dest->'Args' = :DestArgs
-	{{ end }}
-	{{ if .DestType }}
-		AND ucm.dest->>'Type' = :DestType
-	{{ end }}
-	ORDER BY {{ .OrderBy }}
-	LIMIT {{.Limit}}
-`))
-
 type renderData SearchOptions
-
-func (opts renderData) OrderBy() string {
-	if opts.FavoritesFirst {
-		return "fav isnull, lower(usr.name), usr.id"
-	}
-	return "lower(usr.name), usr.id"
-}
 
 func (opts renderData) SearchString() string {
 	if opts.Email() != "" {
@@ -156,19 +103,6 @@ func (opts renderData) Normalize() (*renderData, error) {
 	return &opts, err
 }
 
-func (opts renderData) QueryArgs() []sql.NamedArg {
-	return []sql.NamedArg{
-		sql.Named("search", opts.SearchString()),
-		sql.Named("afterName", opts.After.Name),
-		sql.Named("omit", sqlutil.UUIDArray(opts.Omit)),
-		sql.Named("only", sqlutil.UUIDArray(opts.Only)),
-		sql.Named("DestArgs", opts.DestArgs),
-		sql.Named("DestType", opts.DestType),
-		sql.Named("favUserID", opts.FavoritesUserID),
-		sql.Named("Email", opts.Email()),
-	}
-}
-
 func (u User) Cursor() (string, error) {
 	return search.Cursor(SearchCursor{
 		Name:       u.Name,
@@ -198,10 +132,6 @@ func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]User, error)
 	if err != nil {
 		return nil, err
 	}
-	query, args, err := search.RenderQuery(ctx, searchTemplate, data)
-	if err != nil {
-		return nil, errors.Wrap(err, "render query")
-	}
 	if opts.FavoritesUserID != "" {
 		userCheck = permission.MatchUser(opts.FavoritesUserID)
 	}
@@ -209,28 +139,5 @@ func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]User, error)
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.search(ctx, data)
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []User
-	var u User
-	for rows.Next() {
-		err = rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.isUserFavorite)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, u)
-	}
-
-	return result, nil
+	return s.delta.search(ctx, data)
 }

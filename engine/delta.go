@@ -15,19 +15,14 @@ import (
 	"github.com/target/goalert/app/lifecycle"
 	"github.com/target/goalert/deltastores"
 	"github.com/target/goalert/engine/cleanupmanager"
-	"github.com/target/goalert/engine/compatmanager"
 	"github.com/target/goalert/engine/enginetables"
 	"github.com/target/goalert/engine/escalationmanager"
-	"github.com/target/goalert/engine/heartbeatmanager"
 	"github.com/target/goalert/engine/message"
-	"github.com/target/goalert/engine/metricsmanager"
 	"github.com/target/goalert/engine/npcyclemanager"
 	"github.com/target/goalert/engine/rotationmanager"
 	"github.com/target/goalert/engine/schedulemanager"
-	"github.com/target/goalert/engine/signalmgr"
 	"github.com/target/goalert/engine/statusmgr"
 	"github.com/target/goalert/engine/verifymanager"
-	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification"
@@ -57,7 +52,6 @@ type deltaEngine struct {
 	t       *deltastores.Tables
 	runner  *enginetables.Runner
 	modules []deltaModule
-	compat  *compatmanager.DeltaDB
 	msg     *message.DeltaDB
 	maint   *enginetables.Maintenance
 
@@ -93,31 +87,23 @@ func NewDeltaEngine(ctx context.Context, dc DeltaConfig, c *Config) (*Engine, er
 	d := &deltaEngine{
 		db: dc.DB, t: dc.Tables, leaseTime: dc.LeaseTime,
 		runner: enginetables.NewRunner(dc.DB, dc.Tables.Engine.NewLease(dc.Name, dc.LeaseTime)),
-		compat: compatmanager.NewDeltaDB(dc.DB, dc.Tables, c.SlackStore),
 		msg:    message.NewDeltaDB(dc.DB, dc.Tables, c.AlertLogStore),
 	}
-	// Each sees what those before it did in the same cycle: an alert that a
-	// heartbeat opens escalates, and the messages about it are claimed, in one
-	// commit.
+	// Each sees what those before it did in the same cycle: an alert that opens
+	// escalates, and the messages about it are claimed, in one commit.
 	d.modules = []deltaModule{
-		d.compat,
 		rotationmanager.NewDeltaDB(d.t),
 		schedulemanager.NewDeltaDB(d.t),
-		heartbeatmanager.NewDeltaDB(d.t, c.AlertStore),
 		escalationmanager.NewDeltaDB(d.t, c.AlertLogStore),
 		npcyclemanager.NewDeltaDB(d.t, c.AlertLogStore),
 		statusmgr.NewDeltaDB(d.t, c.DestRegistry),
 		verifymanager.NewDeltaDB(d.t),
-		metricsmanager.NewDeltaDB(d.t),
-	}
-	if expflag.ContextHas(ctx, expflag.UnivKeys) {
-		d.modules = append(d.modules, signalmgr.NewDeltaDB(d.t))
 	}
 	cleanup := cleanupmanager.NewDeltaDB(d.db, d.t, c.AlertStore, d.runner, c.Logger.With(slog.String("module", "cleanup")))
 	d.maint = d.t.Engine.NewMaintenance(d.db, d.runner, cleanup.Tasks()...)
 
 	p := newEngine(c)
-	p.b, p.delta = &backend{delta: d}, d
+	p.delta = d
 	p.mgr = lifecycle.NewManager(p._run, p._shutdown)
 	return p, p.mgr.SetPauseResumer(lifecycle.PauseResumerFunc(p._pause, p._resume))
 }
@@ -125,11 +111,6 @@ func NewDeltaEngine(ctx context.Context, dc DeltaConfig, c *Config) (*Engine, er
 // deltaCycle runs an engine cycle, if this pod has the lease or can take it.
 func (p *Engine) deltaCycle(ctx context.Context) {
 	d := p.delta
-	if st := d.runner.Status(); st.Mine || st.Free {
-		// Other pods that find the lease free may do it too, which does no harm.
-		d.compat.Prepare(ctx)
-	}
-
 	var batch message.Batch
 	var steps []enginetables.Step
 	for _, m := range d.modules {
@@ -296,7 +277,7 @@ const healthGrace = time.Minute
 // Health returns an error if the engine has not worked for a while, here or, as
 // far as this pod can tell, anywhere (F55).
 func (p *Engine) Health() error {
-	if p == nil || p.delta == nil || p.cfg.DisableCycle {
+	if p == nil || p.cfg.DisableCycle {
 		return nil
 	}
 	d := p.delta
@@ -357,16 +338,4 @@ func (d *deltaEngine) isKnownDest(ctx context.Context, dest gadb.DestV1) (bool, 
 		_, ok := d.t.NotificationChannel.FindByDest(r, dest)
 		return ok
 	})
-}
-
-func (d *deltaEngine) signalParams(ctx context.Context, messageID string) ([]byte, error) {
-	var params []byte
-	ok, err := d.current(ctx, func(r filestore.Reader) (ok bool) {
-		params, ok = d.t.IntegrationKey.SignalParams(r, messageID)
-		return ok
-	})
-	if err == nil && !ok {
-		err = sql.ErrNoRows
-	}
-	return params, err
 }

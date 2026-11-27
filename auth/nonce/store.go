@@ -2,10 +2,8 @@ package nonce
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
 
 	"github.com/google/uuid"
@@ -15,40 +13,9 @@ import (
 // Store allows generating and consuming nonce values.
 type Store struct {
 	logger   *log.Logger
-	db       *sql.DB
 	shutdown chan context.Context
 
-	consume *sql.Stmt
-	cleanup *sql.Stmt
-
-	delta *deltaStore // the Delta backend, if set (delta.go)
-}
-
-// NewStore prepares a new Store.
-func NewStore(ctx context.Context, logger *log.Logger, db *sql.DB) (*Store, error) {
-	p := &util.Prepare{DB: db, Ctx: ctx}
-
-	d := &Store{
-		logger:   logger,
-		db:       db,
-		shutdown: make(chan context.Context),
-
-		consume: p.P(`
-			insert into auth_nonce (id)
-			values ($1)
-			on conflict do nothing
-		`),
-		cleanup: p.P(`
-			delete from auth_nonce
-			where created_at < now() - '1 week'::interval
-		`),
-	}
-	if p.Err != nil {
-		return nil, p.Err
-	}
-	go d.loop()
-
-	return d, nil
+	delta *deltaStore // delta.go
 }
 
 func (s *Store) loop() {
@@ -59,12 +26,7 @@ func (s *Store) loop() {
 	for {
 		select {
 		case <-t.C:
-			var err error
-			if s.delta != nil {
-				err = s.delta.cleanup(ctx)
-			} else {
-				_, err = s.cleanup.ExecContext(ctx)
-			}
+			err := s.delta.cleanup(ctx)
 			if err != nil {
 				log.Log(ctx, errors.Wrap(err, "cleanup old nonce values"))
 			}
@@ -97,13 +59,5 @@ func (s *Store) New() [16]byte { return uuid.New() }
 // The first call to Consume for a given ID will return true, subsequent calls
 // for the same ID will return false.
 func (s *Store) Consume(ctx context.Context, id [16]byte) (bool, error) {
-	if s.delta != nil {
-		return s.delta.consume(ctx, uuid.UUID(id))
-	}
-	res, err := s.consume.ExecContext(ctx, uuid.UUID(id).String())
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
+	return s.delta.consume(ctx, uuid.UUID(id))
 }

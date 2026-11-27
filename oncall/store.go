@@ -2,19 +2,12 @@ package oncall
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/pkg/errors"
 	"github.com/target/goalert/assignment"
-	"github.com/target/goalert/override"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rule"
-	"github.com/target/goalert/util"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
 )
 
@@ -43,102 +36,14 @@ type Shift struct {
 	Target    assignment.RawTarget `json:"target"`
 }
 
-// Store allows retrieving and calculating on-call information.
+// Store retrieves and calculates on-call information on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	delta *deltaOnCall // the Delta backend, if set (delta.go)
-
-	onCallUsersSvc      *sql.Stmt
-	onCallUsersSchedule *sql.Stmt
-	schedOverrides      *sql.Stmt
-
-	schedOnCall *sql.Stmt
-	schedTZ     *sql.Stmt
-	schedRot    *sql.Stmt
-	rotParts    *sql.Stmt
+	delta *deltaOnCall
 
 	ruleStore  *rule.Store
 	schedStore *schedule.Store
 
 	histLim chan struct{}
-}
-
-// NewStore will create a new DB, preparing required statements using the provided context.
-func NewStore(ctx context.Context, db *sql.DB, ruleStore *rule.Store, schedStore *schedule.Store) (*Store, error) {
-	p := &util.Prepare{DB: db, Ctx: ctx}
-
-	return &Store{
-		db:         db,
-		ruleStore:  ruleStore,
-		schedStore: schedStore,
-
-		histLim: make(chan struct{}, 3), // limit concurrent history queries to 3
-
-		schedOverrides: p.P(`
-			select
-				start_time,
-				end_time,
-				add_user_id,
-				remove_user_id
-			from user_overrides
-			where
-				tgt_schedule_id = $1 and
-				end_time > now() and
-				($2, $3) OVERLAPS(start_time, end_time)
-		`),
-
-		onCallUsersSvc: p.P(`
-			select step.step_number, oc.user_id, u.name as user_name
-			from services svc
-			join escalation_policy_steps step on step.escalation_policy_id = svc.escalation_policy_id
-			join ep_step_on_call_users oc on oc.ep_step_id = step.id and oc.end_time isnull
-			join users u on oc.user_id = u.id
-			where svc.id = $1
-			order by step.step_number, oc.start_time
-		`),
-		onCallUsersSchedule: p.P(`
-			SELECT s.user_id, u.name
-			FROM schedule_on_call_users s
-			JOIN users u ON u.id = s.user_id
-			WHERE s.schedule_id = $1 AND s.end_time IS NULL
-		`),
-		schedOnCall: p.P(`
-			select
-				user_id,
-				start_time,
-				end_time
-			from schedule_on_call_users
-			where
-				schedule_id = $1 and
-				tstzrange($2, $3) && tstzrange(start_time, end_time) and
-				(end_time isnull or (end_time - start_time) > '1 minute'::interval)
-		`),
-		schedTZ: p.P(`select time_zone, now() from schedules where id = $1`),
-		schedRot: p.P(`
-			select distinct
-				rot.id,
-				rot.type,
-				rot.start_time,
-				rot.shift_length,
-				rot.time_zone,
-				state.position,
-				state.shift_start
-			from schedule_rules rule
-			join rotations rot on rot.id = rule.tgt_rotation_id
-			join rotation_state state on state.rotation_id = rule.tgt_rotation_id
-			where rule.schedule_id = $1 and rule.tgt_rotation_id notnull
-		`),
-		rotParts: p.P(`
-			select
-				rotation_id,
-				user_id
-			from rotation_participants
-			where rotation_id = any($1)
-			order by
-				rotation_id,
-				position
-		`),
-	}, p.Err
 }
 
 // OnCallUsersByService will return the current set of users who are on-call for the given service.
@@ -151,24 +56,7 @@ func (s *Store) OnCallUsersByService(ctx context.Context, serviceID string) ([]S
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.usersByService(ctx, serviceID)
-	}
-	rows, err := s.onCallUsersSvc.QueryContext(ctx, serviceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var onCall []ServiceOnCallUser
-	for rows.Next() {
-		var u ServiceOnCallUser
-		err = rows.Scan(&u.StepNumber, &u.UserID, &u.UserName)
-		if err != nil {
-			return nil, err
-		}
-		onCall = append(onCall, u)
-	}
-	return onCall, nil
+	return s.delta.usersByService(ctx, serviceID)
 }
 
 func (s *Store) OnCallUsersBySchedule(ctx context.Context, scheduleID string) ([]ScheduleOnCallUser, error) {
@@ -180,27 +68,7 @@ func (s *Store) OnCallUsersBySchedule(ctx context.Context, scheduleID string) ([
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.usersBySchedule(ctx, scheduleID)
-	}
-	rows, err := s.onCallUsersSchedule.QueryContext(ctx, scheduleID)
-	if err != nil {
-		return nil, fmt.Errorf("fetch on-call users for schedule '%s': %w", scheduleID, err)
-	}
-	defer rows.Close()
-
-	var result []ScheduleOnCallUser
-	for rows.Next() {
-		var u ScheduleOnCallUser
-		err = rows.Scan(&u.ID, &u.Name)
-		if err != nil {
-			return nil, fmt.Errorf("scan on-call user entry #%d for schedule '%s': %w", len(result), scheduleID, err)
-		}
-
-		result = append(result, u)
-	}
-
-	return result, nil
+	return s.delta.usersBySchedule(ctx, scheduleID)
 }
 
 // resolveRules returns the rules with their rotations, by rotation ID.
@@ -230,9 +98,7 @@ func (s *Store) HistoryBySchedule(ctx context.Context, scheduleID string, start,
 		return nil, err
 	}
 
-	// Since this operation is expensive, and holds open a transaction for a long time,
-	// for several queries, we limit the number of concurrent operations to prevent
-	// exhausting the database connection pool.
+	// History calculation is expensive, so limit concurrent operations.
 	select {
 	case s.histLim <- struct{}{}:
 		defer func() { <-s.histLim }()
@@ -240,134 +106,9 @@ func (s *Store) HistoryBySchedule(ctx context.Context, scheduleID string, start,
 		return nil, ctx.Err()
 	}
 
-	if s.delta != nil {
-		st, err := s.delta.historyState(ctx, s, scheduleID, start, end)
-		if err != nil {
-			return nil, err
-		}
-		return st.CalculateShifts(start, end), nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{
-		ReadOnly:  true,
-		Isolation: sql.LevelRepeatableRead,
-	})
+	st, err := s.delta.historyState(ctx, s, scheduleID, start, end)
 	if err != nil {
-		return nil, errors.Wrap(err, "begin transaction")
+		return nil, err
 	}
-	defer sqlutil.Rollback(ctx, "oncall: fetch schedule history", tx)
-
-	var schedTZ string
-	var now time.Time
-	err = tx.StmtContext(ctx, s.schedTZ).QueryRowContext(ctx, scheduleID).Scan(&schedTZ, &now)
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup schedule time zone")
-	}
-
-	rows, err := tx.StmtContext(ctx, s.schedRot).QueryContext(ctx, scheduleID)
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup schedule rotations")
-	}
-	defer rows.Close()
-	rots := make(map[string]*ResolvedRotation)
-	var rotIDs []string
-	for rows.Next() {
-		var rot ResolvedRotation
-		var rotTZ string
-		err = rows.Scan(&rot.ID, &rot.Type, &rot.Start, &rot.ShiftLength, &rotTZ, &rot.CurrentIndex, &rot.CurrentStart)
-		if err != nil {
-			return nil, errors.Wrap(err, "scan rotation info")
-		}
-		loc, err := util.LoadLocation(rotTZ)
-		if err != nil {
-			return nil, errors.Wrap(err, "load time zone info")
-		}
-		rot.Start = rot.Start.In(loc)
-		rots[rot.ID] = &rot
-		rotIDs = append(rotIDs, rot.ID)
-	}
-
-	rows, err = tx.StmtContext(ctx, s.rotParts).QueryContext(ctx, sqlutil.UUIDArray(rotIDs))
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup rotation participants")
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var rotID, userID string
-		err = rows.Scan(&rotID, &userID)
-		if err != nil {
-			return nil, errors.Wrap(err, "scan rotation participant info")
-		}
-		rots[rotID].Users = append(rots[rotID].Users, userID)
-	}
-
-	rawRules, err := s.ruleStore.FindAllTx(ctx, tx, scheduleID)
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup schedule rules")
-	}
-
-	rules := resolveRules(rawRules, rots)
-
-	rows, err = tx.StmtContext(ctx, s.schedOnCall).QueryContext(ctx, scheduleID, start, end)
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup on-call history")
-	}
-	defer rows.Close()
-	var userHistory []Shift
-	for rows.Next() {
-		var s Shift
-		var end sqlutil.NullTime
-		err = rows.Scan(&s.UserID, &s.Start, &end)
-		if err != nil {
-			return nil, errors.Wrap(err, "scan on-call history info")
-		}
-		s.End = end.Time
-		userHistory = append(userHistory, s)
-	}
-
-	rows, err = tx.StmtContext(ctx, s.schedOverrides).QueryContext(ctx, scheduleID, start, end)
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup overrides")
-	}
-	defer rows.Close()
-	var overrides []override.UserOverride
-	for rows.Next() {
-		var add, rem sql.NullString
-		var ov override.UserOverride
-		err = rows.Scan(&ov.Start, &ov.End, &add, &rem)
-		if err != nil {
-			return nil, errors.Wrap(err, "scan override info")
-		}
-		ov.AddUserID = add.String
-		ov.RemoveUserID = rem.String
-		overrides = append(overrides, ov)
-	}
-	id, err := uuid.Parse(scheduleID)
-	if err != nil {
-		return nil, errors.Wrap(err, "parse schedule ID")
-	}
-	tempScheds, err := s.schedStore.TemporarySchedules(ctx, tx, id)
-	if err != nil {
-		return nil, errors.Wrap(err, "lookup temporary schedules")
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		// Can't use the data we read (e.g. serialization error)
-		return nil, errors.Wrap(err, "commit tx")
-	}
-	tz, err := util.LoadLocation(schedTZ)
-	if err != nil {
-		return nil, errors.Wrap(err, "load time zone info")
-	}
-	st := state{
-		rules:      rules,
-		overrides:  overrides,
-		history:    userHistory,
-		now:        now,
-		loc:        tz,
-		tempScheds: tempScheds,
-	}
-
 	return st.CalculateShifts(start, end), nil
 }

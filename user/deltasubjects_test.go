@@ -22,7 +22,7 @@ func TestDeltaAuthSubjectKeys(t *testing.T) {
 	// Joined with a plain "/", several of these pairs would be one.
 	pairs := [][2]string{
 		{"a/b", "c"}, {"a", "b/c"}, {"a%2Fb", "c"}, {"a%252Fb", "c"}, {"a", "b"}, {"a", "/b"}, {"a/", "b"},
-		{"slack:T1", "U1"}, {"slack:T10", "U1"}, {"slack:T1", "0/U1"}, {"a", "c"}, {"A", "c"}, {"a", "C"},
+		{"test:T1", "U1"}, {"test:T10", "U1"}, {"test:T1", "0/U1"}, {"a", "c"}, {"A", "c"}, {"a", "C"},
 	}
 	owner := make(map[[2]string]string)
 	for _, p := range pairs {
@@ -41,17 +41,17 @@ func TestDeltaAuthSubjectKeys(t *testing.T) {
 		}
 	}
 	for provider, want := range map[string][]string{
-		"a":        {"/b", "C", "b", "b/c", "c"},
-		"a/":       {"b"},
-		"a/b":      {"c"},
-		"a%2Fb":    {"c"},
-		"slack:T1": {"0/U1", "U1"},
+		"a":       {"/b", "C", "b", "b/c", "c"},
+		"a/":      {"b"},
+		"a/b":     {"c"},
+		"a%2Fb":   {"c"},
+		"test:T1": {"0/U1", "U1"},
 	} {
 		subjects, err := fresh.FindSomeAuthSubjectsForProvider(ctx, 100, "", provider)
 		require.NoError(t, err)
 		assert.Equal(t, want, subjectIDs(subjects), "only those of provider %q, ordered by subject", provider)
 	}
-	subjects, err := fresh.FindSomeAuthSubjectsForProvider(ctx, 100, "", "slack:T")
+	subjects, err := fresh.FindSomeAuthSubjectsForProvider(ctx, 100, "", "test:T")
 	require.NoError(t, err)
 	assert.Nil(t, subjects, "no rows is a nil slice, as on Postgres")
 }

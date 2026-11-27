@@ -51,9 +51,7 @@ func TestMessageBundle_SMS(t *testing.T) {
 	tw := h.Twilio(t)
 	d1 := tw.Device(h.Phone("1"))
 
-	d1.ExpectSMS("My Service", "4 unacked").
-		ThenReply("100aa").
-		ThenExpect("Acknowledged all", "My Service")
+	d1.ExpectSMS("My Service", "4 unacked")
 
 	h.GraphQLQuery2(`mutation{ updateAlerts(input: {alertIDs: [1,2,3,4], newStatus: StatusClosed}){id} }`)
 }

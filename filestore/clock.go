@@ -19,9 +19,9 @@ func (realClock) Now() time.Time { return time.Now() }
 func RealClock() Clock { return realClock{} }
 
 // FakeClock is a Clock for tests. Its time can be frozen, sped up or moved
-// forward. Time runs as base + realElapsed*speed, the same model the smoke
-// test harness uses for the Postgres clock (devtools/pgmocktime), so tests
-// behave the same on both backends.
+// forward. Time runs as base + realElapsed*speed, the model the smoke test
+// harness's Postgres clock (pgmocktime) had, so the tests kept their timing
+// when they moved to this backend.
 type FakeClock struct {
 	mu    sync.Mutex
 	base  time.Time

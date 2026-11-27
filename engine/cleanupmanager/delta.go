@@ -240,22 +240,10 @@ func (db *DeltaDB) cleanupOne(ctx context.Context, tx *filestore.Tx, id string) 
 // the keyring of sessions works, and is not influenced by the configuration.
 const sessionDays = 30
 
-// cleanupAPIKeys deletes old sessions, and disables unused calendar
-// subscriptions.
+// cleanupAPIKeys deletes old sessions.
 func (db *DeltaDB) cleanupAPIKeys(ctx context.Context) error {
-	err := db.whileWork(ctx, "delete old user sessions", func(_ context.Context, tx *filestore.Tx) (bool, error) {
+	return db.whileWork(ctx, "delete old user sessions", func(_ context.Context, tx *filestore.Tx) (bool, error) {
 		n, err := db.t.Auth.DeleteOld(tx, daysAgo(tx, sessionDays), deltaBatch)
-		return n < deltaBatch, err
-	})
-	if err != nil {
-		return err
-	}
-	days := config.FromContext(ctx).Maintenance.APIKeyExpireDays
-	if days <= 0 {
-		return nil
-	}
-	return db.whileWork(ctx, "disable unused calsub keys", func(_ context.Context, tx *filestore.Tx) (bool, error) {
-		n, err := db.t.CalSub.DisableUnused(tx, daysAgo(tx, days), deltaBatch)
 		return n < deltaBatch, err
 	})
 }

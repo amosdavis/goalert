@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/target/goalert/test/smoke/harness"
 )
@@ -11,6 +12,8 @@ import (
 // TestStatusUpdatesNoLog tests status updates continue to work when no logs are present.
 func TestStatusUpdatesNoLog(t *testing.T) {
 	t.Parallel()
+
+	webhookURL, ch := newAlertStatusWebhook(t)
 
 	sql := `
 	insert into escalation_policies (id, name) 
@@ -22,7 +25,7 @@ func TestStatusUpdatesNoLog(t *testing.T) {
 
 	insert into notification_channels (id, type, name, value)
 	values
-		({{uuid "chan"}}, 'SLACK', '#test', {{slackChannelID "test"}});
+		({{uuid "chan"}}, 'WEBHOOK', 'webhook', '` + webhookURL + `');
 
 	insert into escalation_policy_actions (escalation_policy_step_id, channel_id) 
 	values 
@@ -32,13 +35,13 @@ func TestStatusUpdatesNoLog(t *testing.T) {
 	values
 		({{uuid "sid"}}, {{uuid "eid"}}, 'service');
 `
-	h := harness.NewHarness(t, sql, "slack-user-link")
+	h := harness.NewHarness(t, sql, "webhook-notification-channel-type")
 	defer h.Close()
 
 	a := h.CreateAlertWithDetails(h.UUID("sid"), "testing", "details")
-	msg := h.Slack().Channel("test").ExpectMessage("testing")
-	msg.AssertColor("#862421")
-	msg.AssertActions()
+	notification := nextAlertNotification(t, h, ch)
+	assert.Equal(t, "Alert", notification.Type)
+	assert.Equal(t, "testing", notification.Summary)
 
 	// ensure no processing happens
 	err := h.App().Pause(context.Background())
@@ -57,10 +60,7 @@ func TestStatusUpdatesNoLog(t *testing.T) {
 
 	a.Close()
 
-	updated := msg.ExpectUpdate()
-	updated.AssertText("Closed", "testing")
-	updated.AssertNotText("details")
-	updated.AssertColor("#218626")
-
-	updated.AssertActions() // no actions
+	// The next status notification must be the close, not the acknowledgement
+	// whose log entry was deleted.
+	expectAlertStatusNotification(t, h, ch, "Closed")
 }

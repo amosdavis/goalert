@@ -32,8 +32,7 @@ func TestSystemLimits(t *testing.T) {
 		values
 			({{uuid "rule_sched"}}, 'Rule Test', 'UTC'),
 			({{uuid "tgt_sched"}}, 'Target Test', 'UTC'),
-			({{uuid "override_sched"}}, 'Override Test', 'UTC'),
-			({{uuid "cal_sub_sched"}}, 'Calendar Subscriptions Test', 'UTC');
+			({{uuid "override_sched"}}, 'Override Test', 'UTC');
 
 		insert into rotations (id, name, type, time_zone)
 		values
@@ -48,7 +47,6 @@ func TestSystemLimits(t *testing.T) {
 			({{uuid "unack_ep1"}}, 'Unack Test 1'),
 			({{uuid "unack_ep2"}}, 'Unack Test 2'),
 			({{uuid "int_key_ep"}}, 'Int Key Test'),
-			({{uuid "hb_ep"}}, 'Heartbeat Test'),
 			({{uuid "step_ep"}}, 'Step Test'),
 			({{uuid "act_ep"}}, 'Action Test');
 
@@ -60,7 +58,6 @@ func TestSystemLimits(t *testing.T) {
 		insert into services (id, name, escalation_policy_id)
 		values
 			({{uuid "int_key_svc"}}, 'Int Key Test', {{uuid "int_key_ep"}}),
-			({{uuid "hb_svc"}}, 'Heartbeat Test', {{uuid "hb_ep"}}),
 			({{uuid "unack_svc1"}}, 'Unack Test 1', {{uuid "unack_ep1"}}),
 			({{uuid "unack_svc2"}}, 'Unack Test 2', {{uuid "unack_ep2"}});
 `
@@ -274,17 +271,6 @@ func TestSystemLimits(t *testing.T) {
 		},
 	)
 
-	checkSingleInsert(
-		limit.HeartbeatMonitorsPerService,
-		"heartbeat monitors",
-		func(int) string {
-			return fmt.Sprintf(`mutation{createHeartbeatMonitor(input:{serviceID: "%s", name: "%s", timeoutMinutes: 5 }){id}}`, h.UUID("hb_svc"), uniqName())
-		},
-		func(ids []string) string {
-			return fmt.Sprintf(`mutation{deleteAll(input: [{id: "%s", type: heartbeatMonitor}])}`, ids[0])
-		},
-	)
-
 	checkMultiInsert(
 		limit.RulesPerSchedule,
 		"rules",
@@ -349,28 +335,6 @@ func TestSystemLimits(t *testing.T) {
 		},
 		func(ids []string) string {
 			return fmt.Sprintf(`mutation{deleteAll(input:[{type: userOverride, id: "%s"}])}`, ids[0])
-		},
-	)
-
-	checkSingleInsert(
-		limit.CalendarSubscriptionsPerUser,
-		"subscriptions",
-		func(int) string {
-			return fmt.Sprintf(`
-			mutation {
-				createUserCalendarSubscription(
-					input: {
-						name: "%s"
-						scheduleID: "%s"
-						reminderMinutes: [5, 3, 1]
-						disabled: false
-					}
-				) { id }
-			}
-			`, uniqName(), h.UUID("cal_sub_sched"))
-		},
-		func(ids []string) string {
-			return fmt.Sprintf(`mutation{deleteAll(input:[{type: calendarSubscription, id: "%s"}])}`, ids[0])
 		},
 	)
 }

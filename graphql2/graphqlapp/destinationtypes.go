@@ -64,7 +64,7 @@ func (q *Query) DestinationFieldValidate(ctx context.Context, input graphql2.Des
 	return err == nil, err
 }
 
-func (q *Query) DestinationTypes(ctx context.Context, isDynamicAction *bool) ([]nfydest.TypeInfo, error) {
+func (q *Query) DestinationTypes(ctx context.Context) ([]nfydest.TypeInfo, error) {
 	types, err := q.DestReg.Types(ctx)
 	if err != nil {
 		return nil, err
@@ -82,14 +82,5 @@ func (q *Query) DestinationTypes(ctx context.Context, isDynamicAction *bool) ([]
 		return 0
 	})
 
-	filtered := types[:0]
-	for _, t := range types {
-		if isDynamicAction != nil && *isDynamicAction != t.IsDynamicAction() {
-			continue
-		}
-
-		filtered = append(filtered, t)
-	}
-
-	return filtered, nil
+	return types, nil
 }

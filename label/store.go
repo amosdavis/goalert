@@ -2,27 +2,17 @@ package label
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/assignment"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-
-	"github.com/pkg/errors"
 )
 
-// Store allows the lookup and management of Labels.
+// Store allows the lookup and management of Labels on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	delta *deltaLabels // the Delta backend, if set (delta.go)
+	delta *deltaLabels
 }
-
-// NewStore will Set a DB backend from a sql.DB. An error will be returned if statements fail to prepare.
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) { return &Store{db: db}, nil }
 
 func (l *Label) tgtEP() uuid.NullUUID {
 	if l.Target.TargetType() != assignment.TargetTypeEscalationPolicy {
@@ -69,41 +59,10 @@ func (s *Store) SetTx(ctx context.Context, tx txn.Tx, label *Label) error {
 		return err
 	}
 
-	if s.delta != nil {
-		if n.Value == "" {
-			return s.delta.deleteKey(ctx, tx, label)
-		}
-		return s.delta.set(ctx, tx, label)
+	if n.Value == "" {
+		return s.delta.deleteKey(ctx, tx, label)
 	}
-	db := sqltxn.DBTX(s.db, tx)
-	if n.Value == "" { // delete if value is empty
-		err = gadb.New(db).LabelDeleteKeyByTarget(ctx, gadb.LabelDeleteKeyByTargetParams{
-			Key:        label.Key,
-			ServiceID:  label.tgtSvc(),
-			ScheduleID: label.tgtSched(),
-			RotationID: label.tgtRot(),
-			EpID:       label.tgtEP(),
-		})
-		if err != nil {
-			return fmt.Errorf("delete label: %w", err)
-		}
-
-		return nil
-	}
-
-	err = gadb.New(db).LabelSetByTarget(ctx, gadb.LabelSetByTargetParams{
-		Key:        label.Key,
-		Value:      label.Value,
-		ServiceID:  label.tgtSvc(),
-		ScheduleID: label.tgtSched(),
-		RotationID: label.tgtRot(),
-		EpID:       label.tgtEP(),
-	})
-	if err != nil {
-		return fmt.Errorf("set label: %w", err)
-	}
-
-	return nil
+	return s.delta.set(ctx, tx, label)
 }
 
 // FindAllByTarget finds all labels for a particular target. It returns all key-value pairs.
@@ -113,32 +72,7 @@ func (s *Store) FindAllByTarget(ctx context.Context, tx txn.Tx, t assignment.Tar
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findAllByTarget(ctx, tx, t)
-	}
-	db := sqltxn.DBTX(s.db, tx)
-	label := Label{Target: t}
-	rows, err := gadb.New(db).LabelFindAllByTarget(ctx, gadb.LabelFindAllByTargetParams{
-		ServiceID:  label.tgtSvc(),
-		ScheduleID: label.tgtSched(),
-		RotationID: label.tgtRot(),
-		EpID:       label.tgtEP(),
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find all labels by service: %w", err)
-	}
-
-	labels := make([]Label, len(rows))
-	for i, l := range rows {
-		labels[i].Key = l.Key
-		labels[i].Value = l.Value
-		labels[i].Target = t
-	}
-
-	return labels, nil
+	return s.delta.findAllByTarget(ctx, tx, t)
 }
 
 func (s *Store) UniqueKeysTx(ctx context.Context, tx txn.Tx) ([]string, error) {
@@ -147,8 +81,5 @@ func (s *Store) UniqueKeysTx(ctx context.Context, tx txn.Tx) ([]string, error) {
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.uniqueKeys(ctx, tx)
-	}
-	return gadb.New(sqltxn.DBTX(s.db, tx)).LabelUniqueKeys(ctx)
+	return s.delta.uniqueKeys(ctx, tx)
 }

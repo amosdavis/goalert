@@ -30,7 +30,8 @@ func readInventory(t *testing.T) []inventoryTable {
 	uniqueRx := regexp.MustCompile("(?m)^- (\\w+)(?: \\(index\\))?: `(\\([^`]*)`$")
 	statusRx := regexp.MustCompile(`(?m)^\*\*Go:\*\* (.*)$`)
 	var out []inventoryTable
-	for _, section := range strings.Split(string(data), "\n### ")[1:] {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	for _, section := range strings.Split(text, "\n### ")[1:] {
 		name, rest, _ := strings.Cut(section, "\n")
 		table := inventoryTable{name: name, uniques: map[string]string{}}
 		m := statusRx.FindStringSubmatch(rest)

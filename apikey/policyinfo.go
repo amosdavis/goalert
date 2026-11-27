@@ -8,7 +8,6 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
-	"github.com/target/goalert/gadb"
 )
 
 type policyInfo struct {
@@ -37,13 +36,7 @@ func parsePolicyInfo(data []byte) (*policyInfo, error) {
 
 // _fetchPolicyInfo will fetch the policyInfo for the given key.
 func (s *Store) _fetchPolicyInfo(ctx context.Context, id uuid.UUID) (*policyInfo, bool, error) {
-	var polData []byte
-	var err error
-	if s.delta != nil {
-		polData, err = s.delta.policy(ctx, id)
-	} else {
-		polData, err = gadb.New(s.db).APIKeyAuthPolicy(ctx, id)
-	}
+	polData, err := s.delta.policy(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

@@ -7,8 +7,8 @@ import (
 // batch represents a collection of requests that will be executed together.
 // It maintains both the IDs to fetch and the result channels to notify when complete.
 type batch[K comparable, V any] struct {
-	ids     []K              // IDs to fetch in this batch
-	results []*result[K, V]  // Result channels for each request
+	ids     []K             // IDs to fetch in this batch
+	results []*result[K, V] // Result channels for each request
 }
 
 // Add appends a new request to the batch and returns a result channel.

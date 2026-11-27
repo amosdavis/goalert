@@ -11,7 +11,7 @@ import (
 	"github.com/target/goalert/txn/deltatxn"
 )
 
-// wordRep is how the search template prepares a name for a match of words.
+// wordRep treats separators as spaces for word matches.
 var wordRep = strings.NewReplacer("_", " ", "-", " ")
 
 // words returns the words of s in lower case, like splitSearchTerms in package
@@ -22,9 +22,8 @@ func words(s string) []string {
 	})
 }
 
-// hasOrderedPrefixes is the search templates' orderedPrefixSearch: name has
-// words that start with the terms, in the same order. Without terms, its
-// regular expression is `\m`, which matches any word.
+// hasOrderedPrefixes reports whether name has words that start with the terms,
+// in the same order. Without terms, it matches any name with a word.
 func hasOrderedPrefixes(name string, terms []string) bool {
 	nameWords := words(wordRep.Replace(name))
 	if len(terms) == 0 {
@@ -80,8 +79,8 @@ func canonicalIDs(ids []string) []string {
 	return out
 }
 
-// search is the search template: each option is a condition that a service
-// must meet, and those that list services also choose where to look.
+// search applies each option as a condition that a service must meet; options
+// that list services also choose where to look.
 func (d *deltaServices) search(ctx context.Context, data *renderData) ([]Service, error) {
 	type hit struct {
 		svc   Service

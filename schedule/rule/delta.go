@@ -113,7 +113,7 @@ func clockColumn(c timeutil.Clock) (string, error) {
 	return c.String() + ":00", nil
 }
 
-// setRule sets the columns that the store writes, like readFields.
+// setRule sets the columns that the store writes.
 func (r *ruleRow) setRule(n *Rule) error {
 	schedID, err := uuid.Parse(n.ScheduleID)
 	if err != nil {

@@ -2,12 +2,9 @@ package graphqlapp
 
 import (
 	context "context"
-	"encoding/json"
 	"time"
 
 	"github.com/target/goalert/assignment"
-	"github.com/target/goalert/expflag"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/retry"
@@ -15,7 +12,6 @@ import (
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/validation"
-	"github.com/target/goalert/validation/validate"
 
 	"github.com/pkg/errors"
 )
@@ -38,43 +34,6 @@ func (a *Mutation) ReEncryptKeyringsAndConfig(ctx context.Context) (bool, error)
 	return true, nil
 }
 
-func (a *Mutation) SendSignal(ctx context.Context, input graphql2.SendSignalInput) (bool, error) {
-	err := permission.LimitCheckAny(ctx, permission.User)
-	if err != nil {
-		return false, err
-	}
-
-	if !expflag.ContextHas(ctx, expflag.UnivKeys) {
-		return false, errors.New("feature not enabled")
-	}
-
-	svcID, err := validate.ParseUUID("ServiceID", input.ServiceID)
-	if err != nil {
-		return false, err
-	}
-
-	destID, err := a.NCStore.MapDestToID(ctx, nil, *input.Dest)
-	if err != nil {
-		return false, err
-	}
-
-	data, err := json.Marshal(input.Params)
-	if err != nil {
-		return false, err
-	}
-
-	err = a.IntKeyStore.InsertSignalMessage(ctx, nil, gadb.IntKeyInsertSignalMessageParams{
-		DestID:    destID,
-		ServiceID: svcID,
-		Params:    data,
-	})
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
-}
-
 func (a *Mutation) SetFavorite(ctx context.Context, input graphql2.SetFavoriteInput) (bool, error) {
 	var err error
 	if input.Favorite {
@@ -87,11 +46,6 @@ func (a *Mutation) SetFavorite(ctx context.Context, input graphql2.SetFavoriteIn
 		return false, err
 	}
 	return true, nil
-}
-
-func (a *Mutation) LinkAccount(ctx context.Context, token string) (bool, error) {
-	err := a.AuthLinkStore.LinkAccount(ctx, token)
-	return err == nil, err
 }
 
 func (a *Mutation) SetScheduleOnCallNotificationRules(ctx context.Context, input graphql2.SetScheduleOnCallNotificationRulesInput) (bool, error) {
@@ -237,10 +191,8 @@ func (a *Mutation) tryDeleteAll(ctx context.Context, input []assignment.RawTarge
 			assignment.TargetTypeRotation,
 			assignment.TargetTypeUserOverride,
 			assignment.TargetTypeSchedule,
-			assignment.TargetTypeCalendarSubscription,
 			assignment.TargetTypeUser,
 			assignment.TargetTypeIntegrationKey,
-			assignment.TargetTypeHeartbeatMonitor,
 			assignment.TargetTypeService,
 			assignment.TargetTypeEscalationPolicy,
 			assignment.TargetTypeNotificationRule,
@@ -266,16 +218,14 @@ func (a *Mutation) tryDeleteAll(ctx context.Context, input []assignment.RawTarge
 				err = errors.Wrap(a.IntKeyStore.DeleteMany(ctx, tx, ids), "delete integration keys")
 			case assignment.TargetTypeSchedule:
 				err = errors.Wrap(a.ScheduleStore.DeleteManyTx(ctx, tx, ids), "delete schedules")
-			case assignment.TargetTypeCalendarSubscription:
-				err = errors.Wrap(a.CalSubStore.DeleteTx(ctx, tx, permission.UserID(ctx), ids...), "delete calendar subscriptions")
+
 			case assignment.TargetTypeRotation:
 				err = errors.Wrap(a.RotationStore.DeleteManyTx(ctx, tx, ids), "delete rotations")
 			case assignment.TargetTypeContactMethod:
 				err = errors.Wrap(a.CMStore.Delete(ctx, tx, ids...), "delete contact methods")
 			case assignment.TargetTypeNotificationRule:
 				err = errors.Wrap(a.NRStore.DeleteTx(ctx, tx, ids...), "delete notification rules")
-			case assignment.TargetTypeHeartbeatMonitor:
-				err = errors.Wrap(a.HeartbeatStore.DeleteTx(ctx, tx, ids...), "delete heartbeat monitors")
+
 			case assignment.TargetTypeUserSession:
 				err = errors.Wrap(a.AuthHandler.EndUserSessionTx(ctx, tx, ids...), "end user sessions")
 			default:

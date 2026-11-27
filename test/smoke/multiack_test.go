@@ -21,8 +21,8 @@ const multiAckSQL = `
 
 	insert into user_contact_methods (id, user_id, name, type, value)
 	values
-		({{uuid "c1"}}, {{uuid "u1"}}, 'personal', 'SMS', {{phone "1"}}),
-		({{uuid "c2"}}, {{uuid "u2"}}, 'personal', 'SMS', {{phone "2"}});
+		({{uuid "c1"}}, {{uuid "u1"}}, 'personal', 'VOICE', {{phone "1"}}),
+		({{uuid "c2"}}, {{uuid "u2"}}, 'personal', 'VOICE', {{phone "2"}});
 
 	insert into user_notification_rules (user_id, contact_method_id, delay_minutes)
 	values
@@ -65,18 +65,14 @@ func TestMultiAckOtherUsersStillNotified(t *testing.T) {
 	d1 := tw.Device(h.Phone("1"))
 	d2 := tw.Device(h.Phone("2"))
 
-	d1.ExpectSMS("testing")
-	d2.ExpectSMS("testing")
-
-	// bob acknowledges; without multi-ack this would cancel jane's 30m rule.
-	d1.SendSMS("ack198")
-	d1.ExpectSMS("acknowledged")
+	d1.ExpectVoice("testing").ThenPress("4").ThenExpect("acknowledged")
+	d2.ExpectVoice("testing")
 
 	h.FastForward(31 * time.Minute)
 	h.Trigger()
 
 	// jane is still notified even though the alert is acknowledged.
-	d2.ExpectSMS("testing")
+	d2.ExpectVoice("testing")
 }
 
 // TestMultiAckAckerNotNotified checks that the user who acknowledged does not
@@ -91,17 +87,14 @@ func TestMultiAckAckerNotNotified(t *testing.T) {
 	d1 := tw.Device(h.Phone("1"))
 	d2 := tw.Device(h.Phone("2"))
 
-	d1.ExpectSMS("testing")
-	d2.ExpectSMS("testing")
-
-	d1.SendSMS("ack198")
-	d1.ExpectSMS("acknowledged")
+	d1.ExpectVoice("testing").ThenPress("4").ThenExpect("acknowledged")
+	d2.ExpectVoice("testing")
 
 	// jane never acknowledges, so she still gets her 30m rule; bob must not.
 	h.FastForward(31 * time.Minute)
 	h.Trigger()
 
-	d2.ExpectSMS("testing")
+	d2.ExpectVoice("testing")
 	tw.WaitAndAssert() // fails if bob got a second notification
 }
 
@@ -118,14 +111,8 @@ func TestMultiAckSecondAckRecorded(t *testing.T) {
 	d1 := tw.Device(h.Phone("1"))
 	d2 := tw.Device(h.Phone("2"))
 
-	d1.ExpectSMS("testing")
-	d2.ExpectSMS("testing")
-
-	d1.SendSMS("ack198")
-	d1.ExpectSMS("acknowledged")
-
-	d2.SendSMS("ack198")
-	d2.ExpectSMS("acknowledged")
+	d1.ExpectVoice("testing").ThenPress("4").ThenExpect("acknowledged")
+	d2.ExpectVoice("testing").ThenPress("4").ThenExpect("acknowledged")
 
 	h.FastForward(time.Minute)
 
@@ -172,8 +159,8 @@ func TestMultiAckEscalationAfterAck(t *testing.T) {
 
 	insert into user_contact_methods (id, user_id, name, type, value)
 	values
-		({{uuid "c1"}}, {{uuid "u1"}}, 'personal', 'SMS', {{phone "1"}}),
-		({{uuid "c2"}}, {{uuid "u2"}}, 'personal', 'SMS', {{phone "2"}});
+		({{uuid "c1"}}, {{uuid "u1"}}, 'personal', 'VOICE', {{phone "1"}}),
+		({{uuid "c2"}}, {{uuid "u2"}}, 'personal', 'VOICE', {{phone "2"}});
 
 	insert into user_notification_rules (user_id, contact_method_id, delay_minutes)
 	values
@@ -213,24 +200,20 @@ func TestMultiAckEscalationAfterAck(t *testing.T) {
 	d2 := tw.Device(h.Phone("2"))
 
 	// step 1: only bob.
-	d1.ExpectSMS("testing")
-	d1.SendSMS("ack198")
-	d1.ExpectSMS("acknowledged")
+	d1.ExpectVoice("testing").ThenPress("4").ThenExpect("acknowledged")
 
 	// Escalate to step 2, which creates fresh cycles for bob and jane.
 	h.Escalate(198, 0)
-	d1.ExpectSMS("testing")
-	d2.ExpectSMS("testing")
+	d1.ExpectVoice("testing")
 
 	// jane acknowledges, putting the alert back into the acknowledged state.
 	// bob's step 2 cycle began after his own earlier ack, so it must survive.
-	d2.SendSMS("ack198")
-	d2.ExpectSMS("acknowledged")
+	d2.ExpectVoice("testing").ThenPress("4").ThenExpect("acknowledged")
 
 	h.FastForward(31 * time.Minute)
 	h.Trigger()
 
-	d1.ExpectSMS("testing")
+	d1.ExpectVoice("testing")
 }
 
 // TestMultiAckCloseStillCancels checks that closing an alert still cancels
@@ -245,11 +228,8 @@ func TestMultiAckCloseStillCancels(t *testing.T) {
 	d1 := tw.Device(h.Phone("1"))
 	d2 := tw.Device(h.Phone("2"))
 
-	d1.ExpectSMS("testing")
-	d2.ExpectSMS("testing")
-
-	d1.SendSMS("close198")
-	d1.ExpectSMS("closed")
+	d1.ExpectVoice("testing").ThenPress("6").ThenExpect("closed")
+	d2.ExpectVoice("testing")
 
 	// The 30-minute rules must not fire for anyone.
 	h.FastForward(31 * time.Minute)

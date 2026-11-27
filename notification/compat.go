@@ -9,7 +9,6 @@ type (
 	Message             = nfymsg.Message
 	Test                = nfymsg.Test
 	Verification        = nfymsg.Verification
-	SignalMessage       = nfymsg.SignalMessage
 	ScheduleOnCallUsers = nfymsg.ScheduleOnCallUsers
 
 	State = nfymsg.State

@@ -2,15 +2,12 @@ package graphqlapp
 
 import (
 	context "context"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/alert"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/dataloader"
 	"github.com/target/goalert/escalation"
 	"github.com/target/goalert/gadb"
-	"github.com/target/goalert/heartbeat"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/permission"
@@ -20,7 +17,6 @@ import (
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/user/contactmethod"
 	"github.com/target/goalert/user/notificationrule"
-	"github.com/target/goalert/util/sqlutil"
 
 	"github.com/pkg/errors"
 )
@@ -40,23 +36,13 @@ type loaders struct {
 	Service                   *dataloader.Loader[string, service.Service]
 	User                      *dataloader.Loader[string, user.User]
 	CM                        *dataloader.Loader[string, contactmethod.ContactMethod]
-	Heartbeat                 *dataloader.Loader[string, heartbeat.Monitor]
 	NotificationMessageStatus *dataloader.Loader[string, notification.SendResult]
 	NC                        *dataloader.Loader[string, notificationchannel.Channel]
-	AlertMetrics              *dataloader.Loader[int, alertmetrics.Metric]
 	AlertFeedback             *dataloader.Loader[int, alert.Feedback]
 	AlertMetadata             *dataloader.Loader[int, alert.MetadataAlertID]
 	AlertsByStatus            *dataloader.AggFetcher[uuid.UUID, gadb.ServiceAlertCountsRow]
-	AlertStats                *dataloader.AggFetcherParam[uuid.UUID, AlertStatsParam, gadb.ServiceAlertStatsRow]
 	CMsByUser                 *dataloader.AggFetcher[string, contactmethod.ContactMethod]
 	NRsByUser                 *dataloader.AggFetcher[string, notificationrule.NotificationRule]
-}
-
-type AlertStatsParam struct {
-	Stride    sqlutil.Interval
-	Origin    time.Time
-	StartTime time.Time
-	EndTime   time.Time
 }
 
 // registerLoaders creates and registers all dataloaders for the request context.
@@ -73,25 +59,13 @@ func (a *App) registerLoaders(ctx context.Context) context.Context {
 		CM: dataloader.NewStoreLoader(ctx, func(ctx context.Context, ids []string) ([]contactmethod.ContactMethod, error) {
 			return a.CMStore.FindMany(ctx, nil, ids)
 		}, func(cm contactmethod.ContactMethod) string { return cm.ID.String() }),
-		Heartbeat:                 dataloader.NewStoreLoader(ctx, a.HeartbeatStore.FindMany, func(hb heartbeat.Monitor) string { return hb.ID }),
 		NotificationMessageStatus: dataloader.NewStoreLoader(ctx, a.NotificationStore.FindManyMessageStatuses, func(n notification.SendResult) string { return n.ID }),
 		NC:                        dataloader.NewStoreLoader(ctx, a.NCStore.FindMany, func(nc notificationchannel.Channel) string { return nc.ID.String() }),
-		AlertMetrics:              dataloader.NewStoreLoader(ctx, a.AlertMetricsStore.FindMetrics, func(m alertmetrics.Metric) int { return m.ID }),
 		AlertFeedback:             dataloader.NewStoreLoader(ctx, a.AlertStore.Feedback, func(f alert.Feedback) int { return f.ID }),
 		AlertMetadata: dataloader.NewStoreLoader(ctx, func(ctx context.Context, i []int) ([]alert.MetadataAlertID, error) {
 			return a.AlertStore.FindManyMetadata(ctx, nil, i)
 		}, func(md alert.MetadataAlertID) int { return int(md.ID) }),
 		AlertsByStatus: dataloader.NewStoreLoaderAgg(ctx, a.AlertStore.ServiceAlertCounts, func(r gadb.ServiceAlertCountsRow) uuid.UUID { return r.ServiceID.UUID }),
-
-		AlertStats: dataloader.NewStoreLoaderAggParam(ctx, func(ctx context.Context, param AlertStatsParam, ids []uuid.UUID) ([]gadb.ServiceAlertStatsRow, error) {
-			return a.AlertStore.ServiceAlertStats(ctx, gadb.ServiceAlertStatsParams{
-				Stride:     param.Stride,
-				Origin:     param.Origin,
-				StartTime:  param.StartTime,
-				EndTime:    param.EndTime,
-				ServiceIds: ids,
-			})
-		}, func(r gadb.ServiceAlertStatsRow) uuid.UUID { return r.ServiceID }),
 
 		CMsByUser: dataloader.NewStoreLoaderAgg(ctx, func(ctx context.Context, userIDs []string) ([]contactmethod.ContactMethod, error) {
 			return a.CMStore.FindAllByUserIDs(ctx, nil, userIDs)
@@ -145,18 +119,14 @@ func (a *App) closeLoaders(ctx context.Context) {
 	if loader.CM != nil {
 		loader.CM.Close()
 	}
-	if loader.Heartbeat != nil {
-		loader.Heartbeat.Close()
-	}
+
 	if loader.NotificationMessageStatus != nil {
 		loader.NotificationMessageStatus.Close()
 	}
 	if loader.NC != nil {
 		loader.NC.Close()
 	}
-	if loader.AlertMetrics != nil {
-		loader.AlertMetrics.Close()
-	}
+
 	if loader.AlertFeedback != nil {
 		loader.AlertFeedback.Close()
 	}
@@ -166,30 +136,13 @@ func (a *App) closeLoaders(ctx context.Context) {
 	if loader.AlertsByStatus != nil {
 		loader.AlertsByStatus.Close()
 	}
-	if loader.AlertStats != nil {
-		loader.AlertStats.Close()
-	}
+
 	if loader.CMsByUser != nil {
 		loader.CMsByUser.Close()
 	}
 	if loader.NRsByUser != nil {
 		loader.NRsByUser.Close()
 	}
-}
-
-func (a *App) FindAlertStats(ctx context.Context, params AlertStatsParam, serviceID uuid.UUID) ([]gadb.ServiceAlertStatsRow, error) {
-	loader := loadersFrom(ctx).AlertStats
-	if loader == nil {
-		return a.AlertStore.ServiceAlertStats(ctx, gadb.ServiceAlertStatsParams{
-			Stride:     params.Stride,
-			Origin:     params.Origin,
-			StartTime:  params.StartTime,
-			EndTime:    params.EndTime,
-			ServiceIds: []uuid.UUID{serviceID},
-		})
-	}
-
-	return loader.FetchAggregateParam(ctx, serviceID, params)
 }
 
 func (app *App) FindAlertCountByStatus(ctx context.Context, serviceID uuid.UUID) ([]gadb.ServiceAlertCountsRow, error) {
@@ -269,22 +222,6 @@ func (app *App) FindOneUser(ctx context.Context, id string) (*user.User, error) 
 	loader := loadersFrom(ctx).User
 	if loader == nil {
 		return app.UserStore.FindOne(ctx, id)
-	}
-
-	return loader.FetchOne(ctx, id)
-}
-
-func (app *App) FindOneAlertMetric(ctx context.Context, id int) (*alertmetrics.Metric, error) {
-	loader := loadersFrom(ctx).AlertMetrics
-	if loader == nil {
-		m, err := app.AlertMetricsStore.FindMetrics(ctx, []int{id})
-		if err != nil {
-			return nil, err
-		}
-		if len(m) == 0 {
-			return nil, nil
-		}
-		return &m[0], nil
 	}
 
 	return loader.FetchOne(ctx, id)
@@ -402,22 +339,6 @@ func (app *App) FindOneAlert(ctx context.Context, id int) (*alert.Alert, error) 
 	loader := loadersFrom(ctx).Alert
 	if loader == nil {
 		return app.AlertStore.FindOne(ctx, id)
-	}
-
-	return loader.FetchOne(ctx, id)
-}
-
-func (app *App) FindOneHeartbeatMonitor(ctx context.Context, id string) (*heartbeat.Monitor, error) {
-	loader := loadersFrom(ctx).Heartbeat
-	if loader == nil {
-		hb, err := app.HeartbeatStore.FindMany(ctx, []string{id})
-		if err != nil {
-			return nil, err
-		}
-		if len(hb) == 0 {
-			return nil, nil
-		}
-		return &hb[0], nil
 	}
 
 	return loader.FetchOne(ctx, id)

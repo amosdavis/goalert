@@ -17,10 +17,8 @@
 
 import 'cypress-real-events'
 
-import './slack'
 import './admin'
 import './alert'
-import './calendar-subscription'
 import './fail-fast'
 import './service'
 import './ep'

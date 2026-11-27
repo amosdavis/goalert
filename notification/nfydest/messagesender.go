@@ -49,10 +49,6 @@ func (r *Registry) SendMessage(ctx context.Context, msg nfymsg.Message) (*nfymsg
 			return nil, ErrUnsupported
 		}
 	case nfymsg.Test:
-	case nfymsg.SignalMessage:
-		if !info.SupportsSignals {
-			return nil, ErrUnsupported
-		}
 	case nfymsg.ScheduleOnCallUsers:
 		if !info.SupportsOnCallNotify {
 			return nil, ErrUnsupported

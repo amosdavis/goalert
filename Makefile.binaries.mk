@@ -5,7 +5,7 @@
 
 BIN_DIR=bin
 GO_DEPS := Makefile.binaries.mk $(shell find . -path ./web/src -prune -o -path ./vendor -prune -o -path ./.git -prune -o -type f -name "*.go" -print) go.sum
-GO_DEPS += migrate/migrations/ migrate/migrations/*.sql web/index.html graphql2/graphqlapp/slack.manifest.yaml swo/*/*.sql
+GO_DEPS += web/index.html
 GO_DEPS += graphql2/mapconfig.go graphql2/maplimit.go graphql2/generated.go graphql2/models_gen.go
 GO_DEPS += web/explore.html web/live.js .gitrev
 
@@ -48,7 +48,7 @@ PREBUILT:=.prebuilt
 container-goalert: bin/goalert-linux-amd64.tgz bin/goalert-linux-arm.tgz bin/goalert-linux-arm64.tgz
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm -t $(IMAGE_REPO)/goalert:$(IMAGE_TAG) -f devtools/ci/dockerfiles/goalert/Dockerfile$(PREBUILT) $(PUSH_ARG) .
 
-container-demo: bin/goalert-linux-amd64.tgz bin/linux-amd64.demo/resetdb bin/goalert-linux-arm.tgz bin/linux-arm.demo/resetdb bin/goalert-linux-arm64.tgz bin/linux-arm64.demo/resetdb
+container-demo: bin/goalert-linux-amd64.tgz bin/goalert-linux-arm.tgz bin/goalert-linux-arm64.tgz
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm -t $(IMAGE_REPO)/demo:$(IMAGE_TAG) -f devtools/ci/dockerfiles/demo/Dockerfile$(PREBUILT) $(PUSH_ARG) .
 
 $(BIN_DIR)/build/integration/cypress/plugins/index.js: package.json bun.lock web/src/esbuild.cypress.js $(shell find ./web/src/cypress)
@@ -57,18 +57,6 @@ $(BIN_DIR)/build/integration/cypress/plugins/index.js: package.json bun.lock web
 	mkdir -p $@/plugins
 	cp web/src/cypress/plugins/index.js $@/plugins/index.js
 	touch $@
-$(BIN_DIR)/linux-amd64.demo/resetdb: $(GO_DEPS)
-	mkdir -p $(BIN_DIR)/linux-amd64.demo
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$@" ./devtools/resetdb
-
-$(BIN_DIR)/linux-arm.demo/resetdb: $(GO_DEPS)
-	mkdir -p $(BIN_DIR)/linux-arm.demo
-	GOOS=linux GOARCH=arm CGO_ENABLED=0 go build -trimpath -o "$@" ./devtools/resetdb
-
-$(BIN_DIR)/linux-arm64.demo/resetdb: $(GO_DEPS)
-	mkdir -p $(BIN_DIR)/linux-arm64.demo
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o "$@" ./devtools/resetdb
-
 
 
 $(BIN_DIR)/build/integration/bin/build/goalert-darwin-amd64: $(BIN_DIR)/build/goalert-darwin-amd64
@@ -145,48 +133,28 @@ $(BIN_DIR)/windows-amd64/goalert.exe: $(GO_DEPS) graphql2/mapconfig.go web/src/b
 
 
 
-$(BIN_DIR)/goalert-slack-email-sync: $(GO_DEPS) 
-	go build  -o $@ ./cmd/goalert-slack-email-sync
 
-$(BIN_DIR)/darwin-amd64/goalert-slack-email-sync: $(GO_DEPS)  
-	GOOS=darwin GOARCH=amd64 go build -trimpath  -o $@ ./cmd/goalert-slack-email-sync
-
-$(BIN_DIR)/linux-amd64/goalert-slack-email-sync: $(GO_DEPS)  
-	GOOS=linux GOARCH=amd64 go build -trimpath  -o $@ ./cmd/goalert-slack-email-sync
-
-$(BIN_DIR)/linux-arm/goalert-slack-email-sync: $(GO_DEPS)  
-	GOOS=linux GOARCH=arm GOARM=7 go build -trimpath  -o $@ ./cmd/goalert-slack-email-sync
-
-$(BIN_DIR)/linux-arm64/goalert-slack-email-sync: $(GO_DEPS)  
-	GOOS=linux GOARCH=arm64 go build -trimpath  -o $@ ./cmd/goalert-slack-email-sync
-
-$(BIN_DIR)/windows-amd64/goalert-slack-email-sync.exe: $(GO_DEPS)  
-	GOOS=windows GOARCH=amd64 go build -trimpath  -o $@ ./cmd/goalert-slack-email-sync
-
-
-
-
-$(BIN_DIR)/darwin-amd64/_all: $(BIN_DIR)/darwin-amd64/goalert-smoketest $(BIN_DIR)/darwin-amd64/goalert $(BIN_DIR)/darwin-amd64/goalert-slack-email-sync
+$(BIN_DIR)/darwin-amd64/_all: $(BIN_DIR)/darwin-amd64/goalert-smoketest $(BIN_DIR)/darwin-amd64/goalert
 
 $(BIN_DIR)/darwin-amd64/goalert-smoketest: $(GO_DEPS)
 	GOOS=darwin GOARCH=amd64 go test ./smoketest -c -o $@
 
-$(BIN_DIR)/linux-amd64/_all: $(BIN_DIR)/linux-amd64/goalert-smoketest $(BIN_DIR)/linux-amd64/goalert $(BIN_DIR)/linux-amd64/goalert-slack-email-sync
+$(BIN_DIR)/linux-amd64/_all: $(BIN_DIR)/linux-amd64/goalert-smoketest $(BIN_DIR)/linux-amd64/goalert
 
 $(BIN_DIR)/linux-amd64/goalert-smoketest: $(GO_DEPS)
 	GOOS=linux GOARCH=amd64 go test ./smoketest -c -o $@
 
-$(BIN_DIR)/linux-arm/_all: $(BIN_DIR)/linux-arm/goalert-smoketest $(BIN_DIR)/linux-arm/goalert $(BIN_DIR)/linux-arm/goalert-slack-email-sync
+$(BIN_DIR)/linux-arm/_all: $(BIN_DIR)/linux-arm/goalert-smoketest $(BIN_DIR)/linux-arm/goalert
 
 $(BIN_DIR)/linux-arm/goalert-smoketest: $(GO_DEPS)
 	GOOS=linux GOARCH=arm GOARM=7 go test ./smoketest -c -o $@
 
-$(BIN_DIR)/linux-arm64/_all: $(BIN_DIR)/linux-arm64/goalert-smoketest $(BIN_DIR)/linux-arm64/goalert $(BIN_DIR)/linux-arm64/goalert-slack-email-sync
+$(BIN_DIR)/linux-arm64/_all: $(BIN_DIR)/linux-arm64/goalert-smoketest $(BIN_DIR)/linux-arm64/goalert
 
 $(BIN_DIR)/linux-arm64/goalert-smoketest: $(GO_DEPS)
 	GOOS=linux GOARCH=arm64 go test ./smoketest -c -o $@
 
-$(BIN_DIR)/windows-amd64/_all: $(BIN_DIR)/windows-amd64/goalert-smoketest $(BIN_DIR)/windows-amd64/goalert.exe $(BIN_DIR)/windows-amd64/goalert-slack-email-sync.exe
+$(BIN_DIR)/windows-amd64/_all: $(BIN_DIR)/windows-amd64/goalert-smoketest $(BIN_DIR)/windows-amd64/goalert.exe
 
 $(BIN_DIR)/windows-amd64/goalert-smoketest: $(GO_DEPS)
 	GOOS=windows GOARCH=amd64 go test ./smoketest -c -o $@
@@ -196,10 +164,10 @@ $(BIN_DIR)/goalert-smoketest: $(GO_DEPS)
 
 
 
-$(BIN_DIR)/build/goalert-darwin-amd64: $(BIN_DIR)/darwin-amd64/goalert $(BIN_DIR)/darwin-amd64/goalert-slack-email-sync
+$(BIN_DIR)/build/goalert-darwin-amd64: $(BIN_DIR)/darwin-amd64/goalert
 	rm -rf $@
 	mkdir -p $@/goalert/bin/
-	cp  $(BIN_DIR)/darwin-amd64/goalert $(BIN_DIR)/darwin-amd64/goalert-slack-email-sync $@/goalert/bin/
+	cp  $(BIN_DIR)/darwin-amd64/goalert $@/goalert/bin/
 	touch $@
 
 $(BIN_DIR)/goalert-darwin-amd64.tgz: $(BIN_DIR)/build/goalert-darwin-amd64
@@ -209,10 +177,10 @@ $(BIN_DIR)/goalert-darwin-amd64.zip: $(BIN_DIR)/build/goalert-darwin-amd64
 	rm -f $@
 	cd $(BIN_DIR)/build/goalert-darwin-amd64 && zip -r $(abspath $@) .
 
-$(BIN_DIR)/build/goalert-linux-amd64: $(BIN_DIR)/linux-amd64/goalert $(BIN_DIR)/linux-amd64/goalert-slack-email-sync
+$(BIN_DIR)/build/goalert-linux-amd64: $(BIN_DIR)/linux-amd64/goalert
 	rm -rf $@
 	mkdir -p $@/goalert/bin/
-	cp  $(BIN_DIR)/linux-amd64/goalert $(BIN_DIR)/linux-amd64/goalert-slack-email-sync $@/goalert/bin/
+	cp  $(BIN_DIR)/linux-amd64/goalert $@/goalert/bin/
 	touch $@
 
 $(BIN_DIR)/goalert-linux-amd64.tgz: $(BIN_DIR)/build/goalert-linux-amd64
@@ -222,10 +190,10 @@ $(BIN_DIR)/goalert-linux-amd64.zip: $(BIN_DIR)/build/goalert-linux-amd64
 	rm -f $@
 	cd $(BIN_DIR)/build/goalert-linux-amd64 && zip -r $(abspath $@) .
 
-$(BIN_DIR)/build/goalert-linux-arm: $(BIN_DIR)/linux-arm/goalert $(BIN_DIR)/linux-arm/goalert-slack-email-sync
+$(BIN_DIR)/build/goalert-linux-arm: $(BIN_DIR)/linux-arm/goalert
 	rm -rf $@
 	mkdir -p $@/goalert/bin/
-	cp  $(BIN_DIR)/linux-arm/goalert $(BIN_DIR)/linux-arm/goalert-slack-email-sync $@/goalert/bin/
+	cp  $(BIN_DIR)/linux-arm/goalert $@/goalert/bin/
 	touch $@
 
 $(BIN_DIR)/goalert-linux-arm.tgz: $(BIN_DIR)/build/goalert-linux-arm
@@ -235,10 +203,10 @@ $(BIN_DIR)/goalert-linux-arm.zip: $(BIN_DIR)/build/goalert-linux-arm
 	rm -f $@
 	cd $(BIN_DIR)/build/goalert-linux-arm && zip -r $(abspath $@) .
 
-$(BIN_DIR)/build/goalert-linux-arm64: $(BIN_DIR)/linux-arm64/goalert $(BIN_DIR)/linux-arm64/goalert-slack-email-sync
+$(BIN_DIR)/build/goalert-linux-arm64: $(BIN_DIR)/linux-arm64/goalert
 	rm -rf $@
 	mkdir -p $@/goalert/bin/
-	cp  $(BIN_DIR)/linux-arm64/goalert $(BIN_DIR)/linux-arm64/goalert-slack-email-sync $@/goalert/bin/
+	cp  $(BIN_DIR)/linux-arm64/goalert $@/goalert/bin/
 	touch $@
 
 $(BIN_DIR)/goalert-linux-arm64.tgz: $(BIN_DIR)/build/goalert-linux-arm64
@@ -248,10 +216,10 @@ $(BIN_DIR)/goalert-linux-arm64.zip: $(BIN_DIR)/build/goalert-linux-arm64
 	rm -f $@
 	cd $(BIN_DIR)/build/goalert-linux-arm64 && zip -r $(abspath $@) .
 
-$(BIN_DIR)/build/goalert-windows-amd64: $(BIN_DIR)/windows-amd64/goalert.exe $(BIN_DIR)/windows-amd64/goalert-slack-email-sync.exe
+$(BIN_DIR)/build/goalert-windows-amd64: $(BIN_DIR)/windows-amd64/goalert.exe
 	rm -rf $@
 	mkdir -p $@/goalert/bin/
-	cp  $(BIN_DIR)/windows-amd64/goalert.exe $(BIN_DIR)/windows-amd64/goalert-slack-email-sync.exe $@/goalert/bin/
+	cp  $(BIN_DIR)/windows-amd64/goalert.exe $@/goalert/bin/
 	touch $@
 
 $(BIN_DIR)/goalert-windows-amd64.tgz: $(BIN_DIR)/build/goalert-windows-amd64

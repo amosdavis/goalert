@@ -11,6 +11,8 @@ import (
 func TestOnCallNotifyTempSchedMissingUser(t *testing.T) {
 	t.Parallel()
 
+	webhookURL, ch := newOnCallWebhook(t)
+
 	// "deleted-user" is intentionally not inserted into the users table
 	sql := `
 	insert into users (id, name, email)
@@ -23,7 +25,7 @@ func TestOnCallNotifyTempSchedMissingUser(t *testing.T) {
 
 	insert into notification_channels (id, type, name, value)
 	values
-		({{uuid "chan1"}}, 'SLACK', '#test1', {{slackChannelID "test1"}});
+		({{uuid "chan1"}}, 'WEBHOOK', 'webhook', '` + webhookURL + `');
 
 	insert into schedule_data (schedule_id, data)
 	values
@@ -42,9 +44,10 @@ func TestOnCallNotifyTempSchedMissingUser(t *testing.T) {
 	h := harness.NewHarness(t, sql, "outgoing-messages-schedule-id")
 	defer h.Close()
 
-	h.Slack().Channel("test1").ExpectMessage("on-call", "testschedule", "bob")
+	expectOnCallNotification(t, h, ch, "testschedule", "bob")
 
-	// On-call is not changing, so additional engine cycles must not produce more notifications
+	// On-call is not changing, so additional engine cycles must not produce more notifications;
+	// the webhook cleanup checks that no additional notifications arrive.
 	h.Trigger()
 	h.Trigger()
 	h.Trigger()

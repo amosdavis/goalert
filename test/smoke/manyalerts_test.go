@@ -51,12 +51,15 @@ func TestManyAlerts(t *testing.T) {
 	h := harness.NewHarness(t, sql, "add-generic-integration-key")
 	defer h.Close()
 
-	createAlert := func(summary string) {
+	postAlert := func(summary, action string) {
 		t.Helper()
-		u := h.URL() + "/v1/api/alerts?key=" + h.UUID("int_key")
+		u := h.URL() + "/api/v2/generic/incoming?token=" + h.UUID("int_key")
 		v := make(url.Values)
 		v.Set("summary", summary)
 		v.Set("details", "woot")
+		if action != "" {
+			v.Set("action", action)
+		}
 
 		resp, err := http.PostForm(u, v)
 		if err != nil {
@@ -70,11 +73,12 @@ func TestManyAlerts(t *testing.T) {
 	createAndClose := func(i int) {
 		t.Helper()
 		summary := fmt.Sprintf("hello-%d-", i)
-		createAlert(summary)
+		postAlert(summary, "")
 		h.FastForward(1 * time.Minute)
 		h.FastForward(1 * time.Minute)
 		h.FastForward(1 * time.Minute)
-		h.Twilio(t).Device(h.Phone("1")).ExpectSMS(summary).ThenReply("c").ThenExpect("closed")
+		h.Twilio(t).Device(h.Phone("1")).ExpectSMS(summary)
+		postAlert(summary, "close")
 		h.Twilio(t).Device(h.Phone("1")).IgnoreUnexpectedSMS(summary)
 		h.FastForward(20 * time.Minute)
 	}

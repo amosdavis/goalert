@@ -18,20 +18,11 @@ const (
 	// SourceTypeContactMethod is set when a context is authorized for use of a user's contact method.
 	SourceTypeContactMethod
 
-	// SourceTypeHeartbeat is set when a context is authorized for use of a service's heartbeat.
-	SourceTypeHeartbeat
-
 	// SourceTypeNotificationChannel is set when a context is authorized for use of a notification channel.
 	SourceTypeNotificationChannel
 
-	// SourceTypeCalendarSubscription is set when a context is authorized for use of a calendar subscription.
-	SourceTypeCalendarSubscription
-
 	// SourceTypeGQLAPIKey is set when a context is authorized for use of the GraphQL API.
 	SourceTypeGQLAPIKey
-
-	// SourceTypeUIK is set when a context is authorized for use of a universal integration key.
-	SourceTypeUIK
 )
 
 // SourceInfo provides information about the source of a context's authorization.

@@ -10,7 +10,6 @@ import (
 	"github.com/target/goalert/ctxlock"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 )
 
@@ -19,12 +18,6 @@ func isCancel(err error) bool {
 		return true
 	}
 	if errors.Is(err, sql.ErrTxDone) {
-		return true
-	}
-
-	// 57014 = query_canceled
-	// https://www.postgresql.org/docs/9.6/static/errcodes-appendix.html
-	if e := sqlutil.MapError(err); e != nil && e.Code == "57014" {
 		return true
 	}
 

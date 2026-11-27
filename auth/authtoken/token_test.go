@@ -72,7 +72,7 @@ func TestToken_Version1(t *testing.T) {
 func TestToken_Version2(t *testing.T) {
 	tok := &Token{
 		Version:   2,
-		Type:      TypeCalSub,
+		Type:      TypeSession,
 		ID:        uuid.UUID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		CreatedAt: time.Unix(1337, 0),
 	}
@@ -85,14 +85,14 @@ func TestToken_Version2(t *testing.T) {
 	var exp bytes.Buffer
 	exp.WriteByte('V')                                                     // Versioned header flag
 	exp.WriteByte(2)                                                       // version
-	exp.WriteByte(byte(TypeCalSub))                                        // type
+	exp.WriteByte(byte(TypeSession))                                       // type
 	exp.Write(tok.ID[:])                                                   // ID
 	_ = binary.Write(&exp, binary.BigEndian, uint64(tok.CreatedAt.Unix())) // CreatedAt
 	exp.WriteString("sig")                                                 // Signature
 	assert.Equal(t, exp.Bytes(), dec)
 
 	parsed, isOld, err := Parse(s, func(typ Type, p, sig []byte) (bool, bool) {
-		assert.Equal(t, TypeCalSub, typ)
+		assert.Equal(t, TypeSession, typ)
 		assert.Equal(t, exp.Bytes()[:exp.Len()-3], p)
 		assert.Equal(t, sig, []byte("sig"))
 		return true, true

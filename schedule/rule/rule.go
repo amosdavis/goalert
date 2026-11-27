@@ -1,7 +1,6 @@
 package rule
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -39,57 +38,7 @@ func (r Rule) Normalize() (*Rule, error) {
 	return &r, nil
 }
 
-type scanner interface {
-	Scan(...interface{}) error
-}
-
 var errNoKnownTarget = errors.New("rule had no known target set (user or rotation)")
-
-func (r *Rule) scanFrom(s scanner) error {
-	f := []interface{}{
-		&r.ID,
-		&r.ScheduleID,
-		&r.WeekdayFilter,
-		&r.Start,
-		&r.End,
-	}
-	var usr, rot sql.NullString
-	f = append(f, &usr, &rot)
-	err := s.Scan(f...)
-	if err != nil {
-		return err
-	}
-
-	switch {
-	case usr.Valid:
-		r.Target = assignment.UserTarget(usr.String)
-	case rot.Valid:
-		r.Target = assignment.RotationTarget(rot.String)
-	default:
-		return errNoKnownTarget
-	}
-	return nil
-}
-
-func (r Rule) readFields() []interface{} {
-	f := []interface{}{
-		&r.ID,
-		&r.ScheduleID,
-		&r.WeekdayFilter,
-		&r.Start,
-		&r.End,
-	}
-	var usr, rot sql.NullString
-	switch r.Target.TargetType() {
-	case assignment.TargetTypeUser:
-		usr.Valid = true
-		usr.String = r.Target.TargetID()
-	case assignment.TargetTypeRotation:
-		rot.Valid = true
-		rot.String = r.Target.TargetID()
-	}
-	return append(f, usr, rot)
-}
 
 // StartTime will return the next time the rule would be active.
 // If the rule is currently active, it will return the time it

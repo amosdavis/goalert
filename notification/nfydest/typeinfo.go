@@ -9,7 +9,6 @@ type TypeInfo struct {
 	Enabled     bool
 
 	RequiredFields []FieldConfig
-	DynamicParams  []DynamicParamConfig
 
 	UserDisclaimer string
 
@@ -18,7 +17,6 @@ type TypeInfo struct {
 	SupportsAlertNotifications bool
 	SupportsUserVerification   bool
 	SupportsOnCallNotify       bool
-	SupportsSignals            bool
 
 	UserVerificationRequired bool
 	StatusUpdatesRequired    bool
@@ -36,10 +34,6 @@ func (t TypeInfo) IsSchedOnCallNotify() bool {
 	return t.SupportsOnCallNotify && !t.UserVerificationRequired
 }
 
-func (t TypeInfo) IsDynamicAction() bool {
-	return t.SupportsSignals && !t.UserVerificationRequired
-}
-
 type FieldConfig struct {
 	FieldID            string
 	Label              string
@@ -50,12 +44,4 @@ type FieldConfig struct {
 	InputType          string
 	SupportsSearch     bool
 	SupportsValidation bool
-}
-
-type DynamicParamConfig struct {
-	ParamID      string
-	Label        string
-	Hint         string
-	HintURL      string
-	DefaultValue string
 }

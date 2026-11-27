@@ -1,5 +1,4 @@
 type Query {
-  phoneNumberInfo(number: String!): PhoneNumberInfo
 
   experimentalFlags: [ID!]!
 
@@ -47,11 +46,6 @@ type Query {
   integrationKey(id: ID!): IntegrationKey
 
   """
-  Returns a heartbeat monitor with the given ID.
-  """
-  heartbeatMonitor(id: ID!): HeartbeatMonitor
-
-  """
   Returns a paginated list of services.
   """
   services(input: ServiceSearchOptions): ServiceConnection!
@@ -74,11 +68,6 @@ type Query {
   Returns a single schedule with the given ID.
   """
   schedule(id: ID!): Schedule
-
-  """
-  Returns the public information of a calendar subscription
-  """
-  userCalendarSubscription(id: ID!): UserCalendarSubscription
 
   """
   Returns a paginated list of schedules.
@@ -168,30 +157,4 @@ type Query {
   Returns a contact method with the given ID.
   """
   userContactMethod(id: ID!): UserContactMethod
-
-  """
-  Returns the list of Slack channels available to the current user.
-  """
-  slackChannels(input: SlackChannelSearchOptions): SlackChannelConnection!
-
-  """
-  Returns a Slack channel with the given ID.
-  """
-  slackChannel(id: ID!): SlackChannel
-
-  """
-  Returns the list of Slack user groups available.
-  """
-  slackUserGroups(input: SlackUserGroupSearchOptions): SlackUserGroupConnection!
-
-  """
-  Returns a Slack user group with the given ID.
-  """
-  slackUserGroup(id: ID!): SlackUserGroup
-
-  generateSlackAppManifest: String!
-
-  linkAccountInfo(token: ID!): LinkAccountInfo
-
-  swoStatus: SWOStatus!
 }

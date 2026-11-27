@@ -16,18 +16,3 @@ func (app *App) Pause(ctx context.Context) error {
 func (app *App) Resume(ctx context.Context) error {
 	return app.mgr.Resume(app.Context(ctx))
 }
-
-func (app *App) _pause(ctx context.Context) error {
-	if app.events != nil {
-		app.events.Stop()
-	}
-	return nil
-}
-
-func (app *App) _resume(ctx context.Context) error {
-	if app.events != nil {
-		app.events.Start()
-	}
-
-	return nil
-}

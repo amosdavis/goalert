@@ -1,10 +1,6 @@
 package user
 
 import (
-	"crypto/md5"
-	"encoding/hex"
-	"fmt"
-
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/validation/validate"
 
@@ -23,9 +19,6 @@ type User struct {
 	// Email is the primary contact email for the user. It is used for account-related communications
 	Email string
 
-	// AvatarURL is an absolute address for an image to be used as the avatar.
-	AvatarURL string
-
 	// AlertStatusCMID defines a contact method ID for alert status updates.
 	//
 	// Deprecated: No longer used.
@@ -38,51 +31,6 @@ type User struct {
 	isUserFavorite bool
 }
 
-// ResolveAvatarURL will resolve the user avatar URL, using the email if none is set.
-func (u User) ResolveAvatarURL(fullSize bool) string {
-	if u.AvatarURL == "" {
-		suffix := ""
-		if fullSize {
-			suffix = "&s=2048"
-		}
-		sum := md5.Sum([]byte(u.Email))
-		u.AvatarURL = fmt.Sprintf("https://gravatar.com/avatar/%s?d=retro%s", hex.EncodeToString(sum[:]), suffix)
-	}
-	return u.AvatarURL
-}
-
-type scanFn func(...interface{}) error
-
-func (u *User) scanFrom(fn scanFn) error {
-	err := fn(
-		&u.ID,
-		&u.Name,
-		&u.Email,
-		&u.AvatarURL,
-		&u.Role,
-		&u.isUserFavorite,
-	)
-	return err
-}
-
-func (u *User) userUpdateFields() []interface{} {
-	return []interface{}{
-		u.ID,
-		u.Name,
-		u.Email,
-	}
-}
-
-func (u *User) fields() []interface{} {
-	return []interface{}{
-		u.ID,
-		u.Name,
-		u.Email,
-		u.AvatarURL,
-		u.Role,
-	}
-}
-
 // Normalize will produce a normalized/validated User struct.
 func (u User) Normalize() (*User, error) {
 	var err error
@@ -93,13 +41,6 @@ func (u User) Normalize() (*User, error) {
 		err = validate.Email("Email", u.Email)
 		// Sanitize Email after it has been validated.
 		u.Email = validate.SanitizeEmail(u.Email)
-	}
-
-	if u.AvatarURL != "" {
-		err = validate.Many(
-			err,
-			validate.AbsoluteURL("AvatarURL", u.AvatarURL),
-		)
 	}
 
 	err = validate.Many(

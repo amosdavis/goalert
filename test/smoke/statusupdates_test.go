@@ -23,14 +23,16 @@ func TestStatusUpdates(t *testing.T) {
 		({{uuid "user"}}, 'bob', 'joe@test.com', 'admin');
 	insert into user_contact_methods (id, user_id, name, type, value, enable_status_updates) 
 	values
-		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "1"}}, true);
+		({{uuid "cm1"}}, {{uuid "user"}}, 'personal', 'SMS', {{phone "1"}}, true),
+		({{uuid "cm2"}}, {{uuid "user"}}, 'voice', 'VOICE', {{phone "2"}}, false);
 
 	update users set alert_status_log_contact_method_id = {{uuid "cm1"}}
 	where id = {{uuid "user"}};
 
 	insert into user_notification_rules (user_id, contact_method_id, delay_minutes) 
 	values
-		({{uuid "user"}}, {{uuid "cm1"}}, 0);
+		({{uuid "user"}}, {{uuid "cm1"}}, 0),
+		({{uuid "user"}}, {{uuid "cm2"}}, 0);
 
 	insert into escalation_policies (id, name) 
 	values
@@ -60,7 +62,7 @@ func TestStatusUpdates(t *testing.T) {
 	defer h.Close()
 
 	doClose := func(summary string) {
-		u := h.URL() + "/v1/api/alerts?key=" + h.UUID("int1")
+		u := h.URL() + "/api/v2/generic/incoming?token=" + h.UUID("int1")
 		v := make(url.Values)
 		v.Set("summary", summary)
 		v.Set("action", "close")
@@ -75,9 +77,12 @@ func TestStatusUpdates(t *testing.T) {
 
 	tw := h.Twilio(t)
 	d1 := tw.Device(h.Phone("1"))
+	d2 := tw.Device(h.Phone("2"))
 
 	d1.ExpectSMS("first alert")
 	d1.ExpectSMS("second alert")
+	d2.ExpectVoice("first alert")
+	d2.ExpectVoice("second alert")
 
 	doClose("first alert")
 	d1.ExpectSMS("closed")
@@ -87,5 +92,7 @@ func TestStatusUpdates(t *testing.T) {
 
 	// Ensure status updates are not sent to the user that caused them.
 	h.CreateAlert(h.UUID("sid"), "third alert")
-	d1.ExpectSMS("third alert").ThenReply("c").ThenExpect("closed")
+	d1.ExpectSMS("third alert")
+	d2.ExpectVoice("third alert").ThenPress("6").ThenExpect("closed")
+	h.Trigger()
 }

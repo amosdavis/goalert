@@ -8,8 +8,6 @@ import (
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
@@ -20,28 +18,9 @@ import (
 // Store can create new user/pass links and validate a username and password. bcrypt is used
 // for password storage & verification.
 type Store struct {
-	insert        *sql.Stmt
-	getByUsername *sql.Stmt
-	getByID       *sql.Stmt
-	update        *sql.Stmt
-
 	mx sync.Mutex
 
-	delta *deltaStore // the Delta backend, if set (delta.go)
-}
-
-// NewStore creates a new DB. Error is returned if the prepared statements fail to register.
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
-	p := &util.Prepare{
-		DB:  db,
-		Ctx: ctx,
-	}
-	return &Store{
-		insert:        p.P("INSERT INTO auth_basic_users (user_id, username, password_hash) VALUES ($1, $2, $3)"),
-		getByUsername: p.P("SELECT user_id, password_hash FROM auth_basic_users WHERE username = $1"),
-		getByID:       p.P("SELECT password_hash FROM auth_basic_users WHERE user_id = $1"),
-		update:        p.P("UPDATE auth_basic_users SET password_hash = $2 WHERE user_id = $1"),
-	}, p.Err
+	delta *deltaStore // delta.go
 }
 
 // HashedPassword is an interface that can be used to store a password.
@@ -126,12 +105,7 @@ func (b *Store) CreateTx(ctx context.Context, tx txn.Tx, userID, username string
 		return err
 	}
 
-	if b.delta != nil {
-		return b.delta.insert(ctx, tx, userID, username, password.Hash())
-	}
-	stx := sqltxn.Unwrap(tx)
-	_, err = stx.StmtContext(ctx, b.insert).ExecContext(ctx, userID, username, password.Hash())
-	return err
+	return b.delta.insert(ctx, tx, userID, username, password.Hash())
 }
 
 // UpdateTx updates a user's password. oldPass is required if the current context is not an admin.
@@ -158,23 +132,9 @@ func (b *Store) UpdateTx(ctx context.Context, tx txn.Tx, userID string, oldPass 
 		return validation.NewFieldError("OldPassword", "Previous password required")
 	}
 
-	var count int64
-	if b.delta != nil {
-		count, err = b.delta.update(ctx, tx, userID, newPass.Hash())
-		if err != nil {
-			return err
-		}
-	} else {
-		stx := sqltxn.Unwrap(tx)
-		res, err := stx.StmtContext(ctx, b.update).ExecContext(ctx, userID, newPass.Hash())
-		if err != nil {
-			return err
-		}
-
-		count, err = res.RowsAffected()
-		if err != nil {
-			return err
-		}
+	count, err := b.delta.update(ctx, tx, userID, newPass.Hash())
+	if err != nil {
+		return err
 	}
 
 	if count == 0 {
@@ -194,13 +154,7 @@ func (b *Store) Validate(ctx context.Context, username, password string) (string
 		return "", err
 	}
 
-	var userID, hashed string
-	if b.delta != nil {
-		userID, hashed, err = b.delta.byUsernameHash(ctx, username)
-	} else {
-		row := b.getByUsername.QueryRowContext(ctx, username)
-		err = row.Scan(&userID, &hashed)
-	}
+	userID, hashed, err := b.delta.byUsernameHash(ctx, username)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", errors.New("invalid username")
@@ -242,12 +196,7 @@ func (b *Store) ValidatePassword(ctx context.Context, password string) (Validate
 		return nil, err
 	}
 
-	var hash string
-	if b.delta != nil {
-		hash, err = b.delta.hash(ctx, userID)
-	} else {
-		err = b.getByID.QueryRowContext(ctx, userID).Scan(&hash)
-	}
+	hash, err := b.delta.hash(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errors.New("unknown userID")
 	}

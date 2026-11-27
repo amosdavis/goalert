@@ -19,6 +19,4 @@ const (
 	// messages are now dropped.
 	MessageTypeAlertStatusBundle   = gadb.EnumOutgoingMessagesTypeAlertStatusUpdateBundle
 	MessageTypeScheduleOnCallUsers = gadb.EnumOutgoingMessagesTypeScheduleOnCallNotification
-
-	MessageTypeSignalMessage = gadb.EnumOutgoingMessagesTypeSignalMessage
 )

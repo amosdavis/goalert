@@ -1,4 +1,4 @@
-import React, { ReactElement, useState, useContext, useEffect } from 'react'
+import React, { ReactElement, useState, useContext } from 'react'
 import { useMutation } from '@apollo/client'
 import { useQuery, gql } from 'urql'
 import { Grid, Hidden, ListItemText } from '@mui/material'
@@ -19,8 +19,6 @@ import { ControlledPaginatedListAction } from '../lists/ControlledPaginatedList'
 import ServiceNotices from '../services/ServiceNotices'
 import { Time } from '../util/Time'
 import { NotificationContext } from '../main/SnackbarNotification'
-import ReactGA from 'react-ga4'
-import { useConfigValue } from '../util/RequireConfig'
 import AlertFeedbackDialog from './components/AlertFeedbackDialog'
 import { Target } from 'web/src/schema'
 
@@ -110,10 +108,6 @@ function getStatusFilter(s: string): string[] {
 export default function AlertsList(props: AlertsListProps): React.JSX.Element {
   const classes = useStyles()
 
-  // event sent to Google Analytics
-  const [event, setEvent] = useState('')
-  const [analyticsID] = useConfigValue('General.GoogleAnalyticsID') as [string]
-
   // stores alertIDs, if length present, feedback dialog is shown
   const [showFeedbackDialog, setShowFeedbackDialog] = useState<Array<string>>(
     [],
@@ -127,11 +121,6 @@ export default function AlertsList(props: AlertsListProps): React.JSX.Element {
 
   const serviceID = 'serviceID' in props ? props.serviceID : ''
   const policyID = 'policyID' in props ? props.policyID : ''
-
-  useEffect(() => {
-    if (analyticsID && event.length)
-      ReactGA.event({ category: 'Bulk Alert Action', action: event })
-  }, [event, analyticsID])
 
   // query for current service name if props.serviceID is provided
   const [serviceNameQuery] = useQuery({
@@ -221,21 +210,9 @@ export default function AlertsList(props: AlertsListProps): React.JSX.Element {
         input: { newStatus, alertIDs },
       }
 
-      switch (newStatus) {
-        case 'StatusUnacknowledged':
-          mutation = escalateMutation
-          variables = { input: alertIDs }
-          setEvent('alertlist_escalated')
-          break
-        case 'StatusAcknowledged':
-          setEvent('alertlist_acknowledged')
-          break
-        case 'StatusClosed':
-          setEvent('alertlist_closed')
-          break
-        case 'noise':
-          setEvent('alertlist_noise')
-          break
+      if (newStatus === 'StatusUnacknowledged') {
+        mutation = escalateMutation
+        variables = { input: alertIDs }
       }
 
       if (newStatus === 'noise') {

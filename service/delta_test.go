@@ -21,7 +21,6 @@ import (
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
 	"github.com/target/goalert/util/errutil"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 )
 
@@ -167,10 +166,13 @@ func (p *pod) setFavorite(t *testing.T, serviceID string) {
 func requireConstraint(t *testing.T, err error, code, constraint string) {
 	t.Helper()
 	require.Error(t, err)
-	dbErr := sqlutil.MapError(err)
-	require.NotNil(t, dbErr, "%v", err)
-	assert.Equal(t, code, dbErr.Code)
-	assert.Equal(t, constraint, dbErr.ConstraintName)
+	var dbErr interface {
+		SQLState() string
+		ConstraintName() string
+	}
+	require.ErrorAs(t, err, &dbErr)
+	assert.Equal(t, code, dbErr.SQLState())
+	assert.Equal(t, constraint, dbErr.ConstraintName())
 }
 
 func TestDeltaServices(t *testing.T) {

@@ -119,7 +119,7 @@ func NewDeltaHandler(db txn.DB, tables *DeltaTables, cfg HandlerConfig, users De
 
 // Shutdown writes the last accesses of sessions that aren't written yet.
 func (h *Handler) Shutdown(ctx context.Context) error {
-	if h == nil || h.delta == nil {
+	if h == nil {
 		return nil
 	}
 	return h.delta.access.Flush(ctx)

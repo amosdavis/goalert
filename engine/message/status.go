@@ -1,5 +1,14 @@
 package message
 
+import (
+	"context"
+
+	"github.com/target/goalert/notification"
+)
+
+// StatusFunc is used to fetch the latest status of a message.
+type StatusFunc func(ctx context.Context, providerID notification.ProviderMessageID) (*notification.Status, error)
+
 // Status represents the current state of an outgoing message.
 type Status string
 

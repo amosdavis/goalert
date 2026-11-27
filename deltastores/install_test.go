@@ -16,7 +16,6 @@ import (
 	"github.com/target/goalert/deltastores"
 	"github.com/target/goalert/deltastores/deltastorestest"
 	"github.com/target/goalert/filestore"
-	"github.com/target/goalert/heartbeat"
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
@@ -30,7 +29,6 @@ import (
 	"github.com/target/goalert/tablelog"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 )
 
 // TestCreateOpen checks that a table is created once, completely, and never by
@@ -91,8 +89,6 @@ func TestStores(t *testing.T) {
 	step := a.AddStep(pol, 5, deltastorestest.ScheduleDest(sched), deltastorestest.Dest("channel"))
 	svc := a.AddService("Service", pol)
 	key := a.AddKey(svc)
-	_, err = a.Heartbeat.CreateTx(admin, nil, &heartbeat.Monitor{Name: "hb", ServiceID: svc, Timeout: 10 * time.Minute})
-	require.NoError(t, err)
 	require.NoError(t, a.Label.SetTx(admin, nil, &label.Label{Target: assignment.ServiceTarget(svc), Key: "example/team", Value: "core"}))
 	require.NoError(t, a.Favorite.Set(ctx, nil, usr, assignment.ServiceTarget(svc)))
 	b.Sync()
@@ -135,12 +131,6 @@ func TestStores(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, alert.StatusTriggered, got.Status)
 
-	// Limits hold, with Postgres's name for them.
-	require.NoError(t, a.Limit.SetMax(admin, limit.HeartbeatMonitorsPerService, 1))
-	_, err = a.Heartbeat.CreateTx(admin, nil, &heartbeat.Monitor{Name: "hb2", ServiceID: svc, Timeout: 10 * time.Minute})
-	require.Error(t, err)
-	assert.Equal(t, "heartbeat_monitors_per_service_limit", sqlutil.MapError(err).ConstraintName)
-
 	// What is in use can't be deleted, and deleting a user leaves nothing.
 	require.Error(t, a.Escalation.DeleteManyPoliciesTx(admin, nil, []string{pol}))
 	require.NoError(t, a.User.DeleteManyTx(admin, nil, []string{other}))
@@ -153,7 +143,7 @@ func TestStores(t *testing.T) {
 	assert.Zero(t, b.Tables.Alert.Alerts.Len(r))
 	assert.Zero(t, b.Tables.Escalation.States.Len(r))
 	assert.Zero(t, b.Tables.IntegrationKey.Keys.Len(r))
-	assert.Zero(t, b.Tables.Heartbeat.Monitors.Len(r))
+
 	assert.Zero(t, b.Tables.Override.Overrides.Len(r))
 	require.NoError(t, b.Escalation.DeleteManyPoliciesTx(admin, nil, []string{pol}))
 	assert.Zero(t, b.Tables.Escalation.Actions.Len(b.View()))

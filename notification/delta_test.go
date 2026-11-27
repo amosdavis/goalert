@@ -19,7 +19,6 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 )
 
@@ -281,10 +280,9 @@ func ptr[T any](v T) *T { return &v }
 
 func constraint(t *testing.T, err error) string {
 	t.Helper()
-	require.Error(t, err)
-	e := sqlutil.MapError(err)
-	require.NotNil(t, e, "not a constraint error: %v", err)
-	return e.ConstraintName
+	var ce interface{ ConstraintName() string }
+	require.ErrorAs(t, err, &ce)
+	return ce.ConstraintName()
 }
 
 func asUser(id string) context.Context {
@@ -622,13 +620,13 @@ func TestDeltaMessageIndexes(t *testing.T) {
 	withCycle := x.alertMessage()
 	withCycle.CycleID = &x.cycle
 	a := p.insert(t, withCycle).ID
-	b := p.insert(t, MessageRow{MessageType: string(MessageTypeSignalMessage), ChannelID: &x.channel, ServiceID: &x.service}).ID
+	b := p.insert(t, MessageRow{MessageType: string(MessageTypeScheduleOnCallUsers), ChannelID: &x.channel, ScheduleID: &x.schedule}).ID
 
 	assert.ElementsMatch(t, []string{a, b}, ids(e.tables.MessagesUnfinished, statusPending))
 	assert.Equal(t, []string{a}, ids(e.tables.MessagesPending, PendingTypeKey(MessageTypeAlert)))
 	assert.Equal(t, []string{a}, ids(e.tables.MessagesPending, PendingDestKey(MessageTypeAlert, x.cm)))
-	assert.Equal(t, []string{b}, ids(e.tables.MessagesPending, PendingDestKey(MessageTypeSignalMessage, x.channel)))
-	assert.Empty(t, ids(e.tables.MessagesPending, PendingDestKey(MessageTypeSignalMessage, x.cm)))
+	assert.Equal(t, []string{b}, ids(e.tables.MessagesPending, PendingDestKey(MessageTypeScheduleOnCallUsers, x.channel)))
+	assert.Empty(t, ids(e.tables.MessagesPending, PendingDestKey(MessageTypeScheduleOnCallUsers, x.cm)))
 	assert.Equal(t, []string{a}, ids(e.tables.MessagesByAlert, filestore.IntKey(x.alert)))
 	assert.Equal(t, []string{a}, ids(e.tables.MessagesByCycle, x.cycle))
 

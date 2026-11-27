@@ -61,7 +61,7 @@ func TestGenericAPIDedup(t *testing.T) {
 	defer h.Close()
 
 	fire := func(key, summary, dedup string) {
-		u := h.URL() + "/v1/api/alerts?key=" + key
+		u := h.URL() + "/api/v2/generic/incoming?token=" + key
 		v := make(url.Values)
 		v.Set("summary", summary)
 		if dedup != "" {

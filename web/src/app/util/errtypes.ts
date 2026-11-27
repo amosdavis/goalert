@@ -35,8 +35,6 @@ function isKnownErrorCode(code: ErrorCode): code is ErrorCode {
       return true
     case 'INVALID_DEST_FIELD_VALUE':
       return true
-    case 'EXPR_TOO_COMPLEX':
-      return true
     case 'INVALID_MAP_FIELD_VALUE':
       return true
     default:

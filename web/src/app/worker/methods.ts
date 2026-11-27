@@ -1,16 +1,5 @@
-import { useAlertCSV } from '../services/AlertMetrics/useAlertCSV'
-import { useAlertCountCSV } from '../admin/admin-alert-counts/useAlertCountCSV'
-import { useAlertMetrics } from '../services/AlertMetrics/useAlertMetrics'
-import { useAdminAlertCounts } from '../admin/admin-alert-counts/useAdminAlertCounts'
-import { useServiceMetrics } from '../admin/admin-service-metrics/useServiceMetrics'
-
-const methods = {
-  useAdminAlertCounts,
-  useAlertCountCSV,
-  useAlertMetrics,
-  useAlertCSV,
-  useServiceMetrics,
-}
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const methods: Record<string, (arg: any) => any> = {}
 export default methods
 
 export type WorkerMethodName = keyof typeof methods

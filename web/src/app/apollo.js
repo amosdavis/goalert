@@ -95,7 +95,6 @@ const simpleCacheTypes = [
   'escalationPolicy',
   'service',
   'user',
-  'slackChannel',
   'phoneNumberInfo',
 ]
 
@@ -155,9 +154,6 @@ const cache = new InMemoryCache({
     },
     Service: {
       fields: {
-        heartbeatMonitors: {
-          merge: false,
-        },
         integrationKeys: {
           merge: false,
         },
@@ -168,9 +164,6 @@ const cache = new InMemoryCache({
     },
     User: {
       fields: {
-        calendarSubscriptions: {
-          merge: false,
-        },
         contactMethods: {
           merge: false,
         },

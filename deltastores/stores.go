@@ -9,19 +9,15 @@ import (
 
 	"github.com/target/goalert/alert"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/apikey"
 	"github.com/target/goalert/assignment"
 	"github.com/target/goalert/auth"
-	"github.com/target/goalert/auth/authlink"
 	"github.com/target/goalert/auth/basic"
 	"github.com/target/goalert/auth/nonce"
-	"github.com/target/goalert/calsub"
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/escalation"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/gadb"
-	"github.com/target/goalert/heartbeat"
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/label"
@@ -55,19 +51,15 @@ type Stores struct {
 
 	Config *config.Store
 
-	OAuthKeyring, SessionKeyring, APIKeyring, AuthLinkKeyring keyring.Keyring
+	OAuthKeyring, SessionKeyring, APIKeyring keyring.Keyring
 
 	Alert               *alert.Store
 	AlertLog            *alertlog.Store
-	AlertMetrics        *alertmetrics.Store
 	APIKey              *apikey.Store
 	AuthBasic           *basic.Store
-	AuthLink            *authlink.Store
-	CalSub              *calsub.Store
 	ContactMethod       *contactmethod.Store
 	Escalation          *escalation.Store
 	Favorite            *favorite.Store
-	Heartbeat           *heartbeat.Store
 	IntegrationKey      *integrationkey.Store
 	Label               *label.Store
 	Limit               *limit.Store
@@ -127,7 +119,6 @@ func New(ctx context.Context, delta *filestore.DeltaDB, t *Tables, opts Options)
 	s.NotificationChannel = notificationchannel.NewDeltaStore(db, t.NotificationChannel, opts.Registry)
 	s.ContactMethod = contactmethod.NewDeltaStore(db, t.ContactMethod, opts.Registry, limits(limit.ContactMethodsPerUser))
 	s.NotificationRule = notificationrule.NewDeltaStore(db, t.NotificationRule, t.ContactMethod.Owner, limits(limit.NotificationRulesPerUser))
-	s.Heartbeat = heartbeat.NewDeltaStore(db, t.Heartbeat, limits(limit.HeartbeatMonitorsPerService))
 	s.Override = override.NewDeltaStore(db, t.Override, limits(limit.UserOverridesPerSchedule))
 	s.Rule = rule.NewDeltaStore(db, t.Rule, rule.DeltaLimits{
 		RulesPerSchedule:   limits(limit.RulesPerSchedule),
@@ -160,27 +151,22 @@ func New(ctx context.Context, delta *filestore.DeltaDB, t *Tables, opts Options)
 		ServicesWithLabel:          t.Label.ServicesWithLabel,
 		ClearEscalationPolicyState: t.Escalation.ClearEscalationPolicyState,
 	})
-	s.IntegrationKey = integrationkey.NewDeltaStore(db, t.IntegrationKey, s.APIKeyring, opts.Registry, s.NotificationChannel, integrationkey.DeltaLookups{
-		KeysPerService:           limits(limit.IntegrationKeysPerService),
-		SignalsPerService:        limits(limit.PendingSignalsPerService),
-		SignalsPerDestPerService: limits(limit.PendingSignalsPerDestPerService),
+	s.IntegrationKey = integrationkey.NewDeltaStore(db, t.IntegrationKey, integrationkey.DeltaLookups{
+		KeysPerService: limits(limit.IntegrationKeysPerService),
 	})
 
-	s.AlertMetrics = alertmetrics.NewDeltaStore(db, t.AlertMetrics)
 	s.AlertLog = alertlog.NewDeltaStore(db, t.AlertLog, opts.Registry, alertlog.DeltaLookups{
-		UserName:             t.userName,
-		IntegrationKeyName:   t.integrationKeyName,
-		HeartbeatMonitorName: t.heartbeatMonitorName,
-		ChannelName:          t.channelName,
-		ChannelDest:          t.NotificationChannel.Dest,
-		ContactMethodDest:    t.ContactMethod.Dest,
-		MessageDest:          t.messageDest,
-		IntegrationKeyType:   t.integrationKeyType,
-		HeartbeatInterval:    t.heartbeatInterval,
-		PolicyServices:       t.Service.PolicyServices,
-		AlertIDs:             t.Alert.AlertIDs,
+		UserName:           t.userName,
+		IntegrationKeyName: t.integrationKeyName,
+		ChannelName:        t.channelName,
+		ChannelDest:        t.NotificationChannel.Dest,
+		ContactMethodDest:  t.ContactMethod.Dest,
+		MessageDest:        t.messageDest,
+		IntegrationKeyType: t.integrationKeyType,
+		PolicyServices:     t.Service.PolicyServices,
+		AlertIDs:           t.Alert.AlertIDs,
 	})
-	s.Alert = alert.NewDeltaStore(db, t.Alert, s.AlertLog, t.AlertLog, t.AlertMetrics, alert.DeltaLookups{
+	s.Alert = alert.NewDeltaStore(db, t.Alert, s.AlertLog, t.AlertLog, alert.DeltaLookups{
 		Service:           t.alertService,
 		ServiceNames:      t.Service.EachName,
 		MaxUnacked:        limits(limit.UnackedAlertsPerService),
@@ -233,13 +219,7 @@ func New(ctx context.Context, delta *filestore.DeltaDB, t *Tables, opts Options)
 	})
 
 	s.AuthBasic = basic.NewDeltaStore(db, t.AuthBasic, t.User.SetAuthSubject)
-	s.AuthLink = authlink.NewDeltaStore(db, t.AuthLink, s.AuthLinkKeyring, t.User.InsertAuthSubject)
 	s.APIKey = apikey.NewDeltaStore(db, t.APIKey, s.APIKeyring)
-	s.CalSub = calsub.NewDeltaStore(db, t.CalSub, s.APIKeyring, s.OnCall, calsub.DeltaLookups{
-		ScheduleName: t.scheduleName,
-		UserName:     t.userName,
-		MaxPerUser:   limits(limit.CalendarSubscriptionsPerUser),
-	})
 	return s, nil
 }
 
@@ -253,7 +233,6 @@ func (s *Stores) initSecrets(ctx context.Context, delta *filestore.DeltaDB, opts
 		keyring.Config
 	}{
 		{&s.OAuthKeyring, keyring.Config{Name: "oauth-state", RotationDays: 1, MaxOldKeys: 1}},
-		{&s.AuthLinkKeyring, keyring.Config{Name: "auth-link", RotationDays: 1, MaxOldKeys: 1}},
 		{&s.SessionKeyring, keyring.Config{Name: "browser-sessions", RotationDays: 1, MaxOldKeys: 30}},
 		{&s.APIKeyring, keyring.Config{Name: "api-keys", MaxOldKeys: 100}},
 	} {
@@ -302,7 +281,7 @@ func (s *Stores) NewTwilioSMS(cfg *twilio.Config) *twilio.SMS {
 func (s *Stores) HandlerConfig() auth.HandlerConfig {
 	return auth.HandlerConfig{
 		UserStore: s.User, SessionKeyring: s.SessionKeyring, IntKeyStore: s.IntegrationKey,
-		CalSubStore: s.CalSub, APIKeyring: s.APIKeyring, APIKeyStore: s.APIKey,
+		APIKeyring: s.APIKeyring, APIKeyStore: s.APIKey,
 	}
 }
 
@@ -318,10 +297,7 @@ func (s *Stores) Close(ctx context.Context) error {
 	if s.APIKey != nil {
 		stop("API key store", s.APIKey.Shutdown)
 	}
-	if s.CalSub != nil {
-		stop("calendar subscription store", s.CalSub.Shutdown)
-	}
-	for _, k := range []keyring.Keyring{s.SessionKeyring, s.OAuthKeyring, s.APIKeyring, s.AuthLinkKeyring} {
+	for _, k := range []keyring.Keyring{s.SessionKeyring, s.OAuthKeyring, s.APIKeyring} {
 		if k != nil {
 			stop("keyring", k.Shutdown)
 		}
@@ -529,14 +505,4 @@ func (t *Tables) integrationKeyName(r filestore.Reader, id string) (string, bool
 func (t *Tables) integrationKeyType(r filestore.Reader, id string) (integrationkey.Type, bool) {
 	row, ok := t.IntegrationKey.Keys.Get(r, id)
 	return integrationkey.Type(row.Type), ok
-}
-
-func (t *Tables) heartbeatMonitorName(r filestore.Reader, id string) (string, bool) {
-	row, ok := t.Heartbeat.Monitors.Get(r, id)
-	return row.Name, ok
-}
-
-func (t *Tables) heartbeatInterval(r filestore.Reader, id string) (time.Duration, bool) {
-	row, ok := t.Heartbeat.Monitors.Get(r, id)
-	return time.Duration(row.HeartbeatInterval) * time.Microsecond, ok
 }

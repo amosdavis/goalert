@@ -10,18 +10,11 @@ const c = new Chance()
 declare global {
   type ScreenFormat = 'mobile' | 'tablet' | 'widescreen'
 }
-const ids = allUsers.map((u) => `'${u.id}'`).join(',')
 const userVals = allUsers
   .map((u) => `('${u.id}','${u.name}','${u.email}','${u.role}')`)
   .join(',\n')
 
-const resetQuery = `
-truncate table escalation_policies, rotations, schedules, alert_metrics, alert_logs, users CASCADE;
-select setval(pg_get_serial_sequence('alerts', 'id'), coalesce(max(id), 0)+10000 , false) from alerts;
-delete from users where id in (${ids});
-
-update engine_processing_versions set state = '{}' where type_id = 'metrics';
-
+const initialQuery = `
 insert into users (id, name, email, role)
 values
   ${userVals}
@@ -174,7 +167,7 @@ export function testScreen(
       cy.visit('/_cy_test_reset')
 
       cy.task('engine:stop')
-        .sql(resetQuery)
+        .task('db:reset', initialQuery)
         .task('db:resettime')
         .task('engine:setexpflags', expFlags)
         .task('engine:start')

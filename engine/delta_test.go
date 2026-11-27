@@ -20,7 +20,6 @@ import (
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/deltastores/deltastorestest"
 	"github.com/target/goalert/filestore"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/nfymsg"
 	"github.com/target/goalert/objstore"
@@ -43,7 +42,7 @@ func withEngine(t testing.TB, p *deltastorestest.Pod) deltaPod {
 	e, err := NewDeltaEngine(p.Ctx(), DeltaConfig{DB: p.Delta, Tables: p.Tables, Name: "pod"}, &Config{
 		AlertLogStore: p.AlertLog, AlertStore: p.Alert, ContactMethodStore: p.ContactMethod,
 		NotificationManager: notification.NewManager(p.Registry), UserStore: p.User, NotificationStore: p.Notification,
-		NCStore: p.NotificationChannel, OnCallStore: p.OnCall, ScheduleStore: p.Schedule, AuthLinkStore: p.AuthLink,
+		NCStore: p.NotificationChannel, OnCallStore: p.OnCall, ScheduleStore: p.Schedule,
 		DestRegistry: p.Registry, ConfigSource: p.Config, Logger: slog.New(slog.DiscardHandler),
 		CycleTime: time.Hour,
 	})
@@ -155,34 +154,6 @@ func TestDeltaDestinations(t *testing.T) {
 	require.NoError(t, b.e.Start(b.Ctx(), deltastorestest.Dest("alice")))
 	assert.True(t, known("alice"))
 	require.NoError(t, b.e.Stop(b.Ctx(), deltastorestest.Dest("nobody")))
-}
-
-// TestDeltaSignal checks that the parameters of a signal are sent.
-func TestDeltaSignal(t *testing.T) {
-	in := deltastorestest.New(t)
-	p := newDeltaPod(t, in)
-	pol := p.AddPolicy("policy", 0)
-	p.AddStep(pol, 5)
-	svc := p.AddService("service", pol)
-	ctx := p.NotificationChannel.ResolveDests(p.Admin(), deltastorestest.Dest("channel"))
-	channel, err := p.NotificationChannel.MapDestToID(ctx, nil, deltastorestest.Dest("channel"))
-	require.NoError(t, err)
-	messageID := uuid.NewString()
-	p.Update(func(tx *filestore.Tx) error {
-		id := channel.String()
-		_, err := p.Tables.Notification.InsertMessage(tx, notification.MessageRow{
-			ID: messageID, MessageType: string(gadb.EnumOutgoingMessagesTypeSignalMessage), ServiceID: &svc, ChannelID: &id,
-		})
-		return err
-	})
-	require.NoError(t, p.IntegrationKey.InsertSignalMessage(p.Ctx(), nil, gadb.IntKeyInsertSignalMessageParams{
-		DestID: channel, ServiceID: uuid.MustParse(svc), Params: []byte(`{"k":"v"}`),
-	}))
-	p.Update(func(tx *filestore.Tx) error { return p.Tables.IntegrationKey.SetSignalMessage(tx, 1, messageID) })
-	p.cycle()
-	signals := sent[notification.SignalMessage](in)
-	require.Len(t, signals, 1)
-	assert.Equal(t, map[string]string{"k": "v"}, signals[0].Params)
 }
 
 // onCallService adds a service whose alerts page a user.

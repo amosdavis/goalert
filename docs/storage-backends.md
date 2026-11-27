@@ -7,10 +7,9 @@ configured, contacted or needed.
 [filestore-failure-modes.md](filestore-failure-modes.md) has the rules they
 follow (section I).
 
-> **Status.** The backends, and the store on top of them, work and are tested.
-> Running the whole of GoAlert on them still needs Phases 4 and 5 of
-> [filestore-plan.md](filestore-plan.md), so there is no server flag for them
-> yet.
+> **Fresh installs only.** Select the object store with `--storage-objects` and,
+> optionally, a different commit log with `--storage-log`. There is no import of
+> an existing Postgres database.
 
 ## Choosing one
 

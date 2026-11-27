@@ -2,30 +2,17 @@ package schedule
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/validation/validate"
 )
 
+// Store provides schedule operations on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	usr   *user.Store
-	delta *deltaSchedules // the Delta backend, if set (delta.go)
-}
-
-func NewStore(ctx context.Context, db *sql.DB, usr *user.Store) (*Store, error) {
-	return &Store{
-		db:  db,
-		usr: usr,
-	}, nil
+	delta *deltaSchedules
 }
 
 func (store *Store) FindManyTx(ctx context.Context, tx txn.Tx, ids []string) ([]Schedule, error) {
@@ -47,44 +34,7 @@ func (store *Store) FindManyTx(ctx context.Context, tx txn.Tx, ids []string) ([]
 		}
 	}
 
-	if store.delta != nil {
-		return store.delta.findMany(ctx, tx, uuids)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	db := gadb.New(store.db)
-	if stx != nil {
-		db = db.WithTx(stx)
-	}
-
-	rows, err := db.SchedFindMany(ctx, gadb.SchedFindManyParams{
-		Column1: uuids,
-		UserID:  permission.UserNullUUID(ctx).UUID,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]Schedule, 0, len(ids))
-	for _, row := range rows {
-		s := Schedule{
-			ID:             row.ID.String(),
-			Name:           row.Name,
-			Description:    row.Description,
-			isUserFavorite: row.IsFavorite,
-		}
-
-		s.TimeZone, err = util.LoadLocation(row.TimeZone)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, s)
-	}
-
-	return result, nil
+	return store.delta.findMany(ctx, tx, uuids)
 }
 
 func (store *Store) FindMany(ctx context.Context, ids []string) ([]Schedule, error) {
@@ -96,29 +46,7 @@ func (store *Store) FindManyByUserID(ctx context.Context, tx txn.Tx, userID uuid
 	if err != nil {
 		return nil, err
 	}
-	if store.delta != nil {
-		return store.delta.findManyByUser(ctx, tx, userID)
-	}
-
-	rows, err := gadb.New(sqltxn.DBTX(store.db, tx)).ScheduleFindManyByUser(ctx, userID)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var result []Schedule
-	for _, r := range rows {
-		result = append(result, Schedule{
-			ID:          r.ID.String(),
-			Name:        r.Name,
-			Description: r.Description,
-		})
-	}
-
-	return result, nil
+	return store.delta.findManyByUser(ctx, tx, userID)
 }
 
 func (store *Store) Create(ctx context.Context, s *Schedule) (*Schedule, error) {
@@ -136,23 +64,8 @@ func (store *Store) CreateScheduleTx(ctx context.Context, tx txn.Tx, s *Schedule
 		return nil, err
 	}
 
-	var id uuid.UUID
-	if store.delta != nil {
-		id = uuid.New()
-		err = store.delta.create(ctx, tx, id, n)
-	} else {
-		stx := sqltxn.Unwrap(tx)
-		db := gadb.New(store.db)
-		if stx != nil {
-			db = db.WithTx(stx)
-		}
-		id, err = db.SchedCreate(ctx, gadb.SchedCreateParams{
-			Name:        n.Name,
-			Description: n.Description,
-			TimeZone:    n.TimeZone.String(),
-		})
-	}
-	if err != nil {
+	id := uuid.New()
+	if err := store.delta.create(ctx, tx, id, n); err != nil {
 		return nil, err
 	}
 
@@ -180,17 +93,7 @@ func (store *Store) Update(ctx context.Context, s *Schedule) error {
 	if err != nil {
 		return err
 	}
-	if store.delta != nil {
-		return store.delta.update(ctx, nil, id, n)
-	}
-
-	err = gadb.New(store.db).SchedUpdate(ctx, gadb.SchedUpdateParams{
-		ID:          id,
-		Name:        n.Name,
-		Description: n.Description,
-		TimeZone:    n.TimeZone.String(),
-	})
-	return err
+	return store.delta.update(ctx, nil, id, n)
 }
 
 func (store *Store) UpdateTx(ctx context.Context, tx txn.Tx, s *Schedule) error {
@@ -212,17 +115,7 @@ func (store *Store) UpdateTx(ctx context.Context, tx txn.Tx, s *Schedule) error 
 	if err != nil {
 		return err
 	}
-	if store.delta != nil {
-		return store.delta.update(ctx, tx, id, n)
-	}
-
-	err = gadb.New(store.db).WithTx(sqltxn.Unwrap(tx)).SchedUpdate(ctx, gadb.SchedUpdateParams{
-		ID:          id,
-		Name:        n.Name,
-		Description: n.Description,
-		TimeZone:    n.TimeZone.String(),
-	})
-	return err
+	return store.delta.update(ctx, tx, id, n)
 }
 
 func (store *Store) FindAll(ctx context.Context) ([]Schedule, error) {
@@ -230,30 +123,7 @@ func (store *Store) FindAll(ctx context.Context) ([]Schedule, error) {
 	if err != nil {
 		return nil, err
 	}
-	if store.delta != nil {
-		return store.delta.findAll(ctx)
-	}
-
-	rows, err := gadb.New(store.db).SchedFindAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var res []Schedule
-	for _, row := range rows {
-		s := Schedule{
-			ID:          row.ID.String(),
-			Name:        row.Name,
-			Description: row.Description,
-		}
-		s.TimeZone, err = util.LoadLocation(row.TimeZone)
-		if err != nil {
-			return nil, errors.Wrap(err, "parse scanned time zone")
-		}
-		res = append(res, s)
-	}
-
-	return res, nil
+	return store.delta.findAll(ctx)
 }
 
 func (store *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) (*Schedule, error) {
@@ -270,32 +140,7 @@ func (store *Store) FindOneForUpdate(ctx context.Context, tx txn.Tx, id string) 
 	if err != nil {
 		return nil, err
 	}
-	if store.delta != nil {
-		return store.delta.findOne(ctx, tx, schedID, false)
-	}
-
-	db := gadb.New(store.db)
-	if stx := sqltxn.Unwrap(tx); stx != nil {
-		db = db.WithTx(stx)
-	}
-
-	row, err := db.SchedFindOneForUpdate(ctx, schedID)
-	if err != nil {
-		return nil, err
-	}
-
-	s := Schedule{
-		ID:          row.ID.String(),
-		Name:        row.Name,
-		Description: row.Description,
-	}
-
-	s.TimeZone, err = util.LoadLocation(row.TimeZone)
-	if err != nil {
-		return nil, err
-	}
-
-	return &s, nil
+	return store.delta.findOne(ctx, tx, schedID, false)
 }
 
 func (store *Store) FindOne(ctx context.Context, id string) (*Schedule, error) {
@@ -312,31 +157,7 @@ func (store *Store) FindOne(ctx context.Context, id string) (*Schedule, error) {
 	if err != nil {
 		return nil, err
 	}
-	if store.delta != nil {
-		return store.delta.findOne(ctx, nil, schedID, true)
-	}
-
-	row, err := gadb.New(store.db).SchedFindOne(ctx, gadb.SchedFindOneParams{
-		ID:     schedID,
-		UserID: permission.UserNullUUID(ctx).UUID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	s := Schedule{
-		ID:             row.ID.String(),
-		Name:           row.Name,
-		Description:    row.Description,
-		isUserFavorite: row.IsFavorite,
-	}
-
-	s.TimeZone, err = util.LoadLocation(row.TimeZone)
-	if err != nil {
-		return nil, err
-	}
-
-	return &s, nil
+	return store.delta.findOne(ctx, nil, schedID, true)
 }
 
 func (store *Store) Delete(ctx context.Context, id string) error {
@@ -368,25 +189,10 @@ func (store *Store) DeleteManyTx(ctx context.Context, tx txn.Tx, ids []string) e
 			return err
 		}
 	}
-	if store.delta != nil {
-		return store.delta.deleteMany(ctx, tx, uuids)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	db := gadb.New(store.db)
-	if stx != nil {
-		db = db.WithTx(stx)
-	}
-
-	err = db.SchedDeleteMany(ctx, uuids)
-	return err
+	return store.delta.deleteMany(ctx, tx, uuids)
 }
 
-// userExists returns a checker from the user store on Postgres, or from the
-// users lookup on Delta. tx lets the Delta checker see the caller's changes.
+// userExists returns a checker of the users visible in tx.
 func (store *Store) userExists(ctx context.Context, tx txn.Tx) (user.ExistanceChecker, error) {
-	if store.delta != nil {
-		return store.delta.userExists(ctx, tx)
-	}
-	return store.usr.UserExists(ctx)
+	return store.delta.userExists(ctx, tx)
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -49,14 +48,6 @@ func (store *Store) TemporarySchedules(ctx context.Context, tx txn.Tx, scheduleI
 	data.V1.TemporarySchedules = MergeTemporarySchedules(data.V1.TemporarySchedules)
 
 	return data.V1.TemporarySchedules, nil
-}
-
-func isDataPkeyConflict(err error) bool {
-	dbErr := sqlutil.MapError(err)
-	if dbErr == nil {
-		return false
-	}
-	return dbErr.ConstraintName == "schedule_data_pkey"
 }
 
 // clone returns a copy with its own shifts. Merging temporary schedules changes

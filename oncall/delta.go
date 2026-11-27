@@ -341,7 +341,7 @@ func (d *deltaOnCall) usersBySchedule(ctx context.Context, scheduleID string) ([
 var errRange = errors.New("range lower bound must be less than or equal to range upper bound")
 
 // shifts returns the on-call history that overlaps the time from start to
-// end, like the schedOnCall query: shifts of up to a minute are left out.
+// end. Shifts of up to a minute are left out.
 func (t *DeltaTables) shifts(r filestore.Reader, scheduleID string, start, end time.Time) ([]Shift, error) {
 	if start.After(end) {
 		return nil, errRange

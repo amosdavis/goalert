@@ -19,12 +19,9 @@ import (
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/user"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/errutil"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
@@ -51,99 +48,7 @@ type Handler struct {
 	cfg       HandlerConfig
 
 	txdb  txn.DB
-	delta *deltaAuth // the Delta backend, if set (delta.go)
-
-	userLookup *sql.Stmt
-	addSubject *sql.Stmt
-	updateUA   *sql.Stmt
-	updateUser *sql.Stmt
-
-	startSession *sql.Stmt
-	fetchSession *sql.Stmt
-	endSession   *sql.Stmt
-
-	userSessions       *sql.Stmt
-	endSessionUser     *sql.Stmt
-	endAllSessionsUser *sql.Stmt
-}
-
-// NewHandler creates a new Handler using the provided config.
-func NewHandler(ctx context.Context, db *sql.DB, cfg HandlerConfig) (*Handler, error) {
-	p := &util.Prepare{
-		DB:  db,
-		Ctx: ctx,
-	}
-
-	h := &Handler{
-		providers: make(map[string]IdentityProvider),
-		txdb:      sqltxn.DB{DB: db},
-
-		cfg: cfg,
-
-		updateUser: p.P(`
-			update users
-			set
-				name = case when $2 = '' then name else $2 end,
-				email = case when $3 = '' then email else $3 end
-			where id = $1
-		`),
-
-		userLookup: p.P(`
-			select user_id
-			from auth_subjects
-			where
-				provider_id = $1 and
-				subject_id = $2
-		`),
-		addSubject: p.P(`
-			insert into auth_subjects (provider_id, subject_id, user_id)
-			values ($1, $2, $3)
-		`),
-		startSession: p.P(`
-			insert into auth_user_sessions (id, user_agent, user_id)
-			values ($1, $2, $3)
-		`),
-		endSession: p.P(`
-			delete from auth_user_sessions
-			where id = any($1)
-		`),
-
-		updateUA: p.P(`
-			update auth_user_sessions
-			set user_agent = $2
-			where id = $1
-		`),
-
-		fetchSession: p.P(`
-			with update as (
-				update auth_user_sessions
-				set last_access_at = now()
-				where id = $1 AND (last_access_at isnull OR last_access_at < now() - '1 minute'::interval)
-			)
-			select sess.user_id, u.role
-			from auth_user_sessions sess
-			join users u on u.id = sess.user_id
-			where sess.id = $1
-		`),
-
-		userSessions: p.P(`
-			select id, user_agent, created_at, last_access_at
-			from auth_user_sessions
-			where user_id = $1
-		`),
-
-		endSessionUser: p.P(`
-			delete from auth_user_sessions
-			where user_id = $1 and id = $2
-		`),
-
-		endAllSessionsUser: p.P(`
-			delete from auth_user_sessions
-			where user_id = $1 and id != $2
-		`),
-	}
-
-	return h, p.Err
+	delta *deltaAuth // delta.go
 }
 
 // UserSession represents an active user session.
@@ -160,23 +65,14 @@ func (h *Handler) EndUserSessionTx(ctx context.Context, tx txn.Tx, id ...string)
 	if err != nil {
 		return err
 	}
-	if h.delta != nil {
-		ids, err := validate.ParseManyUUID("SessionID", id, -1)
-		if err != nil {
-			return err
-		}
-		if permission.Admin(ctx) {
-			return h.delta.end(ctx, tx, ids)
-		}
-		return h.delta.endOwn(ctx, tx, permission.UserNullUUID(ctx), ids)
+	ids, err := validate.ParseManyUUID("SessionID", id, -1)
+	if err != nil {
+		return err
 	}
-	stx := sqltxn.Unwrap(tx)
 	if permission.Admin(ctx) {
-		_, err = stx.StmtContext(ctx, h.endSession).ExecContext(ctx, sqlutil.UUIDArray(id))
-	} else {
-		_, err = stx.StmtContext(ctx, h.endSessionUser).ExecContext(ctx, permission.UserNullUUID(ctx), sqlutil.UUIDArray(id))
+		return h.delta.end(ctx, tx, ids)
 	}
-	return err
+	return h.delta.endOwn(ctx, tx, permission.UserNullUUID(ctx), ids)
 }
 
 // EndAllUserSessionsTx ends all sessions other than the user's currently active session
@@ -189,17 +85,7 @@ func (h *Handler) EndAllUserSessionsTx(ctx context.Context, tx txn.Tx) error {
 	// get current session id
 	src := permission.Source(ctx)
 
-	if h.delta != nil {
-		return h.delta.endAllOther(ctx, tx, permission.UserNullUUID(ctx), src)
-	}
-	stx := sqltxn.Unwrap(tx)
-	stmt := h.endAllSessionsUser
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-	_, err = stmt.ExecContext(ctx, permission.UserNullUUID(ctx), src.ID)
-
-	return err
+	return h.delta.endAllOther(ctx, tx, permission.UserNullUUID(ctx), src)
 }
 
 func (h *Handler) FindAllUserSessions(ctx context.Context, userID string) ([]UserSession, error) {
@@ -208,28 +94,7 @@ func (h *Handler) FindAllUserSessions(ctx context.Context, userID string) ([]Use
 		return nil, err
 	}
 
-	if h.delta != nil {
-		return h.delta.userSessions(ctx, userID)
-	}
-	rows, err := h.userSessions.QueryContext(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var sessions []UserSession
-	for rows.Next() {
-		s := UserSession{UserID: userID}
-		var lastAccess sql.NullTime
-		err = rows.Scan(&s.ID, &s.UserAgent, &s.CreatedAt, &lastAccess)
-		if err != nil {
-			return nil, err
-		}
-		s.LastAccessAt = lastAccess.Time.Truncate(time.Minute)
-		s.CreatedAt = s.CreatedAt.Truncate(time.Minute)
-		sessions = append(sessions, s)
-	}
-
-	return sessions, nil
+	return h.delta.userSessions(ctx, userID)
 }
 
 // ServeLogout will clear the current session cookie and end the session(s) (if any).
@@ -261,16 +126,10 @@ func (h *Handler) ServeLogout(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	var err error
 	bgCtx := log.FromContext(ctx).BackgroundContext()
-	if h.delta != nil {
-		var ids []uuid.UUID
-		ids, err = validate.ParseManyUUID("SessionID", sessionIDs, -1)
-		if err == nil {
-			err = h.delta.end(bgCtx, nil, ids)
-		}
-	} else {
-		_, err = h.endSession.ExecContext(bgCtx, sqlutil.UUIDArray(sessionIDs))
+	ids, err := validate.ParseManyUUID("SessionID", sessionIDs, -1)
+	if err == nil {
+		err = h.delta.end(bgCtx, nil, ids)
 	}
 	if err != nil {
 		log.Log(ctx, errors.Wrap(err, "end session(s)"))
@@ -409,8 +268,7 @@ func (h *Handler) canCreateUser(ctx context.Context, providerID string) bool {
 	switch providerID {
 	case "oidc":
 		return cfg.OIDC.NewUsers
-	case "github":
-		return cfg.GitHub.NewUsers
+
 	}
 
 	return false
@@ -420,8 +278,7 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 	ctx := req.Context()
 
 	var route RouteInfo
-	route.RelativePath = strings.TrimPrefix(req.URL.Path, "/v1/identity/providers/"+id)
-	route.RelativePath = strings.TrimPrefix(route.RelativePath, "/api/v2/identity/providers/"+id)
+	route.RelativePath = strings.TrimPrefix(req.URL.Path, "/api/v2/identity/providers/"+id)
 	if route.RelativePath == "" {
 		route.RelativePath = "/"
 	}
@@ -469,12 +326,7 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 		return
 	}
 
-	var userID string
-	if h.delta != nil {
-		userID, err = h.delta.subjectUser(ctx, id, sub.SubjectID)
-	} else {
-		err = h.userLookup.QueryRowContext(ctx, id, sub.SubjectID).Scan(&userID)
-	}
+	userID, err := h.delta.subjectUser(ctx, id, sub.SubjectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
@@ -508,11 +360,7 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 			if err != nil {
 				return err
 			}
-			if h.delta != nil {
-				err = h.delta.addSubject(ctx, tx, user.AuthSubject{ProviderID: id, SubjectID: sub.SubjectID, UserID: u.ID})
-			} else {
-				_, err = sqltxn.Unwrap(tx).Stmt(h.addSubject).ExecContext(ctx, id, sub.SubjectID, u.ID)
-			}
+			err = h.delta.addSubject(ctx, tx, user.AuthSubject{ProviderID: id, SubjectID: sub.SubjectID, UserID: u.ID})
 			if err != nil {
 				return err
 			}
@@ -525,11 +373,7 @@ func (h *Handler) handleProvider(id string, p IdentityProvider, refU *url.URL, w
 		}
 	} else {
 		name, email := validate.SanitizeName(sub.Name), validate.SanitizeEmail(sub.Email)
-		if h.delta != nil {
-			err = h.delta.updateProfile(ctx, userID, name, email)
-		} else {
-			_, err = h.updateUser.ExecContext(ctx, userID, name, email)
-		}
+		err = h.delta.updateProfile(ctx, userID, name, email)
 		if err != nil {
 			log.Log(ctx, errors.Wrap(err, "update user info"))
 		}
@@ -569,12 +413,7 @@ func (h *Handler) CreateSession(ctx context.Context, userAgent, userID string) (
 		Type:    authtoken.TypeSession,
 		ID:      uuid.New(),
 	}
-	var err error
-	if h.delta != nil {
-		err = h.delta.start(ctx, tok.ID, userAgent, userID)
-	} else {
-		_, err = h.startSession.ExecContext(ctx, tok.ID.String(), userAgent, userID)
-	}
+	err := h.delta.start(ctx, tok.ID, userAgent, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -608,15 +447,6 @@ func (h *Handler) authWithToken(w http.ResponseWriter, req *http.Request, next h
 		next.ServeHTTP(w, req.WithContext(ctx))
 		return true
 	}
-	if req.URL.Path == "/api/v2/uik" && strings.HasPrefix(tokStr, "ey") {
-		ctx, err = h.cfg.IntKeyStore.AuthorizeUIK(ctx, tokStr)
-		if errutil.HTTPError(req.Context(), w, err) {
-			return true
-		}
-
-		next.ServeHTTP(w, req.WithContext(ctx))
-		return true
-	}
 
 	tok, _, err := authtoken.Parse(tokStr, func(t authtoken.Type, p, sig []byte) (bool, bool) {
 		if t == authtoken.TypeSession {
@@ -630,16 +460,8 @@ func (h *Handler) authWithToken(w http.ResponseWriter, req *http.Request, next h
 	}
 
 	switch req.URL.Path {
-	case "/v1/api/alerts", "/api/v2/generic/incoming":
+	case "/api/v2/generic/incoming":
 		ctx, err = h.cfg.IntKeyStore.Authorize(ctx, *tok, integrationkey.TypeGeneric)
-	case "/v1/webhooks/grafana", "/api/v2/grafana/incoming":
-		ctx, err = h.cfg.IntKeyStore.Authorize(ctx, *tok, integrationkey.TypeGrafana)
-	case "/api/v2/site24x7/incoming":
-		ctx, err = h.cfg.IntKeyStore.Authorize(ctx, *tok, integrationkey.TypeSite24x7)
-	case "/api/v2/prometheusalertmanager/incoming":
-		ctx, err = h.cfg.IntKeyStore.Authorize(ctx, *tok, integrationkey.TypePrometheusAlertmanager)
-	case "/api/v2/calendar":
-		ctx, err = h.cfg.CalSubStore.Authorize(ctx, *tok)
 	default:
 		return false
 	}
@@ -661,13 +483,7 @@ func (h *Handler) tryAuthUser(ctx context.Context, w http.ResponseWriter, req *h
 		return nil, err
 	}
 
-	var userID uuid.UUID
-	var userRole permission.Role
-	if h.delta != nil {
-		userID, userRole, err = h.delta.session(ctx, tok.ID)
-	} else {
-		err = h.fetchSession.QueryRowContext(ctx, tok.ID.String()).Scan(&userID, &userRole)
-	}
+	userID, userRole, err := h.delta.session(ctx, tok.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -679,11 +495,7 @@ func (h *Handler) tryAuthUser(ctx context.Context, w http.ResponseWriter, req *h
 			log.Log(ctx, errors.Wrap(err, "failed to sign/issue new session token"))
 		} else {
 			h.setSessionCookie(w, req, newSignedToken)
-			if h.delta != nil {
-				err = h.delta.setUserAgent(ctx, tok.ID, req.UserAgent())
-			} else {
-				_, err = h.updateUA.ExecContext(ctx, tok.ID.String(), req.UserAgent())
-			}
+			err = h.delta.setUserAgent(ctx, tok.ID, req.UserAgent())
 			if err != nil {
 				log.Log(ctx, errors.Wrap(err, "update user agent (session key refresh)"))
 			}
@@ -707,17 +519,6 @@ func (h *Handler) tryAuthUser(ctx context.Context, w http.ResponseWriter, req *h
 // Updating and clearing the session cookie is automatically handled.
 func (h *Handler) WrapHandler(wrapped http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasPrefix(req.URL.Path, "/api/v2/slack") {
-			wrapped.ServeHTTP(w, req)
-			return
-		}
-		if req.URL.Path == "/api/v2/mailgun/incoming" || req.URL.Path == "/v1/webhooks/mailgun" {
-			// Mailgun handles it's own auth and has special
-			// requirements on status codes, so we pass it through
-			// untouched.
-			wrapped.ServeHTTP(w, req)
-			return
-		}
 		if h.authWithToken(w, req, wrapped) {
 			return
 		}

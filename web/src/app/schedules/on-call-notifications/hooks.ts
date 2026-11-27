@@ -150,7 +150,7 @@ export function useEditOnCallRule(
       ? DateTime.fromFormat(rule.time, 'HH:mm', { zone }).toISO()
       : null,
     weekdayFilter: rule?.time ? rule.weekdayFilter || EVERY_DAY : NO_DAY,
-    type: rule?.target?.type ?? 'slackChannel',
+    type: rule?.target?.type ?? 'chanWebhook',
     targetID: rule?.target?.id ?? null,
   }
   const { m, submit } = useSetOnCallRulesSubmit(

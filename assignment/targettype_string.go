@@ -14,23 +14,19 @@ func _() {
 	_ = x[TargetTypeRotation-3]
 	_ = x[TargetTypeService-4]
 	_ = x[TargetTypeSchedule-5]
-	_ = x[TargetTypeCalendarSubscription-6]
-	_ = x[TargetTypeUser-7]
-	_ = x[TargetTypeNotificationChannel-8]
-	_ = x[TargetTypeSlackChannel-9]
-	_ = x[TargetTypeSlackUserGroup-10]
-	_ = x[TargetTypeChanWebhook-11]
-	_ = x[TargetTypeIntegrationKey-12]
-	_ = x[TargetTypeUserOverride-13]
-	_ = x[TargetTypeNotificationRule-14]
-	_ = x[TargetTypeContactMethod-15]
-	_ = x[TargetTypeHeartbeatMonitor-16]
-	_ = x[TargetTypeUserSession-17]
+	_ = x[TargetTypeUser-6]
+	_ = x[TargetTypeNotificationChannel-7]
+	_ = x[TargetTypeChanWebhook-8]
+	_ = x[TargetTypeIntegrationKey-9]
+	_ = x[TargetTypeUserOverride-10]
+	_ = x[TargetTypeNotificationRule-11]
+	_ = x[TargetTypeContactMethod-12]
+	_ = x[TargetTypeUserSession-13]
 }
 
-const _TargetType_name = "TargetTypeUnspecifiedTargetTypeEscalationPolicyTargetTypeNotificationPolicyTargetTypeRotationTargetTypeServiceTargetTypeScheduleTargetTypeCalendarSubscriptionTargetTypeUserTargetTypeNotificationChannelTargetTypeSlackChannelTargetTypeSlackUserGroupTargetTypeChanWebhookTargetTypeIntegrationKeyTargetTypeUserOverrideTargetTypeNotificationRuleTargetTypeContactMethodTargetTypeHeartbeatMonitorTargetTypeUserSession"
+const _TargetType_name = "TargetTypeUnspecifiedTargetTypeEscalationPolicyTargetTypeNotificationPolicyTargetTypeRotationTargetTypeServiceTargetTypeScheduleTargetTypeUserTargetTypeNotificationChannelTargetTypeChanWebhookTargetTypeIntegrationKeyTargetTypeUserOverrideTargetTypeNotificationRuleTargetTypeContactMethodTargetTypeUserSession"
 
-var _TargetType_index = [...]uint16{0, 21, 47, 75, 93, 110, 128, 158, 172, 201, 223, 247, 268, 292, 314, 340, 363, 389, 410}
+var _TargetType_index = [...]uint16{0, 21, 47, 75, 93, 110, 128, 142, 171, 192, 216, 238, 264, 287, 308}
 
 func (i TargetType) String() string {
 	idx := int(i) - 0

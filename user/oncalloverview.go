@@ -10,8 +10,5 @@ import (
 // OnCallOverview returns the services a user is on call for, through which
 // schedules and escalation policies. Permissions are checked by the caller.
 func (s *Store) OnCallOverview(ctx context.Context, userID uuid.UUID) ([]gadb.GQLUserOnCallOverviewRow, error) {
-	if s.delta != nil {
-		return s.delta.onCallOverview(ctx, userID)
-	}
-	return gadb.New(s.db).GQLUserOnCallOverview(ctx, userID)
+	return s.delta.onCallOverview(ctx, userID)
 }

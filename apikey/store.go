@@ -4,42 +4,27 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 )
 
-// Store is used to manage API keys.
+// Store is used to manage API keys on the Delta backend.
 type Store struct {
-	db  *sql.DB
 	key keyring.Keyring
 
 	polCache      *polCache
 	lastUsedCache *lastUsedCache
 
-	delta *deltaStore // the Delta backend, if set (delta.go)
-}
-
-// NewStore will create a new Store.
-func NewStore(ctx context.Context, db *sql.DB, key keyring.Keyring) (*Store, error) {
-	s := &Store{
-		db:  db,
-		key: key,
-	}
-	s.initCaches()
-
-	return s, nil
+	delta *deltaStore
 }
 
 func (s *Store) initCaches() {
@@ -72,52 +57,7 @@ func (s *Store) FindAllAdminGraphQLKeys(ctx context.Context) ([]APIKeyInfo, erro
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.list(ctx)
-	}
-	keys, err := gadb.New(s.db).APIKeyList(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	res := make([]APIKeyInfo, 0, len(keys))
-	for _, k := range keys {
-		k := k
-
-		p, ok := listPolicy(ctx, k.ID, k.Policy)
-		if !ok {
-			continue
-		}
-
-		var lastUsed *APIKeyUsage
-		if k.LastUsedAt.Valid {
-			var ip string
-			if k.LastIpAddress.Valid {
-				ip = k.LastIpAddress.IPNet.IP.String()
-			}
-			lastUsed = &APIKeyUsage{
-				UserAgent: k.LastUserAgent.String,
-				IP:        ip,
-				Time:      k.LastUsedAt.Time,
-			}
-		}
-
-		res = append(res, APIKeyInfo{
-			ID:          k.ID,
-			Name:        k.Name,
-			Description: k.Description,
-			ExpiresAt:   k.ExpiresAt,
-			LastUsed:    lastUsed,
-			CreatedAt:   k.CreatedAt,
-			UpdatedAt:   k.UpdatedAt,
-			CreatedBy:   &k.CreatedBy.UUID,
-			UpdatedBy:   &k.UpdatedBy.UUID,
-			Query:       p.Query,
-			Role:        p.Role,
-		})
-	}
-
-	return res, nil
+	return s.delta.list(ctx)
 }
 
 // listPolicy parses a key's policy for listing. If this version can't read
@@ -163,37 +103,7 @@ func (s *Store) UpdateAdminGraphQLKey(ctx context.Context, id uuid.UUID, name, d
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.update(ctx, id, name, desc, permission.UserNullUUID(ctx))
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer sqlutil.Rollback(ctx, "UpdateAdminGraphQLKey", tx)
-
-	key, err := gadb.New(tx).APIKeyForUpdate(ctx, id)
-	if err != nil {
-		return err
-	}
-	if name != nil {
-		key.Name = *name
-	}
-	if desc != nil {
-		key.Description = *desc
-	}
-
-	err = gadb.New(tx).APIKeyUpdate(ctx, gadb.APIKeyUpdateParams{
-		ID:          id,
-		Name:        key.Name,
-		Description: key.Description,
-		UpdatedBy:   permission.UserNullUUID(ctx),
-	})
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return s.delta.update(ctx, id, name, desc, permission.UserNullUUID(ctx))
 }
 
 func (s *Store) DeleteAdminGraphQLKey(ctx context.Context, id uuid.UUID) error {
@@ -202,13 +112,7 @@ func (s *Store) DeleteAdminGraphQLKey(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.revoke(ctx, id, permission.UserNullUUID(ctx))
-	}
-	return gadb.New(s.db).APIKeyDelete(ctx, gadb.APIKeyDeleteParams{
-		DeletedBy: permission.UserNullUUID(ctx),
-		ID:        id,
-	})
+	return s.delta.revoke(ctx, id, permission.UserNullUUID(ctx))
 }
 
 func (s *Store) AuthorizeGraphQL(ctx context.Context, tok, ua, ip string) (context.Context, error) {
@@ -296,19 +200,7 @@ func (s *Store) CreateAdminGraphQLKey(ctx context.Context, opt NewAdminGQLKeyOpt
 	}
 
 	id := uuid.New()
-	if s.delta != nil {
-		err = s.delta.insert(ctx, id, opt, policyData, permission.UserNullUUID(ctx))
-	} else {
-		err = gadb.New(s.db).APIKeyInsert(ctx, gadb.APIKeyInsertParams{
-			ID:          id,
-			Name:        opt.Name,
-			Description: opt.Desc,
-			ExpiresAt:   opt.Expires,
-			Policy:      policyData,
-			CreatedBy:   permission.UserNullUUID(ctx),
-			UpdatedBy:   permission.UserNullUUID(ctx),
-		})
-	}
+	err = s.delta.insert(ctx, id, opt, policyData, permission.UserNullUUID(ctx))
 	if err != nil {
 		return uuid.Nil, "", err
 	}

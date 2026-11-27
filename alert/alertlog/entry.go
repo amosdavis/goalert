@@ -19,16 +19,14 @@ type Entry struct {
 	_type     Type
 	message   string
 	subject   struct {
-		_type                SubjectType
-		userID               uuid.NullUUID
-		userName             sql.NullString
-		integrationKeyID     uuid.NullUUID
-		integrationKeyName   sql.NullString
-		heartbeatMonitorID   uuid.NullUUID
-		heartbeatMonitorName sql.NullString
-		channelID            uuid.NullUUID
-		channelName          sql.NullString
-		classifier           string
+		_type              SubjectType
+		userID             uuid.NullUUID
+		userName           sql.NullString
+		integrationKeyID   uuid.NullUUID
+		integrationKeyName sql.NullString
+		channelID          uuid.NullUUID
+		channelName        sql.NullString
+		classifier         string
 	}
 	meta rawJSON
 }
@@ -110,9 +108,7 @@ func (e Entry) Subject() *Subject {
 	case SubjectTypeIntegrationKey:
 		s.ID = e.subject.integrationKeyID.UUID.String()
 		s.Name = e.subject.integrationKeyName.String
-	case SubjectTypeHeartbeatMonitor:
-		s.ID = e.subject.heartbeatMonitorID.UUID.String()
-		s.Name = e.subject.heartbeatMonitorName.String
+
 	case SubjectTypeChannel:
 		s.ID = e.subject.channelID.UUID.String()
 		s.Name = e.subject.channelName.String
@@ -178,25 +174,4 @@ func (e Entry) String(ctx context.Context) string {
 	msg += subjectString(infinitive, e.Subject())
 
 	return msg
-}
-
-func (e *Entry) scanWith(scan func(...interface{}) error) error {
-	return scan(
-		&e.id,
-		&e.alertID,
-		&e.timestamp,
-		&e._type,
-		&e.message,
-		&e.subject._type,
-		&e.subject.userID,
-		&e.subject.userName,
-		&e.subject.integrationKeyID,
-		&e.subject.integrationKeyName,
-		&e.subject.heartbeatMonitorID,
-		&e.subject.heartbeatMonitorName,
-		&e.subject.channelID,
-		&e.subject.channelName,
-		&e.subject.classifier,
-		&e.meta,
-	)
 }

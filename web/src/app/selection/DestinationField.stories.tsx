@@ -75,8 +75,8 @@ export const MultiField: Story = {
     ).toBeVisible()
     await expect(canvas.getByLabelText('Second Item')).toBeVisible()
 
-    // ensure information for slack renders correctly
-    await expect(canvas.getByPlaceholderText('slack user ID')).toBeVisible()
+    // ensure information for the third field renders correctly
+    await expect(canvas.getByPlaceholderText('user ID')).toBeVisible()
     await expect(canvas.getByLabelText('Third Item')).toBeVisible()
   },
 }

@@ -10,9 +10,3 @@ type Channel struct {
 	Name string
 	Dest gadb.DestV1
 }
-
-func (c *Channel) fromRow(row gadb.NotificationChannel) {
-	c.ID = row.ID
-	c.Name = row.Name
-	c.Dest = row.Dest.DestV1
-}

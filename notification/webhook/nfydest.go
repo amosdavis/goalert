@@ -12,11 +12,9 @@ import (
 )
 
 const (
-	DestTypeWebhook  = "builtin-webhook"
-	FieldWebhookURL  = "webhook_url"
-	ParamBody        = "body"
-	ParamContentType = "content_type"
-	FallbackIconURL  = "builtin://webhook"
+	DestTypeWebhook = "builtin-webhook"
+	FieldWebhookURL = "webhook_url"
+	FallbackIconURL = "builtin://webhook"
 )
 
 func NewWebhookDest(url string) gadb.DestV1 {
@@ -35,7 +33,6 @@ func (Sender) TypeInfo(ctx context.Context) (*nfydest.TypeInfo, error) {
 		Enabled:                    cfg.Webhook.Enable,
 		SupportsUserVerification:   true,
 		SupportsOnCallNotify:       true,
-		SupportsSignals:            true,
 		SupportsStatusUpdates:      true,
 		SupportsAlertNotifications: true,
 		StatusUpdatesRequired:      true,
@@ -48,19 +45,6 @@ func (Sender) TypeInfo(ctx context.Context) (*nfydest.TypeInfo, error) {
 			HintURL:            "/docs#webhooks",
 			SupportsValidation: true,
 		}},
-		DynamicParams: []nfydest.DynamicParamConfig{
-			{
-				ParamID: ParamBody,
-				Label:   "Body",
-				Hint:    "The body of the request.",
-			},
-			{
-				ParamID:      ParamContentType,
-				Label:        "Content Type",
-				Hint:         "The content type (e.g., application/json).",
-				DefaultValue: `"application/json"`, // Because this is an expression, it needs the double quotes.
-			},
-		},
 	}, nil
 }
 

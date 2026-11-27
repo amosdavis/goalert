@@ -38,7 +38,6 @@ var (
 	messageTypes = []string{
 		typeAlert, typeAlertBundle, typeAlertStatus, typeStatusBundle,
 		string(gadb.EnumOutgoingMessagesTypeScheduleOnCallNotification),
-		string(gadb.EnumOutgoingMessagesTypeSignalMessage),
 		typeTest, typeVerification,
 	}
 	messageStatuses = []string{

@@ -2,121 +2,25 @@ package notification
 
 import (
 	"context"
-	cRand "crypto/rand"
 	"database/sql"
-	"encoding/binary"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 	"github.com/target/goalert/validation/validate"
 
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 )
 
 const minTimeBetweenTests = time.Minute
 
+// Store provides notification operations on the Delta backend.
 type Store struct {
-	db                           *sql.DB
-	getCMUserID                  *sql.Stmt
-	setVerificationCode          *sql.Stmt
-	verifyAndEnableContactMethod *sql.Stmt
-	insertTestNotification       *sql.Stmt
-	updateLastSendTime           *sql.Stmt
-	getCode                      *sql.Stmt
-	isDisabled                   *sql.Stmt
-	sendTestLock                 *sql.Stmt
-
-	rand *rand.Rand
-
-	delta *deltaStore // set on the Delta backend, instead of everything else
-}
-
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
-	p := &util.Prepare{DB: db, Ctx: ctx}
-
-	var seed int64
-	err := binary.Read(cRand.Reader, binary.BigEndian, &seed)
-	if err != nil {
-		return nil, errors.Wrap(err, "generate random seed")
-	}
-
-	return &Store{
-		db: db,
-
-		rand: rand.New(rand.NewSource(seed)),
-
-		getCMUserID: p.P(`select user_id from user_contact_methods where id = $1`),
-
-		sendTestLock: p.P(`lock outgoing_messages, user_contact_methods in row exclusive mode`),
-
-		getCode: p.P(`
-			select code
-			from user_verification_codes
-			where id = $1
-		`),
-
-		isDisabled: p.P(`
-			select disabled
-			from user_contact_methods
-			where id = $1
-		`),
-
-		// should result in sending a verification code to the specified contact method
-		setVerificationCode: p.P(`
-			insert into user_verification_codes (id, contact_method_id, code, expires_at)
-			values ($1, $2, $3, NOW() + '15 minutes'::interval)
-			on conflict (contact_method_id) do update
-			set
-				sent = false,
-				expires_at = EXCLUDED.expires_at
-		`),
-
-		// should reactivate a contact method if specified code matches what was set
-		verifyAndEnableContactMethod: p.P(`
-			with v as (
-				delete from user_verification_codes
-				where contact_method_id = $1 and code = $2
-				returning contact_method_id id
-			)
-			update user_contact_methods cm
-			set disabled = false
-			from v
-			where cm.id = v.id
-			returning cm.id
-		`),
-
-		updateLastSendTime: p.P(`
-			update user_contact_methods
-			set last_test_verify_at = now()
-			where
-				id = $1 and
-				(
-					last_test_verify_at + cast($2 as interval) < now()
-					or
-					last_test_verify_at isnull
-				)
-		`),
-
-		insertTestNotification: p.P(`
-			insert into outgoing_messages (id, message_type, contact_method_id, user_id)
-			select
-				$1,
-				'test_notification',
-				$2,
-				cm.user_id
-			from user_contact_methods cm
-			where cm.id = $2
-		`),
-	}, p.Err
+	delta *deltaStore
 }
 
 // OriginalMessageStatus will return the status of the first alert notification sent to `dest` for the given `alertID`.
@@ -126,23 +30,7 @@ func (s *Store) OriginalMessageStatus(ctx context.Context, alertID int, dstID De
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.originalMessageStatus(ctx, alertID, dstID)
-	}
-
-	row, err := gadb.New(s.db).NfyOriginalMessageStatus(ctx, gadb.NfyOriginalMessageStatusParams{
-		AlertID:         sql.NullInt64{Valid: true, Int64: int64(alertID)},
-		ContactMethodID: dstID.CMID,
-		ChannelID:       dstID.NCID,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return outgoingMessageToSendResult(row.OutgoingMessage, row.CmDest, row.ChDest)
+	return s.delta.originalMessageStatus(ctx, alertID, dstID)
 }
 
 func outgoingMessageToSendResult(msg gadb.OutgoingMessage, cm, ch gadb.NullDestV1) (*SendResult, error) {
@@ -187,12 +75,7 @@ func (s *Store) cmUserID(ctx context.Context, id string) (string, error) {
 		return "", err
 	}
 
-	var userID string
-	if s.delta != nil {
-		userID, err = s.delta.methodOwner(ctx, id)
-	} else {
-		err = s.getCMUserID.QueryRowContext(ctx, id).Scan(&userID)
-	}
+	userID, err := s.delta.methodOwner(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", validation.NewFieldError("ContactMethodID", "does not exist")
 	}
@@ -219,13 +102,7 @@ func (s *Store) Code(ctx context.Context, id string) (int, error) {
 		return 0, err
 	}
 
-	if s.delta != nil {
-		return s.delta.code(ctx, id)
-	}
-
-	var code int
-	err = s.getCode.QueryRowContext(ctx, id).Scan(&code)
-	return code, err
+	return s.delta.code(ctx, id)
 }
 
 func (s *Store) SendContactMethodTest(ctx context.Context, id string) error {
@@ -241,51 +118,7 @@ func (s *Store) SendContactMethodTest(ctx context.Context, id string) error {
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.sendTest(ctx, id)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer sqlutil.Rollback(ctx, "notification: send test message", tx)
-
-	// Lock outgoing_messages first, before we modify user_contact methods
-	// to prevent deadlock.
-	_, err = tx.StmtContext(ctx, s.sendTestLock).ExecContext(ctx)
-	if err != nil {
-		return err
-	}
-
-	var isDisabled bool
-	err = tx.StmtContext(ctx, s.isDisabled).QueryRowContext(ctx, id).Scan(&isDisabled)
-	if err != nil {
-		return err
-	}
-	if isDisabled {
-		return validation.NewFieldError("ContactMethod", "contact method disabled")
-	}
-
-	r, err := tx.StmtContext(ctx, s.updateLastSendTime).ExecContext(ctx, id, fmt.Sprintf("%f seconds", minTimeBetweenTests.Seconds()))
-	if err != nil {
-		return err
-	}
-	rows, err := r.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return validation.NewFieldError("ContactMethod", "test message rate-limit exceeded")
-	}
-
-	vID := uuid.New().String()
-	_, err = tx.StmtContext(ctx, s.insertTestNotification).ExecContext(ctx, vID, id)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return s.delta.sendTest(ctx, id)
 }
 
 func (s *Store) SendContactMethodVerification(ctx context.Context, cmID string) error {
@@ -294,36 +127,7 @@ func (s *Store) SendContactMethodVerification(ctx context.Context, cmID string) 
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.sendVerification(ctx, cmID)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer sqlutil.Rollback(ctx, "notification: send verification message", tx)
-
-	r, err := tx.StmtContext(ctx, s.updateLastSendTime).ExecContext(ctx, cmID, fmt.Sprintf("%f seconds", minTimeBetweenTests.Seconds()))
-	if err != nil {
-		return err
-	}
-	rows, err := r.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return validation.NewFieldError("ContactMethod", fmt.Sprintf("Too many messages! Please try again in %.0f minute(s)", minTimeBetweenTests.Minutes()))
-	}
-
-	vcID := uuid.New().String()
-	code := s.rand.Intn(900000) + 100000
-	_, err = tx.StmtContext(ctx, s.setVerificationCode).ExecContext(ctx, vcID, cmID, code)
-	if err != nil {
-		return errors.Wrap(err, "set verification code")
-	}
-
-	return tx.Commit()
+	return s.delta.sendVerification(ctx, cmID)
 }
 
 func (s *Store) VerifyContactMethod(ctx context.Context, cmID string, code int) error {
@@ -332,30 +136,12 @@ func (s *Store) VerifyContactMethod(ctx context.Context, cmID string, code int) 
 		return err
 	}
 
-	if s.delta != nil {
-		ok, err := s.delta.verify(ctx, cmID, code)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return validation.NewFieldError("code", "invalid code")
-		}
-	} else {
-		res, err := s.verifyAndEnableContactMethod.ExecContext(ctx, cmID, code)
-		if errors.Is(err, sql.ErrNoRows) {
-			return validation.NewFieldError("code", "invalid code")
-		}
-		if err != nil {
-			return err
-		}
-
-		num, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if num != 1 {
-			return validation.NewFieldError("code", "invalid code")
-		}
+	ok, err := s.delta.verify(ctx, cmID, code)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return validation.NewFieldError("code", "invalid code")
 	}
 
 	// NOTE: maintain a record of consent/dissent
@@ -406,25 +192,7 @@ func (s *Store) FindManyMessageStatuses(ctx context.Context, strIDs []string) ([
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findManyMessageStatuses(ctx, ids)
-	}
-
-	rows, err := gadb.New(s.db).NfyManyMessageStatus(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []SendResult
-	for _, r := range rows {
-		res, err := outgoingMessageToSendResult(r.OutgoingMessage, r.CmDest, r.ChDest)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, *res)
-	}
-
-	return result, nil
+	return s.delta.findManyMessageStatuses(ctx, ids)
 }
 
 // LastMessageStatus will return the MessageStatus and creation time of the most recent message of the requested type
@@ -440,26 +208,5 @@ func (s *Store) LastMessageStatus(ctx context.Context, typ gadb.EnumOutgoingMess
 		return nil, time.Time{}, err
 	}
 
-	if s.delta != nil {
-		return s.delta.lastMessageStatus(ctx, typ, cmID, from)
-	}
-
-	row, err := gadb.New(s.db).NfyLastMessageStatus(ctx, gadb.NfyLastMessageStatusParams{
-		MessageType:     typ,
-		ContactMethodID: uuid.NullUUID{UUID: cmID, Valid: true},
-		CreatedAt:       from,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, time.Time{}, nil
-	}
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-
-	sendRes, err := outgoingMessageToSendResult(row.OutgoingMessage, row.CmDest, row.ChDest)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-
-	return sendRes, row.OutgoingMessage.CreatedAt, nil
+	return s.delta.lastMessageStatus(ctx, typ, cmID, from)
 }

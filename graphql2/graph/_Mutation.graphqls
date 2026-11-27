@@ -1,6 +1,4 @@
 type Mutation {
-  swoAction(action: SWOAction!): Boolean!
-  linkAccount(token: ID!): Boolean!
 
   """
   reEncryptKeyringsAndConfig is used to reencrypt all keyrings and the config in the database.
@@ -16,8 +14,6 @@ type Mutation {
     input: SetScheduleOnCallNotificationRulesInput!
   ): Boolean!
 
-  debugCarrierInfo(input: DebugCarrierInfoInput!): DebugCarrierInfo!
-  debugSendSMS(input: DebugSendSMSInput!): DebugSendSMSInfo
   addAuthSubject(input: AuthSubjectInput!): Boolean!
   deleteAuthSubject(input: AuthSubjectInput!): Boolean!
   endAllAuthSessionsByCurrentUser: Boolean!
@@ -72,20 +68,11 @@ type Mutation {
 
   createIntegrationKey(input: CreateIntegrationKeyInput!): IntegrationKey
 
-  createHeartbeatMonitor(input: CreateHeartbeatMonitorInput!): HeartbeatMonitor
-
   setLabel(input: SetLabelInput!): Boolean!
 
   createSchedule(input: CreateScheduleInput!): Schedule
 
   createUser(input: CreateUserInput!): User
-
-  createUserCalendarSubscription(
-    input: CreateUserCalendarSubscriptionInput!
-  ): UserCalendarSubscription!
-  updateUserCalendarSubscription(
-    input: UpdateUserCalendarSubscriptionInput!
-  ): Boolean!
 
   updateScheduleTarget(input: ScheduleTargetInput!): Boolean!
   createUserOverride(input: CreateUserOverrideInput!): UserOverride
@@ -104,7 +91,6 @@ type Mutation {
 
   updateSchedule(input: UpdateScheduleInput!): Boolean!
   updateUserOverride(input: UpdateUserOverrideInput!): Boolean!
-  updateHeartbeatMonitor(input: UpdateHeartbeatMonitorInput!): Boolean!
 
   updateAlertsByService(input: UpdateAlertsByServiceInput!): Boolean!
 

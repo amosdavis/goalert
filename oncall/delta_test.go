@@ -23,7 +23,6 @@ import (
 	"github.com/target/goalert/schedule/rule"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/util/timeutil"
 )
 
@@ -182,9 +181,9 @@ func (p *deltaPod) endStep(t *testing.T, stepID, userID string) {
 
 func requireConstraint(t *testing.T, err error, name string) {
 	t.Helper()
-	dbErr := sqlutil.MapError(err)
-	require.NotNil(t, dbErr, "expected a constraint error, got %v", err)
-	assert.Equal(t, name, dbErr.ConstraintName)
+	var c interface{ ConstraintName() string }
+	require.ErrorAs(t, err, &c, "expected a constraint error, got %v", err)
+	assert.Equal(t, name, c.ConstraintName())
 }
 
 func system() context.Context { return permission.SystemContext(context.Background(), "test") }
@@ -335,8 +334,19 @@ func TestDeltaOnCallConstraints(t *testing.T) {
 		return err
 	})
 
-	// A shift ends after it starts.
-	requireConstraint(t, a.try(func(tx *filestore.Tx) error { return a.delta.EndScheduleOnCall(tx, sched, usr) }), "schedule_on_call_users_check")
+	// A shift ends after it starts, even when the clock has not advanced.
+	a.endSchedule(t, sched, usr)
+	a.read(t, func(r filestore.Reader) {
+		var ended []ScheduleOnCallRow
+		e.tables.schedBySchedule.Ascend(r, sched, func(row ScheduleOnCallRow) bool {
+			if row.UserID == usr && row.EndTime != nil {
+				ended = append(ended, row)
+			}
+			return true
+		})
+		require.Len(t, ended, 1)
+		assert.Equal(t, deltaNow.Add(time.Microsecond), *ended[0].EndTime)
+	})
 	for _, d := range []time.Duration{-time.Second, 0, 100 * time.Nanosecond} {
 		end := deltaNow.Add(d)
 		requireConstraint(t, a.try(func(tx *filestore.Tx) error {
@@ -402,7 +412,8 @@ func TestDeltaOnCallStartRace(t *testing.T) {
 			err := p.try(func(tx *filestore.Tx) error { return p.delta.StartScheduleOnCall(tx, sched, usr) })
 			if err == nil {
 				started.Add(1)
-			} else if dbErr := sqlutil.MapError(err); assert.NotNil(t, dbErr, "%v", err) && dbErr.ConstraintName == "idx_schedule_on_call_once" {
+			} else {
+				requireConstraint(t, err, "idx_schedule_on_call_once")
 				refused.Add(1)
 			}
 			var isNew bool

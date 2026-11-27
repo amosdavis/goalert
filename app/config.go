@@ -8,7 +8,6 @@ import (
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/keyring"
-	"github.com/target/goalert/swo"
 	"github.com/target/goalert/util/log"
 )
 
@@ -26,30 +25,12 @@ type Config struct {
 	APIOnly     bool
 	LogEngine   bool
 
-	ForceRiverDBTime bool
-
 	PublicURL string
 
 	TLSListenAddr string
 	TLSConfig     *tls.Config
 
-	SysAPIListenAddr string
-	SysAPICertFile   string
-	SysAPIKeyFile    string
-	SysAPICAFile     string
-
-	SMTPListenAddr        string
-	SMTPListenAddrTLS     string
-	SMTPMaxRecipients     int
-	TLSConfigSMTP         *tls.Config
-	SMTPAdditionalDomains string
-
-	EmailIntegrationDomain string
-
 	HTTPPrefix string
-
-	DBMaxOpen int
-	DBMaxIdle int
 
 	MaxReqBodyBytes   int64
 	MaxReqHeaderBytes int
@@ -59,13 +40,9 @@ type Config struct {
 	EnableSecureHeaders bool
 
 	TwilioBaseURL string
-	SlackBaseURL  string
-
-	DBURL     string
-	DBURLNext string
 
 	// StorageObjects and StorageLog are where GoAlert's data is
-	// (storagebackend.Config), instead of in DBURL.
+	// (storagebackend.Config).
 	StorageObjects string
 	StorageLog     string
 	// PodName, if set, names this pod in the commits it writes.
@@ -77,8 +54,6 @@ type Config struct {
 
 	EncryptionKeys keyring.Keys
 
-	RegionName string
-
 	StubNotifiers bool
 
 	UIDir string
@@ -86,7 +61,4 @@ type Config struct {
 	// InitialConfig will be pushed into the config store
 	// if specified before the engine is started.
 	InitialConfig *config.Config
-
-	// SWO should be set to operate in switchover mode.
-	SWO *swo.Manager
 }

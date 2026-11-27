@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/auth/basic"
-	"github.com/target/goalert/calsub"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/txn"
@@ -124,10 +123,6 @@ func (a *User) ContactMethods(ctx context.Context, obj *user.User) ([]contactmet
 
 func (a *User) NotificationRules(ctx context.Context, obj *user.User) ([]notificationrule.NotificationRule, error) {
 	return (*App)(a).FindManyNRsForUser(ctx, obj.ID)
-}
-
-func (a *User) CalendarSubscriptions(ctx context.Context, obj *user.User) ([]calsub.Subscription, error) {
-	return a.CalSubStore.FindAllByUser(ctx, obj.ID)
 }
 
 func (a *User) OnCallSteps(ctx context.Context, obj *user.User) ([]escalation.Step, error) {

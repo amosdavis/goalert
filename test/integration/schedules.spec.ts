@@ -34,6 +34,8 @@ test('local time hover', async ({ page }) => {
   await page.fill('input[name=time-zone]', 'Europe/Amsterdam')
   await page.click('li:has-text("Europe/Amsterdam")')
   await page.getByRole('button', { name: 'Submit' }).click()
+  // wait for the save to finish: leaving the page cancels it
+  await expect(page.locator('[role=dialog]')).toBeHidden()
 
   await page.goto(`${baseURL}/schedules/${scheduleID}/shifts`)
 

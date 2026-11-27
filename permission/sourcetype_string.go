@@ -12,16 +12,13 @@ func _() {
 	_ = x[SourceTypeIntegrationKey-1]
 	_ = x[SourceTypeAuthProvider-2]
 	_ = x[SourceTypeContactMethod-3]
-	_ = x[SourceTypeHeartbeat-4]
-	_ = x[SourceTypeNotificationChannel-5]
-	_ = x[SourceTypeCalendarSubscription-6]
-	_ = x[SourceTypeGQLAPIKey-7]
-	_ = x[SourceTypeUIK-8]
+	_ = x[SourceTypeNotificationChannel-4]
+	_ = x[SourceTypeGQLAPIKey-5]
 }
 
-const _SourceType_name = "SourceTypeNotificationCallbackSourceTypeIntegrationKeySourceTypeAuthProviderSourceTypeContactMethodSourceTypeHeartbeatSourceTypeNotificationChannelSourceTypeCalendarSubscriptionSourceTypeGQLAPIKeySourceTypeUIK"
+const _SourceType_name = "SourceTypeNotificationCallbackSourceTypeIntegrationKeySourceTypeAuthProviderSourceTypeContactMethodSourceTypeNotificationChannelSourceTypeGQLAPIKey"
 
-var _SourceType_index = [...]uint8{0, 30, 54, 76, 99, 118, 147, 177, 196, 209}
+var _SourceType_index = [...]uint8{0, 30, 54, 76, 99, 128, 147}
 
 func (i SourceType) String() string {
 	idx := int(i) - 0

@@ -1,7 +1,6 @@
 package twilio
 
 import (
-	"database/sql"
 	"net/http"
 
 	"github.com/target/goalert/user/contactmethod"
@@ -25,7 +24,4 @@ type Config struct {
 
 	// CMStore is used for storing and fetching metadata (like carrier information).
 	CMStore *contactmethod.Store
-
-	// DB is used for storing DB connection data (needed for carrier metadata dbtx).
-	DB *sql.DB
 }

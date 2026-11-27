@@ -72,8 +72,6 @@ func TestRun(t *testing.T) {
 func TestManaged(t *testing.T) {
 	ctx := context.Background()
 	db, _ := open(t)
-	_, err := db.BeginTx(ctx, nil)
-	require.ErrorIs(t, err, deltatxn.ErrManaged)
 	require.NoError(t, db.Run(ctx, nil, func(tx txn.Tx) error {
 		assert.ErrorIs(t, tx.Commit(), deltatxn.ErrManaged, "Run commits")
 		assert.ErrorIs(t, tx.Rollback(), deltatxn.ErrManaged, "Run rolls back")

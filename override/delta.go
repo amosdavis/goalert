@@ -304,10 +304,10 @@ func (d *deltaOverrides) findAll(ctx context.Context, start, end time.Time, t as
 	return res, err
 }
 
-// searchMax is the query's LIMIT.
+// searchMax is the maximum number of search results.
 const searchMax = 150
 
-// search finds overrides like the query OverrideSearch does.
+// search returns overrides matching arg in cursor order.
 func (d *deltaOverrides) search(ctx context.Context, tx txn.Tx, arg gadb.OverrideSearchParams, limit int) ([]UserOverride, error) {
 	anyUser, addUser, removeUser, omit := idSet(arg.AnyUserID), idSet(arg.AddUserID), idSet(arg.RemoveUserID), idSet(arg.Omit)
 	after := arg.AfterID.UUID.String()

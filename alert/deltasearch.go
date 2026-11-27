@@ -8,7 +8,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/alert/internal/deltaquery"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/search"
@@ -203,14 +202,14 @@ func (q *alertQuery) cursor() (DeltaAlert, bool) {
 		return DeltaAlert{}, false
 	}
 	if after.Status == "" {
-		after.Status = StatusTriggered // as it goes to Postgres
+		after.Status = StatusTriggered // preserve the old cursor default
 	}
 	return DeltaAlert{ID: int64(after.ID), Status: string(after.Status), CreatedAt: after.Created}, true
 }
 
-// match is the WHERE. (In the template, the date orders compare a column
-// that doesn't exist to find the row after the cursor, so Postgres fails on
-// the second page.)
+// match reports whether an alert meets the search criteria. Date-ordered
+// cursors compare both creation time and ID (the old SQL query compared a
+// nonexistent column, so it failed on the second page).
 func (q *alertQuery) match(a DeltaAlert) bool {
 	if q.omit[a.ID] || !slices.Contains(q.statuses, Status(a.Status)) {
 		return false
@@ -231,17 +230,7 @@ func (q *alertQuery) match(a DeltaAlert) bool {
 	if cur, ok := q.cursor(); ok && q.compare(cur, a) >= 0 {
 		return false
 	}
-	if q.byClosed() {
-		at, ok := q.metrics.ClosedAt(q.r, a.ID)
-		if !ok || (!q.opts.ClosedBefore.IsZero() && !at.Before(q.opts.ClosedBefore)) || !at.After(q.opts.NotClosedBefore) {
-			return false
-		}
-	}
 	return true
-}
-
-func (q *alertQuery) byClosed() bool {
-	return !q.opts.ClosedBefore.IsZero() || !q.opts.NotClosedBefore.IsZero()
 }
 
 // run returns the rows of the result. It looks at the rows that the filters
@@ -298,11 +287,6 @@ func (q *alertQuery) run() []DeltaAlert {
 		for _, st := range q.statuses {
 			q.byOpenStatus.Ascend(q.r, string(st), add)
 		}
-	case q.byClosed():
-		q.metrics.AscendClosed(q.r, q.opts.NotClosedBefore, q.opts.ClosedBefore, func(m alertmetrics.DeltaMetric) bool {
-			addID(m.AlertID)
-			return true
-		})
 	case q.opts.Sort == SortModeDateID, q.opts.Sort == SortModeDateIDReverse:
 		return q.scanCreated()
 	case !q.opts.NotBefore.IsZero() || !q.opts.Before.IsZero():

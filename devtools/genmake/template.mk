@@ -3,7 +3,7 @@
 
 BIN_DIR=bin
 GO_DEPS := Makefile.binaries.mk $(shell find . -path ./web/src -prune -o -path ./vendor -prune -o -path ./.git -prune -o -type f -name "*.go" -print) go.sum
-GO_DEPS += migrate/migrations/ migrate/migrations/*.sql web/index.html graphql2/graphqlapp/slack.manifest.yaml swo/*/*.sql
+GO_DEPS += web/index.html
 GO_DEPS += graphql2/mapconfig.go graphql2/maplimit.go graphql2/generated.go graphql2/models_gen.go
 GO_DEPS += web/explore.html web/live.js .gitrev
 
@@ -46,7 +46,7 @@ PREBUILT:=.prebuilt
 container-goalert:{{range $.ContainerArch}} bin/goalert-linux-{{.}}.tgz{{end}}
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm -t $(IMAGE_REPO)/goalert:$(IMAGE_TAG) -f devtools/ci/dockerfiles/goalert/Dockerfile$(PREBUILT) $(PUSH_ARG) .
 
-container-demo:{{range $.ContainerArch}} bin/goalert-linux-{{.}}.tgz bin/linux-{{.}}.demo/resetdb{{end}}
+container-demo:{{range $.ContainerArch}} bin/goalert-linux-{{.}}.tgz{{end}}
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm -t $(IMAGE_REPO)/demo:$(IMAGE_TAG) -f devtools/ci/dockerfiles/demo/Dockerfile$(PREBUILT) $(PUSH_ARG) .
 
 $(BIN_DIR)/build/integration/cypress/plugins/index.js: package.json bun.lock web/src/esbuild.cypress.js $(shell find ./web/src/cypress)
@@ -55,12 +55,6 @@ $(BIN_DIR)/build/integration/cypress/plugins/index.js: package.json bun.lock web
 	mkdir -p $@/plugins
 	cp web/src/cypress/plugins/index.js $@/plugins/index.js
 	touch $@
-
-{{- range $.ContainerArch}}
-$(BIN_DIR)/linux-{{.}}.demo/resetdb: $(GO_DEPS)
-	mkdir -p $(BIN_DIR)/linux-{{.}}.demo
-	GOOS=linux GOARCH={{.}} CGO_ENABLED=0 go build -trimpath -o "$@" ./devtools/resetdb
-{{end}}
 
 {{range $.Builds}}
 $(BIN_DIR)/build/integration/bin/build/goalert-{{.Name}}: $(BIN_DIR)/build/goalert-{{.Name}}

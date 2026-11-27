@@ -50,9 +50,7 @@ func TestSMS_RenderAlert(t *testing.T) {
 		1,
 		`TestApp: Alert #123: Testing
 
-https://example.com/alerts/123
-
-Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
+https://example.com/alerts/123`,
 	)
 
 	check("no-reply-code",
@@ -74,9 +72,7 @@ https://example.com/alerts/123`,
 		},
 		"",
 		1,
-		`TestApp: Alert #123: Testing
-
-Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
+		`TestApp: Alert #123: Testing`,
 	)
 
 	check("no-link-or-reply-code",
@@ -96,11 +92,9 @@ Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
 		},
 		"https://example.com/alerts/123",
 		1,
-		`TestApp: Alert #123: Testing with a really really obnoxiously long message
+		`TestApp: Alert #123: Testing with a really really obnoxiously long message that will be need to be truncated at some point.
 
-https://example.com/alerts/123
-
-Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
+https://example.com/alerts/123`,
 	)
 
 	check("truncate-long-id",
@@ -110,11 +104,9 @@ Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
 		},
 		"https://example.com/alerts/123",
 		1,
-		`TestApp: Alert #123456789: Testing with a really really obnoxiously long me
+		`TestApp: Alert #123456789: Testing with a really really obnoxiously long message that will be need to be truncated at some point
 
-https://example.com/alerts/123
-
-Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
+https://example.com/alerts/123`,
 	)
 
 	check("message-too-long",
@@ -125,11 +117,9 @@ Reply '1a' to ack, '1e' to escalate, '1c' to close.`,
 		},
 		"https://example.com/alerts/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff",
 		123456789,
-		`TestApp: Alert #123456789: 
+		`TestApp: Alert #123456789: Testing with a really really obnoxiousl
 
-https://example.com/alerts/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff
-
-Reply '123456789a' to ack, '123456789e' to escalate, '123456789c' to close.`,
+https://example.com/alerts/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff/123ff`,
 	)
 }
 
@@ -148,11 +138,7 @@ func TestSMS_RenderAlertBundle(t *testing.T) {
 		},
 		"https://example.com/services/321-654/alerts",
 		100,
-		`TestApp: Svc 'My Service': 1 unacked alert
-
-	https://example.com/services/321-654/alerts
-
-	Reply '100aa' to ack all, '100cc' to close all.`,
+		"TestApp: Svc 'My Service': 1 unacked alert\n\n\thttps://example.com/services/321-654/alerts\n",
 	)
 
 	check("alert-bundle",
@@ -162,11 +148,7 @@ func TestSMS_RenderAlertBundle(t *testing.T) {
 		},
 		"https://example.com/services/321-654/alerts",
 		100,
-		`TestApp: Svc 'My Service': 5 unacked alerts
-
-	https://example.com/services/321-654/alerts
-
-	Reply '100aa' to ack all, '100cc' to close all.`,
+		"TestApp: Svc 'My Service': 5 unacked alerts\n\n\thttps://example.com/services/321-654/alerts\n",
 	)
 }
 

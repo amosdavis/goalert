@@ -40,82 +40,6 @@ test('Service Editing', async ({ page }) => {
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible()
 })
 
-test('Heartbeat Monitors', async ({ page, isMobile }) => {
-  name = 'pw-service ' + c.name()
-  await createService(page, name, description)
-
-  // Navigate to the heartbeat monitors
-  await page.getByRole('link', { name: 'Heartbeat Monitors' }).click()
-
-  // Cancel out of create
-  if (isMobile) {
-    await page.getByRole('button', { name: 'Create Heartbeat Monitor' }).click()
-  } else {
-    await page.getByTestId('create-monitor').click()
-  }
-  await page.getByRole('button', { name: 'Cancel' }).click()
-
-  // Create a heartbeat monitor using invalid name
-  let timeoutMinutes = (Math.trunc(Math.random() * 10) + 5).toString()
-  const invalidHMName = 'a'
-  if (isMobile) {
-    await page.getByRole('button', { name: 'Create Heartbeat Monitor' }).click()
-  } else {
-    await page.getByTestId('create-monitor').click()
-  }
-  await page.getByLabel('Name').fill(invalidHMName)
-  await page.getByLabel('Timeout').fill(timeoutMinutes)
-  await page.getByRole('button', { name: 'Submit' }).click()
-
-  // Should see error message
-  await expect(page.getByText('Must be at least 2 characters')).toBeVisible()
-
-  // Use valid name instead
-  let hmName = c.word({ length: 5 }) + ' Monitor'
-  await page.getByLabel('Name').fill(hmName)
-  await page.getByRole('button', { name: 'Retry' }).click()
-
-  // Should see the heartbeat monitor created
-  await expect(page.getByText(hmName)).toBeVisible()
-  await expect(page.getByText(timeoutMinutes)).toBeVisible()
-
-  // Cancel out of edit
-  await page.getByRole('button', { name: 'Other Actions' }).click()
-  await page.getByRole('menuitem', { name: 'Edit' }).click()
-  await page.getByRole('button', { name: 'Cancel' }).click()
-
-  // Edit the heartbeat monitor
-  hmName = c.word({ length: 5 })
-  timeoutMinutes = (Math.trunc(Math.random() * 10) + 5).toString()
-  await page.getByRole('button', { name: 'Other Actions' }).click()
-  await page.getByRole('menuitem', { name: 'Edit' }).click()
-  await page.getByLabel('Name').fill(hmName)
-  await page.getByLabel('Timeout').fill(timeoutMinutes)
-  await page.getByRole('button', { name: 'Submit' }).click()
-
-  // Should see the edited heartbeat monitor
-  await expect(page.getByText(hmName)).toBeVisible()
-  await expect(page.getByText(timeoutMinutes)).toBeVisible()
-
-  // Cancel out of delete
-  await page.getByRole('button', { name: 'Other Actions' }).click()
-  await page.getByRole('menuitem', { name: 'Delete' }).click()
-  await page.getByRole('button', { name: 'Cancel' }).click()
-
-  // Delete the heartbeat monitor
-  await page.getByRole('button', { name: 'Other Actions' }).click()
-  await page.getByRole('menuitem', { name: 'Delete' }).click()
-  await page.getByRole('button', { name: 'Confirm' }).click()
-  await page.getByText('No heartbeat monitors exist for this service.').click()
-
-  // Return to the service
-  if (isMobile) {
-    await page.getByRole('button', { name: 'Back' }).click()
-  } else {
-    await page.getByRole('link', { name, exact: true }).click()
-  }
-})
-
 test('Alerts', async ({ page, isMobile }) => {
   name = 'pw-service ' + c.name()
   await createService(page, name, description)
@@ -218,21 +142,6 @@ test('Alerts', async ({ page, isMobile }) => {
   ).toBeVisible()
 })
 
-test('Metric', async ({ page, isMobile }) => {
-  name = 'pw-service ' + c.name()
-  await createService(page, name, description)
-
-  // Navigate to the metrics
-  await page.getByRole('link', { name: 'Metrics' }).click()
-
-  // Return to the service
-  if (isMobile) {
-    await page.getByRole('button', { name: 'Back' }).click()
-  } else {
-    await page.getByRole('link', { name, exact: true }).click()
-  }
-})
-
 test('Label', async ({ page, isMobile }) => {
   name = 'pw-service ' + c.name()
 
@@ -293,31 +202,30 @@ test('Integration Keys', async ({ page, isMobile }) => {
   // Make an integration key
   await createIntegrationKey(page, intKey, isMobile)
 
-  // Create a second integration key with a different type
-  const grafanaKey = c.word({ length: 5 }) + ' Key'
+  // Create a second Generic API integration key
+  const secondKey = c.word({ length: 5 }) + ' Key'
   if (isMobile) {
     await page.getByRole('button', { name: 'Create Integration Key' }).click()
   } else {
     await page.getByTestId('create-key').click()
   }
-  await page.getByLabel('Name').fill(grafanaKey)
+  await page.getByLabel('Name').fill(secondKey)
   await page.getByRole('combobox', { name: 'Generic API' }).click()
-  await page.getByRole('option', { name: 'Grafana' }).click()
+  await page.getByRole('option', { name: 'Generic API' }).click()
   await page.getByRole('button', { name: 'Submit' }).click()
 
-  await expect(page.getByText(grafanaKey)).toBeVisible()
-  await expect(page.getByText('Grafana')).toBeVisible()
+  await expect(page.getByText(secondKey)).toBeVisible()
 
   // Delete the second integration key, confirm it is no longer visible
   await page
     .getByRole('listitem')
-    .filter({ hasText: grafanaKey })
+    .filter({ hasText: secondKey })
     .getByRole('button')
     .click()
   await page.getByRole('button', { name: 'Confirm' }).click()
 
   await expect(page.getByText(intKey, { exact: true })).toBeVisible()
-  await expect(page.getByText(grafanaKey, { exact: true })).toBeHidden()
+  await expect(page.getByText(secondKey, { exact: true })).toBeHidden()
 })
 
 test('Service Creation with Existing Label and Label Filtering', async ({

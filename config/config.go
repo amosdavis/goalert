@@ -20,18 +20,14 @@ type Config struct {
 	fallbackURL string
 	explicitURL string
 
-	intEmailDomain string
-
 	General struct {
-		ApplicationName              string `public:"true" info:"The name used in messaging and page titles. Defaults to \"GoAlert\"."`
-		PublicURL                    string `public:"true" info:"Publicly routable URL for UI links and API calls." deprecated:"Use --public-url flag instead, which takes precedence."`
-		GoogleAnalyticsID            string `public:"true" info:"If set, will post user metrics to the corresponding data stream in Google Analytics 4."`
-		NotificationDisclaimer       string `public:"true" info:"Disclaimer text for receiving pre-recorded notifications (appears on profile page)."`
-		DisableMessageBundles        bool   `public:"true" info:"Disable bundling status updates and alert notifications."`
-		ShortURL                     string `public:"true" info:"If set, messages will contain a shorter URL using this as a prefix (e.g. http://example.com). It should point to GoAlert and can be the same as the PublicURL."`
-		DisableSMSLinks              bool   `public:"true" info:"If set, SMS messages will not contain a URL pointing to GoAlert."`
-		DisableLabelCreation         bool   `public:"true" info:"Disables the ability to create new labels for services."`
-		DisableCalendarSubscriptions bool   `public:"true" info:"If set, disables all active calendar subscriptions as well as the ability to create new calendar subscriptions."`
+		ApplicationName        string `public:"true" info:"The name used in messaging and page titles. Defaults to \"GoAlert\"."`
+		PublicURL              string `public:"true" info:"Publicly routable URL for UI links and API calls." deprecated:"Use --public-url flag instead, which takes precedence."`
+		NotificationDisclaimer string `public:"true" info:"Disclaimer text for receiving pre-recorded notifications (appears on profile page)."`
+		DisableMessageBundles  bool   `public:"true" info:"Disable bundling status updates and alert notifications."`
+		ShortURL               string `public:"true" info:"If set, messages will contain a shorter URL using this as a prefix (e.g. http://example.com). It should point to GoAlert and can be the same as the PublicURL."`
+		DisableSMSLinks        bool   `public:"true" info:"If set, SMS messages will not contain a URL pointing to GoAlert."`
+		DisableLabelCreation   bool   `public:"true" info:"Disables the ability to create new labels for services."`
 	}
 
 	Services struct {
@@ -42,27 +38,12 @@ type Config struct {
 		AlertCleanupDays     int  `public:"true" info:"Closed alerts will be deleted after this many days (0 means disable cleanup)."`
 		AlertAutoCloseDays   int  `public:"true" info:"Unacknowledged alerts will automatically be closed after this many days of inactivity. (0 means disable auto-close)."`
 		AutoCloseAckedAlerts bool `public:"true" info:"If set, alerts that are acknowledged will also be automatically closed after the configured number of days of inactivity."`
-		APIKeyExpireDays     int  `public:"true" info:"Unused calendar API keys will be disabled after this many days (0 means disable cleanup)."`
 		ScheduleCleanupDays  int  `public:"true" info:"Schedule on-call history will be deleted after this many days (0 means disable cleanup)."`
 	}
 
 	Auth struct {
 		RefererURLs  []string `info:"Allowed referer URLs for auth and redirects." deprecated:"Use --public-url flag instead, which takes precedence."`
 		DisableBasic bool     `public:"true" info:"Disallow username/password login."`
-	}
-
-	GitHub struct {
-		Enable bool `public:"true" info:"Enable GitHub authentication."`
-
-		NewUsers bool `info:"Allow new user creation via GitHub authentication."`
-
-		ClientID     string
-		ClientSecret string `password:"true"`
-
-		AllowedUsers []string `info:"Allow any of the listed GitHub usernames to authenticate. Use '*' to allow any user."`
-		AllowedOrgs  []string `info:"Allow any member of any listed GitHub org (or team, using the format 'org/team') to authenticate."`
-
-		EnterpriseURL string `info:"GitHub URL (without /api) when used with GitHub Enterprise."`
 	}
 
 	OIDC struct {
@@ -81,33 +62,8 @@ type Config struct {
 		UserInfoNamePath          string `info:"JMESPath expression to find full name in UserInfo. If set, the name claim will be ignored in favor of this. (suggestion: name || cn || join(' ', [firstname, lastname]))"`
 	}
 
-	Mailgun struct {
-		Enable bool `public:"true"`
-
-		APIKey      string `password:"true" info:"Set this to the HTTP webhook signing key."`
-		EmailDomain string `info:"The TO address for all incoming alerts."`
-	}
-
-	Slack struct {
-		Enable bool `public:"true"`
-
-		ClientID     string
-		ClientSecret string `password:"true"`
-
-		// The `xoxb-` prefix is documented by Slack.
-		// https://api.slack.com/docs/token-types#bot
-		AccessToken string `password:"true" info:"Slack app bot user OAuth access token (should start with xoxb-)."`
-
-		SigningSecret       string `password:"true" info:"Signing secret to verify requests from slack."`
-		InteractiveMessages bool   `info:"Enable interactive messages (e.g. buttons)."`
-		DisableBroadcastThreadReplies bool `info:"Disable broadcasting alert status updates in threads to the main channel." public:"true"`
-	}
-
 	Twilio struct {
 		Enable bool `public:"true" info:"Enables sending and processing of Voice and SMS messages through the Twilio notification provider."`
-
-		VoiceName     string `info:"The Twilio voice to use for Text To Speech for phone calls. See https://www.twilio.com/docs/voice/twiml/say/text-speech#polly-standard-and-neural-voices"`
-		VoiceLanguage string `info:"The Twilio voice language to use for Text To Speech for phone calls. See https://www.twilio.com/docs/voice/twiml/say/text-speech#polly-standard-and-neural-voices"`
 
 		AccountSID         string
 		AuthToken          string `password:"true" info:"The primary Auth Token for Twilio. Must be primary unless Alternate Auth Token is set. This token is used for outgoing requests."`
@@ -116,12 +72,6 @@ type Config struct {
 		FromNumber string `public:"true" info:"The Twilio number to use for outgoing notifications."`
 
 		MessagingServiceSID string `public:"true" info:"If set, replaces the use of From Number for SMS notifications."`
-
-		RCSSenderID string `info:"The sender ID for RCS messages. Required if RCS is enabled for the MessagingServiceSID."`
-
-		DisableTwoWaySMS      bool     `info:"Disables SMS reply codes for alert messages."`
-		SMSCarrierLookup      bool     `info:"Perform carrier lookup of SMS contact methods (required for SMSFromNumberOverride). Extra charges may apply."`
-		SMSFromNumberOverride []string `info:"List of 'carrier=number' pairs, SMS messages to numbers of the provided carrier string (exact match) will use the alternate From Number."`
 	}
 
 	SMTP struct {
@@ -142,48 +92,10 @@ type Config struct {
 		AllowedURLs           []string `public:"true" info:"If set, allows webhooks for these domains only. If empty, any URL is allowed, including internal/private network addresses."`
 		BlockPrivateAddresses bool     `info:"If enabled, webhook requests to private, loopback, and link-local addresses (e.g., 10.0.0.0/8, 127.0.0.1, 169.254.169.254) are rejected. The check is applied at connection time, so it also covers DNS names and redirects that resolve to such addresses. If requests are routed through an HTTP proxy, destination policy must be enforced at the proxy."`
 	}
-
-	Feedback struct {
-		Enable      bool   `public:"true" info:"Enables Feedback link in nav bar."`
-		OverrideURL string `public:"true" info:"Use a custom URL for Feedback link in nav bar."`
-	}
 }
 
-// EmailIngressEnabled returns true if a provider is configured for generating alerts from email, otherwise false
-func (cfg Config) EmailIngressEnabled() bool {
-	if (cfg.Mailgun.Enable && cfg.Mailgun.EmailDomain != "") || cfg.intEmailDomain != "" {
-		return true
-	}
-	return false
-}
-
-// EmailIngressDomain returns the domain configured to receive email for alert generation
-func (cfg Config) EmailIngressDomain() string {
-	if cfg.intEmailDomain != "" {
-		// cli flag always takes precedence
-		return cfg.intEmailDomain
-	}
-	if cfg.Mailgun.EmailDomain != "" {
-		return cfg.Mailgun.EmailDomain
-	}
-	return ""
-}
-
-// TwilioSMSFromNumber will determine the appropriate FROM number to use for SMS messages to the given number
-func (cfg Config) TwilioSMSFromNumber(carrier string) string {
-	if carrier != "" {
-		for _, s := range cfg.Twilio.SMSFromNumberOverride {
-			parts := strings.SplitN(s, "=", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			if parts[0] != carrier {
-				continue
-			}
-			return parts[1]
-		}
-	}
-
+// TwilioSMSFromNumber returns the FROM number (or messaging service) to use for SMS messages.
+func (cfg Config) TwilioSMSFromNumber() string {
 	if cfg.Twilio.MessagingServiceSID != "" {
 		return cfg.Twilio.MessagingServiceSID
 	}
@@ -466,36 +378,18 @@ func (cfg Config) Validate() error {
 	err = validate.Many(
 		err,
 		validate.Text("General.NotificationDisclaimer", cfg.General.NotificationDisclaimer, 0, 500),
-		validateKey("Mailgun.APIKey", cfg.Mailgun.APIKey),
-		validateKey("Slack.ClientID", cfg.Slack.ClientID),
-		validateKey("Slack.ClientSecret", cfg.Slack.ClientSecret),
 		validateKey("Twilio.AccountSID", cfg.Twilio.AccountSID),
 		validateKey("Twilio.AuthToken", cfg.Twilio.AuthToken),
 		validateLabels("Services.RequiredLabels", cfg.Services.RequiredLabels),
 		validateKey("Twilio.AlternateAuthToken", cfg.Twilio.AlternateAuthToken),
-		validate.ASCII("Twilio.VoiceName", cfg.Twilio.VoiceName, 0, 50),
-		validate.ASCII("Twilio.VoiceLanguage", cfg.Twilio.VoiceLanguage, 0, 10),
-		validateKey("GitHub.ClientID", cfg.GitHub.ClientID),
-		validateKey("GitHub.ClientSecret", cfg.GitHub.ClientSecret),
-		validateKey("Slack.AccessToken", cfg.Slack.AccessToken),
 		validate.Range("Maintenance.AlertCleanupDays", cfg.Maintenance.AlertCleanupDays, 0, 9000),
 		validate.Range("Maintenance.AlertAutoCloseDays", cfg.Maintenance.AlertAutoCloseDays, 0, 9000),
-		validate.Range("Maintenance.APIKeyExpireDays", cfg.Maintenance.APIKeyExpireDays, 0, 9000),
 		validate.Range("Maintenance.ScheduleCleanupDays", cfg.Maintenance.ScheduleCleanupDays, 0, 9000),
 		validateScopes("OIDC.Scopes", cfg.OIDC.Scopes),
 		validatePath("OIDC.UserInfoEmailPath", cfg.OIDC.UserInfoEmailPath),
 		validatePath("OIDC.UserInfoEmailVerifiedPath", cfg.OIDC.UserInfoEmailVerifiedPath),
 		validatePath("OIDC.UserInfoNamePath", cfg.OIDC.UserInfoNamePath),
-		validateKey("Slack.SigningSecret", cfg.Slack.SigningSecret),
 	)
-
-	if cfg.General.GoogleAnalyticsID != "" {
-		err = validate.Many(err, validate.MeasurementID("General.GoogleAnalyticsID", cfg.General.GoogleAnalyticsID))
-	}
-
-	if cfg.Twilio.VoiceName != "" && cfg.Twilio.VoiceLanguage == "" {
-		err = validate.Many(err, validation.NewFieldError("Twilio.VoiceLanguage", "required when Twilio.VoiceName is set"))
-	}
 
 	if cfg.OIDC.IssuerURL != "" {
 		err = validate.Many(err, validate.AbsoluteURL("OIDC.IssuerURL", cfg.OIDC.IssuerURL))
@@ -503,54 +397,23 @@ func (cfg Config) Validate() error {
 	if cfg.OIDC.Scopes != "" {
 		err = validate.Many(err, validateScopes("OIDC.Scopes", cfg.OIDC.Scopes))
 	}
-	if cfg.GitHub.EnterpriseURL != "" {
-		err = validate.Many(err, validate.AbsoluteURL("GitHub.EnterpriseURL", cfg.GitHub.EnterpriseURL))
-	}
 	if cfg.Twilio.FromNumber != "" {
 		err = validate.Many(err, validate.Phone("Twilio.FromNumber", cfg.Twilio.FromNumber))
 	}
 	if cfg.Twilio.MessagingServiceSID != "" {
 		err = validate.Many(err, validate.TwilioSID("Twilio.MessagingServiceSID", "MG", cfg.Twilio.MessagingServiceSID))
 	}
-	if cfg.Twilio.RCSSenderID != "" {
-		err = validate.Many(err, validate.ASCII("Twilio.RCSSenderSID", cfg.Twilio.RCSSenderID, 1, 255))
-		if cfg.Twilio.MessagingServiceSID == "" {
-			err = validate.Many(err, validation.NewFieldError("Twilio.MessagingServiceSID", "required when Twilio.RCSSenderID is set"))
-		}
-	}
 
-	if cfg.Mailgun.EmailDomain != "" {
-		err = validate.Many(err, validate.Email("Mailgun.EmailDomain", "example@"+cfg.Mailgun.EmailDomain))
-	}
 	if cfg.SMTP.From != "" {
 		err = validate.Many(err, validate.Email("SMTP.From", cfg.SMTP.From))
 	}
-	if cfg.Slack.InteractiveMessages && cfg.Slack.SigningSecret == "" {
-		err = validate.Many(err, validation.NewFieldError("Slack.SigningSecret", "required to enable Slack interactive messages"))
-	}
-
 	err = validate.Many(
 		err,
-
-		validateEnable("Mailgun", cfg.Mailgun.Enable,
-			"APIKey", cfg.Mailgun.APIKey,
-			"EmailDomain", cfg.Mailgun.EmailDomain,
-		),
-
-		validateEnable("Slack", cfg.Slack.Enable,
-			"ClientID", cfg.Slack.ClientID,
-			"ClientSecret", cfg.Slack.ClientSecret,
-		),
 
 		validateEnable("Twilio", cfg.Twilio.Enable,
 			"AccountSID", cfg.Twilio.AccountSID,
 			"AuthToken", cfg.Twilio.AuthToken,
 			"FromNumber", cfg.Twilio.FromNumber,
-		),
-
-		validateEnable("GitHub", cfg.GitHub.Enable,
-			"ClientID", cfg.GitHub.ClientID,
-			"ClientSecret", cfg.GitHub.ClientSecret,
 		),
 
 		validateEnable("OIDC", cfg.OIDC.Enable,
@@ -563,13 +426,6 @@ func (cfg Config) Validate() error {
 			"Address", cfg.SMTP.Address,
 		),
 	)
-
-	if cfg.Feedback.OverrideURL != "" {
-		err = validate.Many(
-			err,
-			validate.AbsoluteURL("Feedback.OverrideURL", cfg.Feedback.OverrideURL),
-		)
-	}
 
 	if cfg.General.ShortURL != "" {
 		err = validate.Many(
@@ -589,27 +445,6 @@ func (cfg Config) Validate() error {
 	for i, urlStr := range cfg.Webhook.AllowedURLs {
 		field := fmt.Sprintf("Webhook.AllowedURLs[%d]", i)
 		err = validate.Many(err, validate.AbsoluteURL(field, urlStr))
-	}
-
-	m := make(map[string]bool)
-	for i, str := range cfg.Twilio.SMSFromNumberOverride {
-		parts := strings.SplitN(str, "=", 2)
-		fname := fmt.Sprintf("Twilio.SMSFromNumberOverride[%d]", i)
-		if len(parts) != 2 {
-			err = validate.Many(err, validation.NewFieldError(
-				fname,
-				"must be in the format 'carrier=number'",
-			))
-			continue
-		}
-		err = validate.Many(err,
-			validate.ASCII(fname+".Carrier", parts[0], 1, 255),
-			validate.Phone(fname+".Phone", parts[1]),
-		)
-		if m[parts[0]] {
-			err = validate.Many(err, validation.NewFieldError(fname, fmt.Sprintf("carrier override '%s' already set", parts[0])))
-		}
-		m[parts[0]] = true
 	}
 
 	return err

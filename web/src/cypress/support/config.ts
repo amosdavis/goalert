@@ -18,19 +18,12 @@ interface General {
   PublicURL: string
   DisableLabelCreation: boolean
   NotificationDisclaimer: string
-  DisableCalendarSubscriptions: boolean
   EnableV1GraphQL: boolean
 }
 
 interface Auth {
   RefererURLs: [string]
   DisableBasic: boolean
-}
-
-interface Mailgun {
-  Enable: boolean
-  APIKey: string
-  EmailDomain: string
 }
 
 interface Twilio {
@@ -40,26 +33,11 @@ interface Twilio {
   FromNumber: string
 }
 
-interface Feedback {
-  Enable: boolean
-  OverrideURL: string
-}
-
-interface Slack {
-  Enable: boolean
-  ClientID: string
-  ClientSecret: string
-  AccessToken: string
-}
-
 export interface Config {
-  [index: string]: Partial<General | Auth | Mailgun | Twilio | Feedback | Slack>
+  [index: string]: Partial<General | Auth | Twilio>
   General: General
   Auth: Auth
-  Mailgun: Mailgun
   Twilio: Twilio
-  Feedback: Feedback
-  Slack: Slack
 }
 
 type ConfigInput = Pick<Config, string>
@@ -126,13 +104,6 @@ function resetConfig(): Cypress.Chainable<Config> {
       AccountSID: 'fake-for-testing',
       AuthToken: 'fake-for-testing',
       FromNumber: '+16125550123',
-    },
-    Slack: {
-      Enable: true,
-      ClientID: '000000000000.000000000000',
-      ClientSecret: '00000000000000000000000000000000',
-      AccessToken:
-        'xoxp-000000000000-000000000000-000000000000-00000000000000000000000000000000',
     },
   })
 }

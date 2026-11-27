@@ -32,7 +32,7 @@ func TestTwilioSMSReplyIgnore(t *testing.T) {
 	d2.SendSMS("nonsense")
 	d3.SendSMS("nonsense")
 
-	d1.ExpectSMS("sorry")
+	d1.ExpectSMS("not supported")
 
 	// d2 should not get a message, as it's disabled
 	// d3 should not get a message, as it's unknown

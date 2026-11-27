@@ -1,7 +1,6 @@
 package genericapi
 
 import (
-	"database/sql"
 	"encoding/json"
 	"io"
 	"mime"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/target/goalert/alert"
-	"github.com/target/goalert/auth"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/retry"
 	"github.com/target/goalert/util/errutil"
@@ -27,42 +25,6 @@ type Handler struct {
 // NewHandler creates a new Handler, registering generic API routes using chi.
 func NewHandler(c Config) *Handler {
 	return &Handler{c: c}
-}
-
-// ServeUserAvatar will serve a redirect for a users avatar image.
-func (h *Handler) ServeUserAvatar(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-	u, err := h.c.UserStore.FindOne(ctx, req.PathValue("userID"))
-	if errors.Is(err, sql.ErrNoRows) {
-		http.NotFound(w, req)
-		return
-	}
-	if errutil.HTTPError(ctx, w, err) {
-		return
-	}
-
-	fullSize := req.FormValue("size") == "large"
-	http.Redirect(w, req, u.ResolveAvatarURL(fullSize), http.StatusFound)
-}
-
-// ServeHeartbeatCheck serves the heartbeat check-in endpoint.
-func (h *Handler) ServeHeartbeatCheck(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	err := retry.DoTemporaryError(func(_ int) error {
-		return h.c.HeartbeatStore.RecordHeartbeat(ctx, r.PathValue("heartbeatID"))
-	},
-		retry.Log(ctx),
-		retry.Limit(12),
-		retry.FibBackoff(time.Second),
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		auth.Delay(ctx)
-		http.NotFound(w, r)
-		return
-	}
-	if errutil.HTTPError(ctx, w, err) {
-		return
-	}
 }
 
 // ServeCreateAlert allows creating or closing an alert.

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/target/goalert/engine"
 	"github.com/target/goalert/notification"
@@ -10,36 +9,12 @@ import (
 	"github.com/pkg/errors"
 )
 
-func (app *App) initEngine(ctx context.Context) error {
-	if app.storage != nil {
-		return app.initStorageEngine(ctx)
-	}
-
-	var regionIndex int
-	err := app.db.QueryRowContext(ctx, `SELECT id FROM region_ids WHERE name = $1`, app.cfg.RegionName).Scan(&regionIndex)
-	if errors.Is(err, sql.ErrNoRows) {
-		// doesn't exist, try to create
-		_, err = app.db.ExecContext(ctx, `
-		INSERT INTO region_ids (name) VALUES ($1) 
-		ON CONFLICT DO NOTHING`, app.cfg.RegionName)
-		if err != nil {
-			return errors.Wrap(err, "insert region")
-		}
-
-		err = app.db.QueryRowContext(ctx, `SELECT id FROM region_ids WHERE name = $1`, app.cfg.RegionName).Scan(&regionIndex)
-	}
-	if err != nil {
-		return errors.Wrap(err, "get region index")
-	}
+func (app *App) initEngine(ctx context.Context) (err error) {
 	app.notificationManager = notification.NewManager(app.DestRegistry)
-	cfg := app.engineConfig()
-	cfg.River, cfg.RiverDBSQL, cfg.RiverWorkers = app.River, app.RiverDBSQL, app.RiverWorkers
-	app.Engine, err = engine.NewEngine(ctx, app.db, cfg)
-	if err != nil {
-		return errors.Wrap(err, "init engine")
-	}
-
-	return nil
+	app.Engine, err = engine.NewDeltaEngine(ctx, engine.DeltaConfig{
+		DB: app.storage.DB, Tables: app.storage.Tables, Name: app.storage.PodName,
+	}, app.engineConfig())
+	return errors.Wrap(err, "init engine")
 }
 
 func (app *App) engineConfig() *engine.Config {
@@ -53,8 +28,6 @@ func (app *App) engineConfig() *engine.Config {
 		NCStore:             app.NCStore,
 		OnCallStore:         app.OnCallStore,
 		ScheduleStore:       app.ScheduleStore,
-		AuthLinkStore:       app.AuthLinkStore,
-		SlackStore:          app.slackChan,
 		DestRegistry:        app.DestRegistry,
 
 		ConfigSource: app.ConfigStore,

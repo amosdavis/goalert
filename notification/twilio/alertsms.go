@@ -24,19 +24,14 @@ const maxGSMLen = 160
 var alertTempl = template.Must(template.New("alertSMS").Parse(`{{.AppName}}: Alert #{{.AlertID}}: {{.Summary}}
 {{- if .Link }}
 
-{{.Link}}{{end}}
-{{- if .Code}}
-
-Reply '{{.Code}}a' to ack, '{{.Code}}e' to escalate, '{{.Code}}c' to close.{{end}}`))
+{{.Link}}{{end}}`))
 
 var bundleTempl = template.Must(template.New("alertBundleSMS").Parse(`{{.AppName}}: Svc '{{.ServiceName}}': {{.Count}} unacked alert{{if gt .Count 1}}s{{end}}
 
 {{- if .Link }}
 
 	{{.Link}}
-{{end}}
-{{- if .Code}}
-	Reply '{{.Code}}aa' to ack all, '{{.Code}}cc' to close all.{{end}}`))
+{{end}}`))
 
 var statusTempl = template.Must(template.New("alertStatusSMS").Parse(`{{.AppName}}: Alert #{{.AlertID}}{{- if .Summary }}: {{.Summary}}{{end}}
 
@@ -115,23 +110,6 @@ func canContainURL(ctx context.Context, number string) bool {
 	)
 }
 
-// hasTwoWaySMSSupport returns true if a number supports 2-way SMS messaging (replies).
-func hasTwoWaySMSSupport(ctx context.Context, number string) bool {
-	if config.FromContext(ctx).Twilio.DisableTwoWaySMS {
-		return false
-	}
-
-	return !hasAnyPrefix(number,
-		// Non-exhaustive list of dialing codes that do not support 2-way SMS.
-		"+91",  // IN - https://www.twilio.com/guidelines/in/sms
-		"+86",  // CN - https://www.twilio.com/guidelines/cn/sms
-		"+502", // GT - https://www.twilio.com/guidelines/gt/sms
-		"+506", // CR - https://www.twilio.com/guidelines/cr/sms
-		"+507", // PA - https://www.twilio.com/guidelines/pa/sms
-		"+84",  // VN - https://www.twilio.com/guidelines/vn/sms
-	)
-}
-
 func normalizeGSM(str string) (s string) {
 	s = strings.Map(mapGSM, str)
 	s = strings.ReplaceAll(s, "  ", " ")
@@ -176,12 +154,10 @@ func renderAlertMessage(appName string, a notification.Alert, link string, code 
 		AppName string
 		notification.Alert
 		Link string
-		Code int
 	}
 	data.AppName = appName
 	data.Alert = a
 	data.Link = link
-	data.Code = code
 
 	result, err := renderMinGSMSegments([]string{a.Summary}, func(inputs []string) (string, error) {
 		buf.Reset()
@@ -239,12 +215,10 @@ func renderAlertBundleMessage(appName string, a notification.AlertBundle, link s
 		AppName string
 		notification.AlertBundle
 		Link string
-		Code int
 	}
 	data.AppName = appName
 	data.AlertBundle = a
 	data.Link = link
-	data.Code = code
 
 	result, err := renderMinGSMSegments([]string{data.ServiceName}, func(inputs []string) (string, error) {
 		buf.Reset()

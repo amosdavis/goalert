@@ -24,7 +24,6 @@ import CopyText from '../util/CopyText'
 import Spinner from '../loading/components/Spinner'
 import { GenericError } from '../error-pages'
 import { ConfigValue, ConfigHint } from '../../schema'
-import SlackActions from './SlackActions'
 
 const query = gql`
   query getConfig {
@@ -246,7 +245,6 @@ export default function AdminConfig(): React.JSX.Element {
                     fullWidth
                   />
                 ))}
-              {groupID === 'Slack' && <SlackActions />}
             </AccordionDetails>
           </Accordion>
         ))}

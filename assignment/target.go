@@ -55,10 +55,6 @@ type (
 	ContactMethodTarget string
 	// NotificationRuleTarget implements the Target interface by wrapping an NotificationRule ID.
 	NotificationRuleTarget string
-	// HeartbeatMonitorTarget implements the Target interface by wrapping a HeartbeatMonitor ID.
-	HeartbeatMonitorTarget string
-	// CalendarSubscriptionTarget implements the Target interface by wrapping a CalendarSubscription ID.
-	CalendarSubscriptionTarget string
 	// UserSessionTarget implements the Target interface by wrapping a UserSession ID.
 	UserSessionTarget string
 )
@@ -124,22 +120,10 @@ func (ContactMethodTarget) TargetType() TargetType { return TargetTypeContactMet
 func (k ContactMethodTarget) TargetID() string { return string(k) }
 
 // TargetType implements the Target interface.
-func (CalendarSubscriptionTarget) TargetType() TargetType { return TargetTypeCalendarSubscription }
-
-// TargetID implements the Target interface.
-func (k CalendarSubscriptionTarget) TargetID() string { return string(k) }
-
-// TargetType implements the Target interface.
 func (NotificationRuleTarget) TargetType() TargetType { return TargetTypeNotificationRule }
 
 // TargetID implements the Target interface.
 func (k NotificationRuleTarget) TargetID() string { return string(k) }
-
-// TargetType implements the Target interface.
-func (HeartbeatMonitorTarget) TargetType() TargetType { return TargetTypeHeartbeatMonitor }
-
-// TargetID implements the Target interface.
-func (k HeartbeatMonitorTarget) TargetID() string { return string(k) }
 
 // TargetType implements the Target interface.
 func (UserSessionTarget) TargetType() TargetType { return TargetTypeUserSession }

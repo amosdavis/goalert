@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"sort"
 	"time"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type waitFunc func(context.Context, string) error

@@ -19,7 +19,7 @@ export type Value = {
 }
 
 export type RuleFieldError = {
-  field: 'time' | 'weekdayFilter' | 'type' | 'slackChannelID' | 'slackUserGroup'
+  field: 'time' | 'weekdayFilter' | 'type'
   message: string
 }
 
@@ -106,14 +106,6 @@ export function mapOnCallErrors(
         case 'time':
         case 'weekdayFilter':
           return e
-      }
-
-      if (e.field === 'targetTypeSlackChannel') {
-        return { ...e, field: 'slackChannelID' }
-      }
-
-      if (e.field === 'targetTypeSlackUserGroup') {
-        return { ...e, field: 'slackUserGroup' }
       }
 
       dialogErrs.push(e)

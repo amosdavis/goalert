@@ -21,9 +21,6 @@ declare global {
 
       /** Creates an integration key for a given service */
       createIntKey: typeof createIntKey
-
-      /** Creates a label for a given service */
-      createHeartbeatMonitor: typeof createHeartbeatMonitor
     }
   }
 
@@ -76,20 +73,6 @@ declare global {
     id?: string
     name?: string
     type?: IntegrationKeyType
-  }
-
-  interface HeartbeatMonitor {
-    svcID: string
-    svc: Service
-    name: string
-    timeoutMinutes: number
-  }
-
-  interface HeartbeatMonitorOptions {
-    svcID?: string
-    svc?: Service
-    name?: string
-    timeoutMinutes?: number
   }
 }
 
@@ -213,15 +196,7 @@ function createIntKey(
 
   const name = intKey.name || c.word({ length: 5 }) + ' Key'
   const svcID = intKey.svcID
-  const type =
-    intKey.type ||
-    c.pickone([
-      'email',
-      'generic',
-      'grafana',
-      'site24x7',
-      'prometheusAlertmanager',
-    ])
+  const type = intKey.type || 'generic'
 
   const query = `
     mutation($input: CreateIntegrationKeyInput!) {
@@ -251,52 +226,8 @@ function createIntKey(
     })
 }
 
-function createHeartbeatMonitor(
-  monitor?: HeartbeatMonitorOptions,
-): Cypress.Chainable<HeartbeatMonitor> {
-  if (!monitor) monitor = {}
-  if (!monitor.svcID) {
-    return cy
-      .createService(monitor.svc)
-      .then((s: Service) => createHeartbeatMonitor({ svcID: s.id }))
-  }
-
-  const name = monitor.name || c.word({ length: 5 }) + ' Monitor'
-  const timeout = monitor.timeoutMinutes || Math.trunc(Math.random() * 30) + 5
-  const svcID = monitor.svcID
-
-  const query = `
-    mutation($input: CreateHeartbeatMonitorInput!) {
-      createHeartbeatMonitor(input: $input) {
-        id
-        serviceID
-        name
-        timeoutMinutes
-        lastState
-      }
-    }
-  `
-
-  return cy
-    .graphql(query, {
-      input: {
-        serviceID: svcID,
-        name,
-        timeoutMinutes: timeout,
-      },
-    })
-    .then((res: GraphQLResponse) => {
-      const mon = res.createHeartbeatMonitor
-      return getService(svcID).then((svc) => {
-        mon.svc = svc
-        return mon
-      })
-    })
-}
-
 Cypress.Commands.add('getService', getService)
 Cypress.Commands.add('createService', createService)
 Cypress.Commands.add('deleteService', deleteService)
 Cypress.Commands.add('createLabel', createLabel)
 Cypress.Commands.add('createIntKey', createIntKey)
-Cypress.Commands.add('createHeartbeatMonitor', createHeartbeatMonitor)

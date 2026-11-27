@@ -2,16 +2,11 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"strings"
-	"text/template"
 
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
-
-	"github.com/pkg/errors"
 )
 
 // SearchOptions contains criteria for filtering and sorting services.
@@ -45,70 +40,7 @@ type SearchCursor struct {
 	IsFavorite bool   `json:"f"`
 }
 
-var searchTemplate = template.Must(template.New("search").Funcs(search.Helpers()).Parse(`
-	SELECT{{if .LabelKey}} DISTINCT ON ({{ .OrderBy }}){{end}}
-		svc.id,
-		svc.name,
-		svc.description,
-		svc.escalation_policy_id,
-		fav IS DISTINCT FROM NULL,
-		svc.maintenance_expires_at
-	FROM services svc
-	{{if not .FavoritesOnly }}LEFT {{end}}JOIN user_favorites fav ON svc.id = fav.tgt_service_id AND {{if .FavoritesUserID}}fav.user_id = :favUserID{{else}}false{{end}}
-	{{if and .IntegrationKey}}
-		JOIN integration_keys intKey ON
-			intKey.service_id = svc.id AND
-			intKey.id = :integrationKey
-	{{end}}
-	{{if and .LabelKey (not .LabelNegate)}}
-		JOIN labels l ON
-			l.tgt_service_id = svc.id AND
-			l.key = :labelKey
-			{{if ne .LabelValue "*"}} AND value = :labelValue{{end}}
-	{{end}}
-	WHERE true
-	{{if .Omit}}
-		AND not svc.id = any(:omit)
-	{{end}}
-	{{if .Only}}
-		AND svc.id = any(:only)
-	{{end}}
-	{{- if and .LabelKey .LabelNegate}}
-		AND svc.id NOT IN (
-			SELECT tgt_service_id
-			FROM labels
-			WHERE
-				tgt_service_id NOTNULL AND
-				key = :labelKey
-				{{if ne .LabelValue "*"}} AND value = :labelValue{{end}}
-		)
-	{{end}}
-	{{- if and .Search (not .LabelKey) (not .IntegrationKey)}}
-		AND ({{orderedPrefixSearch "search" "svc.name"}} OR {{contains "search" "svc.description"}} OR {{contains "search" "svc.name"}})
-	{{- end}}
-	{{- if .After.Name}}
-		AND
-		{{if not .FavoritesFirst}}
-			lower(svc.name) > lower(:afterName)
-		{{else if .After.IsFavorite}}
-			((fav IS DISTINCT FROM NULL AND lower(svc.name) > lower(:afterName)) OR fav isnull)
-		{{else}}
-			(fav isnull AND lower(svc.name) > lower(:afterName))
-		{{end}}
-	{{- end}}
-	ORDER BY {{ .OrderBy }}
-	LIMIT {{.Limit}}
-`))
-
 type renderData SearchOptions
-
-func (opts renderData) OrderBy() string {
-	if opts.FavoritesFirst {
-		return "fav isnull, lower(svc.name)"
-	}
-
-	return "lower(svc.name)"
-}
 
 func (opts renderData) IntegrationKey() string {
 	if !strings.Contains(opts.Search, "token=") {
@@ -194,20 +126,6 @@ func (opts renderData) Normalize() (*renderData, error) {
 	return &opts, nil
 }
 
-func (opts renderData) QueryArgs() []sql.NamedArg {
-	return []sql.NamedArg{
-		sql.Named("favUserID", opts.FavoritesUserID),
-		sql.Named("integrationKey", opts.IntegrationKey()),
-		sql.Named("labelKey", opts.LabelKey()),
-		sql.Named("labelValue", opts.LabelValue()),
-		sql.Named("labelNegate", opts.LabelNegate()),
-		sql.Named("search", opts.Search),
-		sql.Named("afterName", opts.After.Name),
-		sql.Named("omit", sqlutil.UUIDArray(opts.Omit)),
-		sql.Named("only", sqlutil.UUIDArray(opts.Only)),
-	}
-}
-
 // Search will return a list of matching services and the total number of matches available.
 func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]Service, error) {
 	if opts == nil {
@@ -228,33 +146,5 @@ func (s *Store) Search(ctx context.Context, opts *SearchOptions) ([]Service, err
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.search(ctx, data)
-	}
-
-	query, args, err := search.RenderQuery(ctx, searchTemplate, data)
-	if err != nil {
-		return nil, errors.Wrap(err, "render query")
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Service
-	for rows.Next() {
-		var s Service
-		var maintExpiresAt sql.NullTime
-		err = rows.Scan(&s.ID, &s.Name, &s.Description, &s.EscalationPolicyID, &s.isUserFavorite, &maintExpiresAt)
-		if err != nil {
-			return nil, err
-		}
-		s.MaintenanceExpiresAt = maintExpiresAt.Time
-
-		result = append(result, s)
-	}
-
-	return result, nil
+	return s.delta.search(ctx, data)
 }

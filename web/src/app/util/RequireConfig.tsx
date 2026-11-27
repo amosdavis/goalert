@@ -7,8 +7,6 @@ import {
   IntegrationKeyTypeInfo,
   DestinationTypeInfo,
   DestinationType,
-  ActionInput,
-  ExprStringExpression,
 } from '../../schema'
 
 type Value = boolean | number | string | string[] | null
@@ -53,7 +51,6 @@ const query = gql`
       isContactMethod
       isEPTarget
       isSchedOnCallNotify
-      isDynamicAction
 
       requiredFields {
         fieldID
@@ -65,14 +62,6 @@ const query = gql`
         inputType
         supportsSearch
         supportsValidation
-      }
-
-      dynamicParams {
-        paramID
-        label
-        hint
-        hintURL
-        defaultValue
       }
     }
   }
@@ -176,7 +165,7 @@ export function useFeatures(): FeatureInfo {
 //
 // ```js
 // {
-//   "Mailgun.Enable": true
+//   "Twilio.Enable": true
 // }
 // ```
 export function useConfig(): ConfigData {
@@ -188,7 +177,7 @@ export function useConfig(): ConfigData {
 //
 // Example:
 // ```js
-// const [mailgun, slack] = useConfigValue('Mailgun.Enable', 'Slack.Enable')
+// const [twilio, smtp] = useConfigValue('Twilio.Enable', 'SMTP.Enable')
 // ```
 export function useConfigValue(...fields: ConfigID[]): Value[] {
   const config = useConfig()
@@ -204,30 +193,6 @@ export function useContactMethodTypes(): DestinationTypeInfo[] {
 export function useEPTargetTypes(): DestinationTypeInfo[] {
   const cfg = React.useContext(ConfigContext)
   return cfg.destTypes.filter((t) => t.isEPTarget)
-}
-
-export function useDynamicActionTypes(): DestinationTypeInfo[] {
-  const cfg = React.useContext(ConfigContext)
-  return cfg.destTypes.filter((t) => t.isDynamicAction)
-}
-
-/** useDefaultAction returns the default action for the current environment. */
-export function useDefaultAction(): ActionInput {
-  const def = useDynamicActionTypes()[0]
-  return {
-    dest: {
-      type: def.type,
-      args: {},
-    },
-    params: def.dynamicParams.reduce(
-      (acc, p) => {
-        acc[p.paramID] =
-          (p.defaultValue as ExprStringExpression) || `req.body['${p.paramID}']`
-        return acc
-      },
-      {} as Record<string, ExprStringExpression>,
-    ),
-  }
 }
 
 /** useSchedOnCallNotifyTypes returns a list of schedule on-call notification destination types. */

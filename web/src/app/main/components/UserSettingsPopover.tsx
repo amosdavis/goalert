@@ -4,20 +4,16 @@ import IconButton from '@mui/material/IconButton'
 import Grid from '@mui/material/Grid'
 import Popover from '@mui/material/Popover'
 import Typography from '@mui/material/Typography'
-import { OpenInNew, Logout } from '@mui/icons-material'
+import { Logout } from '@mui/icons-material'
 import { useDispatch } from 'react-redux'
 import { Dispatch, AnyAction } from 'redux'
 import { authLogout } from '../../actions'
 import ThemePicker from '../../theme/ThemePicker'
 import { CurrentUserAvatar } from '../../util/avatars'
 import AppLink from '../../util/AppLink'
-import { useConfigValue, useSessionInfo } from '../../util/RequireConfig'
+import { useSessionInfo } from '../../util/RequireConfig'
 
 export default function UserSettingsPopover(): React.JSX.Element {
-  const [feedbackEnabled, feedbackOverrideURL] = useConfigValue(
-    'Feedback.Enable',
-    'Feedback.OverrideURL',
-  )
   const { userName } = useSessionInfo()
   const firstName = userName?.split(' ')[0]
 
@@ -62,23 +58,6 @@ export default function UserSettingsPopover(): React.JSX.Element {
           </Grid>
           <Grid item>
             <ThemePicker />
-          </Grid>
-          <Grid item>
-            {feedbackEnabled && (
-              <AppLink
-                newTab
-                to={
-                  (feedbackOverrideURL as string) ||
-                  'https://www.surveygizmo.com/s3/4106900/GoAlert-Feedback'
-                }
-                style={{ textDecoration: 'none' }}
-                data-cy='feedback'
-              >
-                <Button variant='outlined' endIcon={<OpenInNew />}>
-                  Feedback
-                </Button>
-              </AppLink>
-            )}
           </Grid>
           <Grid item>
             <Button

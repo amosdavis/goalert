@@ -174,29 +174,25 @@ func TestDeltaLimitsDefaults(t *testing.T) {
 	all, err := p.All(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, Limits{
-		NotificationRulesPerUser:        15,
-		ContactMethodsPerUser:           10,
-		EPStepsPerPolicy:                3, // set before, so left alone
-		EPActionsPerStep:                20,
-		ParticipantsPerRotation:         50,
-		RulesPerSchedule:                30,
-		IntegrationKeysPerService:       30,
-		UnackedAlertsPerService:         200,
-		TargetsPerSchedule:              10,
-		HeartbeatMonitorsPerService:     30,
-		UserOverridesPerSchedule:        35,
-		CalendarSubscriptionsPerUser:    15,
-		PendingSignalsPerService:        50,
-		PendingSignalsPerDestPerService: 5,
+		NotificationRulesPerUser:  15,
+		ContactMethodsPerUser:     10,
+		EPStepsPerPolicy:          3, // set before, so left alone
+		EPActionsPerStep:          20,
+		ParticipantsPerRotation:   50,
+		RulesPerSchedule:          30,
+		IntegrationKeysPerService: 30,
+		UnackedAlertsPerService:   200,
+		TargetsPerSchedule:        10,
+		UserOverridesPerSchedule:  35,
 	}, all, "the limits a new install gets from the migrations")
 
 	// Every known limit has a default, so UpdateLimitsTx can set it.
 	for id := range all {
 		require.NoError(t, id.Valid())
 	}
-	require.NoError(t, p.UpdateLimitsTx(ctx, nil, string(PendingSignalsPerService), 60))
+	require.NoError(t, p.UpdateLimitsTx(ctx, nil, string(UserOverridesPerSchedule), 60))
 	p.insertDefaults(t, e.tables)
-	max, err := p.Max(ctx, PendingSignalsPerService)
+	max, err := p.Max(ctx, UserOverridesPerSchedule)
 	require.NoError(t, err)
 	assert.Equal(t, 60, max, "inserting the defaults again changes nothing")
 }

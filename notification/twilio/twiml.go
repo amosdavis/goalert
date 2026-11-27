@@ -7,15 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/target/goalert/config"
 )
 
 type twiMLResponse struct {
 	say []string
-
-	voiceName     string
-	voiceLanguage string
 
 	gatherURL        string
 	redirectURL      string
@@ -31,12 +26,7 @@ type twiMLResponse struct {
 }
 
 func newTwiMLResponse(ctx context.Context, w http.ResponseWriter) *twiMLResponse {
-	cfg := config.FromContext(ctx)
-	return &twiMLResponse{
-		voiceName:     cfg.Twilio.VoiceName,
-		voiceLanguage: cfg.Twilio.VoiceLanguage,
-		w:             w,
-	}
+	return &twiMLResponse{w: w}
 }
 
 func (t *twiMLResponse) Redirect(url string) {
@@ -131,11 +121,9 @@ func (t *twiMLResponse) Hangup() {
 }
 
 type verbSay struct {
-	XMLName  xml.Name `xml:"Say"`
-	Language string   `xml:"language,attr,omitempty"`
-	Voice    string   `xml:"voice,attr,omitempty"`
-	Text     string   `xml:"-"`
-	Prosody  *prosody `xml:"prosody"`
+	XMLName xml.Name `xml:"Say"`
+	Text    string   `xml:"-"`
+	Prosody *prosody `xml:"prosody"`
 }
 type prosody struct {
 	XMLName xml.Name `xml:"prosody"`
@@ -182,8 +170,6 @@ func (t *twiMLResponse) sendResponse() {
 		doc.Verbs = append(
 			doc.Verbs,
 			verbSay{
-				Language: t.voiceLanguage,
-				Voice:    t.voiceName,
 				Prosody: &prosody{
 					Rate: "slow",
 					Text: text,

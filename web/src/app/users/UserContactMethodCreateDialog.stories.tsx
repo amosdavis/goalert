@@ -72,7 +72,7 @@ const meta = {
           return HttpResponse.json({
             data: {
               destinationFieldValidate:
-                vars.input.value === '@slack' ||
+                vars.input.value === '@user' ||
                 vars.input.value === '+12225558989' ||
                 vars.input.value === 'valid@email.com',
             },

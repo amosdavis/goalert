@@ -62,11 +62,10 @@ type deltaEnv struct {
 	clock  *filestore.FakeClock
 
 	// Stand-ins for the other packages' rows, by id.
-	users, keys, monitors, channels map[string]string // names
-	dests                           map[string]gadb.DestV1
-	keyTypes                        map[string]integrationkey.Type
-	intervals                       map[string]time.Duration
-	policies                        map[string][]string
+	users, keys, channels map[string]string // names
+	dests                 map[string]gadb.DestV1
+	keyTypes              map[string]integrationkey.Type
+	policies              map[string][]string
 
 	sms, chat *provider
 }
@@ -78,10 +77,10 @@ func newDeltaEnv(t *testing.T) *deltaEnv {
 	clock.Set(start)
 	e := &deltaEnv{
 		store: objstore.NewMem(), schema: filestore.NewSchema(), clock: clock,
-		users: map[string]string{}, keys: map[string]string{}, monitors: map[string]string{}, channels: map[string]string{},
+		users: map[string]string{}, keys: map[string]string{}, channels: map[string]string{},
 		dests: map[string]gadb.DestV1{}, keyTypes: map[string]integrationkey.Type{},
-		intervals: map[string]time.Duration{}, policies: map[string][]string{},
-		sms: &provider{id: "sms", name: "Text Message (SMS)"}, chat: &provider{id: "chat", name: "Chat Channel"},
+		policies: map[string][]string{},
+		sms:      &provider{id: "sms", name: "Text Message (SMS)"}, chat: &provider{id: "chat", name: "Chat Channel"},
 	}
 	e.alerts = filestore.NewTable(e.schema, "alerts", func(r alertRow) string { return filestore.IntKey(r.ID) })
 	e.tables = DefineDeltaTables(e.schema)
@@ -104,15 +103,11 @@ func (e *deltaEnv) lookups() DeltaLookups {
 		return d, nil
 	}
 	return DeltaLookups{
-		UserName: name(e.users), IntegrationKeyName: name(e.keys), HeartbeatMonitorName: name(e.monitors), ChannelName: name(e.channels),
+		UserName: name(e.users), IntegrationKeyName: name(e.keys), ChannelName: name(e.channels),
 		ChannelDest: dest, ContactMethodDest: dest, MessageDest: dest,
 		IntegrationKeyType: func(_ filestore.Reader, id string) (integrationkey.Type, bool) {
 			typ, ok := e.keyTypes[id]
 			return typ, ok
-		},
-		HeartbeatInterval: func(_ filestore.Reader, id string) (time.Duration, bool) {
-			d, ok := e.intervals[id]
-			return d, ok
 		},
 		PolicyServices: func(_ filestore.Reader, id string) []string { return e.policies[id] },
 		AlertIDs: func(r filestore.Reader, serviceID string, statuses ...string) []int64 {
@@ -182,11 +177,10 @@ func source(ctx context.Context, typ permission.SourceType, id string) context.C
 func TestDeltaLogSubjects(t *testing.T) {
 	e := newDeltaEnv(t)
 	s := e.pod(t, "a")
-	userID, keyID, hbID, ncID, cmID, msgID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	e.users[userID], e.keys[keyID], e.monitors[hbID], e.channels[ncID] = "Alice", "Grafana prod", "Cron", "#ops"
+	userID, keyID, ncID, cmID, msgID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	e.users[userID], e.keys[keyID], e.channels[ncID] = "Alice", "Grafana prod", "#ops"
 	e.dests[cmID], e.dests[msgID], e.dests[ncID] = gadb.NewDestV1("sms"), gadb.NewDestV1("sms"), gadb.NewDestV1("chat")
-	e.keyTypes[keyID] = integrationkey.TypeGrafana
-	e.intervals[hbID] = 90 * time.Second
+	e.keyTypes[keyID] = integrationkey.TypeGeneric
 
 	sys := permission.SystemContext(context.Background(), "test")
 	user := permission.UserContext(context.Background(), userID, permission.RoleUser)
@@ -214,26 +208,27 @@ func TestDeltaLogSubjects(t *testing.T) {
 		&Subject{Type: SubjectTypeUser, ID: userID, Name: "Alice", Classifier: "Text Message (SMS)"}, "Escalation requested by Alice (Text Message (SMS))")
 	check("channel", source(sys, permission.SourceTypeNotificationChannel, ncID), TypeNotificationSent, NotificationMetaData{MessageID: msgID},
 		&Subject{Type: SubjectTypeChannel, ID: ncID, Name: "#ops", Classifier: "Chat Channel"}, "Notification sent to #ops (Chat Channel)")
-	check("heartbeat", source(sys, permission.SourceTypeHeartbeat, hbID), TypeCreated, nil,
-		&Subject{Type: SubjectTypeHeartbeatMonitor, ID: hbID, Name: "Cron", Classifier: "expired after 2 minutes"}, "Created via Cron heartbeat monitor (expired after 2 minutes)")
-	check("heartbeat again", source(sys, permission.SourceTypeHeartbeat, hbID), TypeClosed, nil,
-		&Subject{Type: SubjectTypeHeartbeatMonitor, ID: hbID, Name: "Cron", Classifier: "healthy"}, "Closed via Cron heartbeat monitor (healthy)")
+
 	check("integration key", source(sys, permission.SourceTypeIntegrationKey, keyID), TypeCreated, nil,
-		&Subject{Type: SubjectTypeIntegrationKey, ID: keyID, Name: "Grafana prod", Classifier: "Grafana"}, "Created via Grafana prod integration (Grafana)")
-	e.intervals[hbID] = 89 * time.Second
-	check("one minute", source(sys, permission.SourceTypeHeartbeat, hbID), TypeCreated, nil,
-		&Subject{Type: SubjectTypeHeartbeatMonitor, ID: hbID, Name: "Cron", Classifier: "expired after 1 minute"}, "Created via Cron heartbeat monitor (expired after 1 minute)")
+		&Subject{Type: SubjectTypeIntegrationKey, ID: keyID, Name: "Grafana prod", Classifier: "Generic API"}, "Created via Grafana prod integration (Generic API)")
 
 	// A subject that is deleted later keeps its id, without a name.
+	var integrationLogID int
+	for _, l := range e.all(t) {
+		if l.SubIntegrationKeyID != nil {
+			integrationLogID = int(l.ID)
+		}
+	}
+	require.NotZero(t, integrationLogID)
 	delete(e.keys, keyID)
-	got, err := s.FindOne(sys, 11)
+	got, err := s.FindOne(sys, integrationLogID)
 	require.NoError(t, err)
-	assert.Equal(t, 11, got.ID())
-	assert.Equal(t, &Subject{Type: SubjectTypeIntegrationKey, ID: keyID, Classifier: "Grafana"}, got.Subject())
-	assert.Equal(t, "Created via [unknown] integration (Grafana)", got.String(sys))
+	assert.Equal(t, integrationLogID, got.ID())
+	assert.Equal(t, &Subject{Type: SubjectTypeIntegrationKey, ID: keyID, Classifier: "Generic API"}, got.Subject())
+	assert.Equal(t, "Created via [unknown] integration (Generic API)", got.String(sys))
 
 	m, ok := func() (*NotificationMetaData, bool) {
-		got, err := s.FindOne(sys, 8)
+		got, err = s.FindOne(sys, integrationLogID-1)
 		require.NoError(t, err)
 		m, ok := got.Meta(sys).(*NotificationMetaData)
 		return m, ok
@@ -242,7 +237,7 @@ func TestDeltaLogSubjects(t *testing.T) {
 	assert.Equal(t, msgID, m.MessageID)
 
 	rows := e.all(t)
-	require.Len(t, rows, 12)
+	require.Len(t, rows, 9)
 	assert.Nil(t, rows[0].SubType)
 	assert.Equal(t, `{"EPNoSteps":false}`, string(rows[0].Meta))
 	assert.Equal(t, "acknowledged", rows[2].Event)
@@ -269,13 +264,13 @@ func TestDeltaLogMissingSubject(t *testing.T) {
 	sys := permission.SystemContext(context.Background(), "test")
 	e.dests["9e0b1f6e-0000-4000-8000-000000000001"] = gadb.NewDestV1("unregistered")
 	for name, ctx := range map[string]context.Context{
-		"integration key":     source(sys, permission.SourceTypeIntegrationKey, uuid.NewString()),
-		"not an id":           source(sys, permission.SourceTypeIntegrationKey, "x"),
-		"contact method":      source(sys, permission.SourceTypeContactMethod, uuid.NewString()),
-		"message":             source(sys, permission.SourceTypeNotificationCallback, uuid.NewString()),
-		"not a message id":    source(sys, permission.SourceTypeNotificationCallback, "x"),
-		"channel":             source(sys, permission.SourceTypeNotificationChannel, uuid.NewString()),
-		"heartbeat":           source(sys, permission.SourceTypeHeartbeat, uuid.NewString()),
+		"integration key":  source(sys, permission.SourceTypeIntegrationKey, uuid.NewString()),
+		"not an id":        source(sys, permission.SourceTypeIntegrationKey, "x"),
+		"contact method":   source(sys, permission.SourceTypeContactMethod, uuid.NewString()),
+		"message":          source(sys, permission.SourceTypeNotificationCallback, uuid.NewString()),
+		"not a message id": source(sys, permission.SourceTypeNotificationCallback, "x"),
+		"channel":          source(sys, permission.SourceTypeNotificationChannel, uuid.NewString()),
+
 		"unknown destination": source(sys, permission.SourceTypeNotificationChannel, "9e0b1f6e-0000-4000-8000-000000000001"),
 	} {
 		require.Error(t, s.LogTx(ctx, nil, 1, TypeCreated, nil), name)
@@ -287,7 +282,7 @@ func TestDeltaLogMissingSubject(t *testing.T) {
 		s.MustLog(ctx, 1, TypeCreated, nil)
 	}
 	rows := e.all(t)
-	require.Len(t, rows, 8)
+	require.Len(t, rows, 7)
 	for _, l := range rows {
 		assert.EqualValues(t, 2, *l.AlertID)
 	}
@@ -330,16 +325,13 @@ func TestDeltaLogNoIO(t *testing.T) {
 	}
 
 	// Contexts that need no name.
-	for _, src := range []permission.SourceType{permission.SourceTypeAuthProvider, permission.SourceTypeHeartbeat} {
-		c.Prepare(source(permission.SystemContext(context.Background(), "test"), src, cmID))
-	}
+	c.Prepare(source(permission.SystemContext(context.Background(), "test"), permission.SourceTypeAuthProvider, cmID))
 	c.Prepare(source(ctx, permission.SourceTypeContactMethod, "not an id"))
 	c.Prepare(context.Background())
 	assert.Zero(t, e.sms.calls.Load())
 	c.Prepare(source(ctx, permission.SourceTypeContactMethod, cmID))
 	c.Prepare(source(ctx, permission.SourceTypeNotificationCallback, cmID))
 	assert.EqualValues(t, 1, e.sms.calls.Load())
-	(&Store{}).Prepare(ctx) // nothing to do on Postgres
 }
 
 func TestDeltaLogMany(t *testing.T) {
@@ -617,7 +609,7 @@ func TestDeltaLogNotPorted(t *testing.T) {
 	require.ErrorIs(t, err, deltatxn.ErrNotPorted)
 	for i, src := range []permission.SourceType{
 		permission.SourceTypeNotificationChannel, permission.SourceTypeContactMethod, permission.SourceTypeNotificationCallback,
-		permission.SourceTypeHeartbeat, permission.SourceTypeIntegrationKey,
+		permission.SourceTypeIntegrationKey,
 	} {
 		require.ErrorIs(t, s.LogTx(source(sys, src, id), nil, 1, TypeCreated, nil), deltatxn.ErrNotPorted, strconv.Itoa(i))
 	}

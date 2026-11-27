@@ -3,62 +3,44 @@ package app
 import (
 	"context"
 	"crypto/tls"
-	"database/sql"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pkg/errors"
-	"github.com/riverqueue/river"
 	"github.com/target/goalert/alert"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/apikey"
 	"github.com/target/goalert/app/lifecycle"
 	"github.com/target/goalert/auth"
-	"github.com/target/goalert/auth/authlink"
 	"github.com/target/goalert/auth/basic"
 	"github.com/target/goalert/auth/nonce"
-	"github.com/target/goalert/calsub"
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/deltastores"
 	"github.com/target/goalert/engine"
 	"github.com/target/goalert/escalation"
 	"github.com/target/goalert/graphql2/graphqlapp"
-	"github.com/target/goalert/heartbeat"
 	"github.com/target/goalert/integrationkey"
-	"github.com/target/goalert/integrationkey/uik"
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
 	"github.com/target/goalert/notice"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/nfydest"
-	"github.com/target/goalert/notification/slack"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/oncall"
 	"github.com/target/goalert/override"
-	"github.com/target/goalert/permission"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/schedule/rule"
 	"github.com/target/goalert/service"
-	"github.com/target/goalert/smtpsrv"
 	"github.com/target/goalert/timezone"
+	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user"
 	"github.com/target/goalert/user/contactmethod"
 	"github.com/target/goalert/user/favorite"
 	"github.com/target/goalert/user/notificationrule"
-	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	"riverqueue.com/riverui"
 )
 
 // App represents an instance of the GoAlert application.
@@ -69,29 +51,17 @@ type App struct {
 
 	mgr *lifecycle.Manager
 
-	// storage and the stores on it, instead of db.
+	// storage is where the data is, and stores are the stores on it.
 	storage *Storage
 	stores  *deltastores.Stores
 
-	db     *sql.DB
-	pgx    *pgxpool.Pool
-	l      net.Listener
-	events *sqlutil.Listener
-
-	// riverTimePool serves River's clock in smoke tests (ForceRiverDBTime).
-	riverTimePool *pgxpool.Pool
+	l net.Listener
 
 	httpClient *http.Client
 
 	doneCh chan struct{}
 
-	sysAPIL   net.Listener
-	sysAPISrv *grpc.Server
-	hSrv      *health.Server
-
 	srv        *http.Server
-	smtpsrv    *smtpsrv.Server
-	smtpsrvL   net.Listener
 	startupErr error
 
 	notificationManager *notification.Manager
@@ -103,13 +73,10 @@ type App struct {
 	twilioVoice  *twilio.Voice
 	twilioConfig *twilio.Config
 
-	slackChan *slack.ChannelSender
-
 	ConfigStore *config.Store
 
-	AlertStore        *alert.Store
-	AlertLogStore     *alertlog.Store
-	AlertMetricsStore *alertmetrics.Store
+	AlertStore    *alert.Store
+	AlertLogStore *alertlog.Store
 
 	AuthBasicStore        *basic.Store
 	UserStore             *user.Store
@@ -120,22 +87,18 @@ type App struct {
 	ServiceStore        *service.Store
 	EscalationStore     *escalation.Store
 	IntegrationKeyStore *integrationkey.Store
-	UIKHandler          *uik.Handler
 	ScheduleRuleStore   *rule.Store
 	NotificationStore   *notification.Store
 	ScheduleStore       *schedule.Store
 	RotationStore       *rotation.Store
 	DestRegistry        *nfydest.Registry
 
-	CalSubStore    *calsub.Store
-	OverrideStore  *override.Store
-	LimitStore     *limit.Store
-	HeartbeatStore *heartbeat.Store
+	OverrideStore *override.Store
+	LimitStore    *limit.Store
 
-	OAuthKeyring    keyring.Keyring
-	SessionKeyring  keyring.Keyring
-	APIKeyring      keyring.Keyring
-	AuthLinkKeyring keyring.Keyring
+	OAuthKeyring   keyring.Keyring
+	SessionKeyring keyring.Keyring
+	APIKeyring     keyring.Keyring
 
 	NonceStore    *nonce.Store
 	LabelStore    *label.Store
@@ -143,56 +106,7 @@ type App struct {
 	NCStore       *notificationchannel.Store
 	TimeZoneStore *timezone.Store
 	NoticeStore   *notice.Store
-	AuthLinkStore *authlink.Store
 	APIKeyStore   *apikey.Store
-	River         *river.Client[pgx.Tx]
-
-	// RiverDBSQL is a river client that uses the old sql.DB driver for use while transitioning to pgx.
-	//
-	// This allows us to add jobs from transactions that are not using the pgx driver. This client is not used for any job or queue processing.
-	RiverDBSQL   *river.Client[*sql.Tx]
-	RiverUI      *riverui.Handler
-	RiverWorkers *river.Workers
-}
-
-// NewApp constructs a new App and binds the listening socket.
-func NewApp(c Config, pool *pgxpool.Pool) (*App, error) {
-	if c.Logger == nil {
-		return nil, errors.New("Logger is required")
-	}
-
-	var err error
-	db := stdlib.OpenDBFromPool(pool)
-	permission.SudoContext(context.Background(), func(ctx context.Context) {
-		c.Logger.DebugContext(ctx, "checking switchover_state table")
-		// Should not be possible for the app to ever see `use_next_db` unless misconfigured.
-		//
-		// In switchover mode, the connector wrapper will check this and provide the app with
-		// a connection to the next DB instead, if this was set.
-		//
-		// This is a sanity check to ensure that the app is not accidentally using the previous DB
-		// after a switchover.
-		err = db.QueryRowContext(ctx, `select true from switchover_state where current_state = 'use_next_db'`).Scan(new(bool))
-		if errors.Is(err, sql.ErrNoRows) {
-			err = nil
-			return
-		}
-		if err != nil {
-			return
-		}
-
-		err = fmt.Errorf("refusing to connect to stale database (switchover_state table has use_next_db set)")
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	app, err := newApp(c)
-	if err != nil {
-		return nil, err
-	}
-	app.db, app.pgx = db, pool
-	return app, app.start()
 }
 
 // newApp returns an App that has no data yet, and binds the listening socket.
@@ -218,14 +132,6 @@ func newApp(c Config) (*App, error) {
 		}
 		l = newMultiListener(l, l2)
 	}
-
-	c.LegacyLogger.AddErrorMapper(func(ctx context.Context, err error) context.Context {
-		if e := sqlutil.MapError(err); e != nil && e.Detail != "" {
-			ctx = log.WithField(ctx, "SQLErrDetails", e.Detail)
-		}
-
-		return ctx
-	})
 
 	return &App{
 		l:          l,
@@ -255,18 +161,10 @@ func (a *App) WaitForStartup(ctx context.Context) error {
 	return a.mgr.WaitForStartup(a.Context(ctx))
 }
 
-// DB returns the sql.DB instance used by the application.
-func (a *App) DB() *sql.DB { return a.db }
+// Txn runs transactions on GoAlert's data.
+func (app *App) Txn() txn.DB { return app.stores.DB }
 
 // URL returns the non-TLS listener URL of the application.
 func (a *App) URL() string {
 	return "http://" + a.l.Addr().String()
-}
-
-func (a *App) SMTPAddr() string {
-	if a.smtpsrvL == nil {
-		return ""
-	}
-
-	return a.smtpsrvL.Addr().String()
 }

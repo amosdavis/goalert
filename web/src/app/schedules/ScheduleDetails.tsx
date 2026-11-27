@@ -8,7 +8,6 @@ import ScheduleEditDialog from './ScheduleEditDialog'
 import ScheduleDeleteDialog from './ScheduleDeleteDialog'
 import ScheduleCalendarQuery from './ScheduleCalendarQuery'
 import { QuerySetFavoriteButton } from '../util/QuerySetFavoriteButton'
-import CalendarSubscribeButton from './calendar-subscribe/CalendarSubscribeButton'
 import { ObjectNotFound, GenericError } from '../error-pages'
 import TempSchedDialog from './temp-sched/TempSchedDialog'
 import TempSchedDeleteConfirmation from './temp-sched/TempSchedDeleteConfirmation'
@@ -173,12 +172,6 @@ export default function ScheduleDetails({
             </Suspense>
           </OverrideDialogContext.Provider>
         }
-        primaryActions={[
-          <CalendarSubscribeButton
-            key='primary-action-subscribe'
-            scheduleID={scheduleID}
-          />,
-        ]}
         secondaryActions={[
           {
             label: 'Edit',

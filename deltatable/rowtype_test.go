@@ -124,24 +124,42 @@ func TestRejectsAmbiguousTypes(t *testing.T) {
 	assert.Error(t, err, "table names become columns and directories")
 }
 
-func TestTimesOutsideTheReadableRange(t *testing.T) {
+func TestTimestampRange(t *testing.T) {
 	rt, err := NewRowType[testRow]("alerts")
 	require.NoError(t, err)
-	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 
-	// parquet-go writes Go's zero time correctly but reads it back wrong,
-	// so it is refused before it can make pods disagree (F25).
-	_, err = rt.Normalize(testRow{ID: 1})
-	require.ErrorContains(t, err, "outside the range")
-	_, err = rt.Encode([]testRow{{ID: 1, Created: now}, {ID: 2}})
-	require.ErrorContains(t, err, "row 1")
-	old := time.Date(1600, 1, 1, 0, 0, 0, 0, time.UTC)
-	_, err = rt.Normalize(testRow{ID: 1, Created: now, Closed: &old})
-	require.ErrorContains(t, err, "Closed", "times behind pointers are checked too")
+	for _, at := range []time.Time{
+		{},
+		time.Date(1006, 1, 2, 3, 4, 5, 123456789, time.UTC),
+		time.Date(4006, 1, 2, 3, 4, 5, 123456789, time.UTC),
+		time.UnixMicro(-1 << 63).UTC(),
+		time.UnixMicro(1<<63 - 1).UTC(),
+	} {
+		t.Run(at.Format(time.RFC3339), func(t *testing.T) {
+			in := testRow{ID: 1, Created: at, Closed: &at}
+			want := time.UnixMicro(at.UnixMicro()).UTC()
+			data, err := rt.Encode([]testRow{in})
+			require.NoError(t, err)
+			got, err := rt.Decode(data)
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, want, got[0].Created)
+			require.NotNil(t, got[0].Closed)
+			assert.Equal(t, want, *got[0].Closed)
 
-	for _, edge := range []time.Time{time.UnixMicro(minMicros).UTC(), time.UnixMicro(maxMicros).UTC()} {
-		out, err := rt.Normalize(testRow{ID: 1, Created: edge})
-		require.NoError(t, err)
-		assert.True(t, edge.Equal(out.Created), "%s read back as %s", edge, out.Created)
+			normalized, err := rt.Normalize(in)
+			require.NoError(t, err)
+			assert.Equal(t, want, normalized.Created)
+			require.NotNil(t, normalized.Closed)
+			assert.Equal(t, want, *normalized.Closed)
+		})
+	}
+
+	for _, at := range []time.Time{
+		time.Date(-1000000, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(1000000, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		_, err := rt.Normalize(testRow{ID: 1, Created: at})
+		require.ErrorContains(t, err, "Unix microseconds")
 	}
 }

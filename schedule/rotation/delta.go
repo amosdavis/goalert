@@ -483,6 +483,13 @@ func (d *deltaRotations) addUsers(ctx context.Context, tx txn.Tx, rotationID str
 	})
 }
 
+// DeltaInsertParticipant adds a participant to the end of its rotation, as an
+// INSERT into Postgres does, with its triggers. The store's own methods do so
+// too.
+func (s *Store) DeltaInsertParticipant(tx *filestore.Tx, p ParticipantRow) error {
+	return s.delta.addParticipant(deltatxn.Scope{Tx: tx, Reader: tx, Now: tx.Now()}, p.ID, p.RotationID, p.UserID)
+}
+
 // addParticipant adds a user to the end of a rotation, and does what the
 // triggers on an insert did, in their order.
 func (d *deltaRotations) addParticipant(s deltatxn.Scope, id, rotationID, userID string) error {
@@ -766,8 +773,8 @@ func (d *deltaRotations) search(ctx context.Context, opts *renderData) ([]Rotati
 }
 
 // newSearchMatcher returns whether a rotation matches a search: its name has
-// words that begin with the search's words, in order (search.Helpers'
-// orderedPrefixSearch), or its description or name contains the search
+// words that begin with the search's words, in order (as Postgres's
+// orderedPrefixSearch had it), or its description or name contains the search
 // (contains). An empty search matches everything.
 func newSearchMatcher(query string) func(row RotationRow) bool {
 	if query == "" {

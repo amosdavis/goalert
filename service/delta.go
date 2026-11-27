@@ -232,7 +232,7 @@ func (d *deltaServices) find(ctx context.Context, userID uuid.NullUUID, ids []uu
 	}
 	var services []Service
 	err := deltatxn.Read(ctx, d.db, nil, func(s deltatxn.Scope) error {
-		services = nil // as scanAllFrom returns without rows
+		services = nil // return nil without rows
 		favs := d.favorites(s.Reader, userID)
 		seen := make(map[uuid.UUID]bool, len(ids))
 		for _, id := range ids {
@@ -278,7 +278,7 @@ func (d *deltaServices) findAllByEP(ctx context.Context, epID string) ([]Service
 	}
 	var services []Service
 	err = deltatxn.Read(ctx, d.db, nil, func(s deltatxn.Scope) error {
-		services = nil // as scanAllFrom returns without rows
+		services = nil // return nil without rows
 		epName, ok := d.EscalationPolicyName(s.Reader, id.String())
 		if !ok {
 			return nil // like JOIN

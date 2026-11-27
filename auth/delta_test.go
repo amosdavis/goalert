@@ -533,17 +533,17 @@ func (p testProvider) ExtractIdentity(*RouteInfo, http.ResponseWriter, *http.Req
 	return &p.id, nil
 }
 
-// login logs in through the GitHub provider, and returns the session's token,
+// login logs in through a test provider, and returns the session's token,
 // or an error message.
 func (p *pod) login(t *testing.T, id Identity, newUsers bool) (token, errMsg string) {
 	t.Helper()
-	p.providers["github"] = testProvider{id}
+	p.providers["oidc"] = testProvider{id}
 	var cfg config.Config
-	cfg.GitHub.NewUsers = newUsers
-	req := httptest.NewRequest("POST", "http://localhost/api/v2/identity/providers/github?noRedirect=1", nil)
+	cfg.OIDC.NewUsers = newUsers
+	req := httptest.NewRequest("POST", "http://localhost/api/v2/identity/providers/oidc?noRedirect=1", nil)
 	req.Header.Set("Referer", "http://localhost/")
 	w := httptest.NewRecorder()
-	p.IdentityProviderHandler("github")(w, req.WithContext(cfg.Context(context.Background())))
+	p.IdentityProviderHandler("oidc")(w, req.WithContext(cfg.Context(context.Background())))
 	if w.Code != 200 {
 		return "", w.Body.String()
 	}

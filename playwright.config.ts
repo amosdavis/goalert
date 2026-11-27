@@ -1,20 +1,14 @@
 import { devices } from '@playwright/test'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { scanUniqueFlagCombos } from './test/integration/setup/scan-flags'
 
-const dbURL = process.env.CI
-  ? 'postgres://postgres@/goalert_integration?client_encoding=UTF8'
-  : 'postgres://goalert:goalert@localhost:5432/goalert_integration?client_encoding=UTF8'
-
-const swoMainURL = process.env.CI
-  ? 'postgres://postgres@/goalert_swo_main?client_encoding=UTF8'
-  : 'postgres://goalert:goalert@localhost:5432/goalert_swo_main?client_encoding=UTF8'
-
-const swoNextURL = process.env.CI
-  ? 'postgres://postgres@/goalert_swo_next?client_encoding=UTF8'
-  : 'postgres://goalert:goalert@localhost:5432/goalert_swo_next?client_encoding=UTF8'
+const storageObjects =
+  process.env.GOALERT_STORAGE_OBJECTS ||
+  pathToFileURL(path.resolve('bin/integration-storage')).href
 
 const wsEnv = {
-  GOALERT_DB_URL: dbURL,
+  GOALERT_STORAGE_OBJECTS: storageObjects,
   GOALERT_ENGINE_CYCLE_TIME: '50ms',
   GOALERT_STRICT_EXPERIMENTAL: '1',
   GOALERT_LOG_ERRORS_ONLY: '1',
@@ -65,16 +59,6 @@ const config = {
     {
       command: 'go tool mockoidc -addr=127.0.0.1:9997',
       port: 9997,
-    },
-    {
-      command:
-        './bin/goalert.cover --log-errors-only -l=localhost:6110 --public-url=http://localhost:6110', // switchover instance
-      env: {
-        ...wsEnv,
-        GOALERT_DB_URL: swoMainURL,
-        GOALERT_DB_URL_NEXT: swoNextURL,
-      },
-      url: 'http://localhost:6110/health',
     },
     {
       command: './bin/goalert.cover --log-errors-only -l=localhost:6120', // no public url (fallback code)

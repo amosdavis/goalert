@@ -40,17 +40,13 @@ const useStyles = makeStyles((theme: Theme) => ({
 }))
 
 export default function NavBar(): React.JSX.Element {
-  const classes = useStyles()
+  const classes = useStyles({})
   const theme = useTheme()
 
   let localDevFooter = null
-  let localDevRiver = null
   if (process.env.NODE_ENV !== 'production') {
     localDevFooter = (
       <NavBarLink to='/dev' title='Dev' icon={<DeveloperBoard />} />
-    )
-    localDevRiver = (
-      <NavBarSubLink newTab to='/admin/riverui' title='Job Queues' />
     )
   }
 
@@ -100,16 +96,8 @@ export default function NavBar(): React.JSX.Element {
               <NavBarSubLink to='/admin/config' title='Config' />
               <NavBarSubLink to='/admin/maintenance' title='Maintenance' />
               <NavBarSubLink to='/admin/limits' title='System Limits' />
-              <NavBarSubLink to='/admin/toolbox' title='Toolbox' />
               <NavBarSubLink to='/admin/message-logs' title='Message Logs' />
-              <NavBarSubLink to='/admin/alert-counts' title='Alert Counts' />
-              <NavBarSubLink
-                to='/admin/service-metrics'
-                title='Service Metrics'
-              />
-              <NavBarSubLink to='/admin/switchover' title='Switchover' />
               <NavBarSubLink to='/admin/api-keys' title='API Keys' />
-              {localDevRiver}
             </NavBarLink>
           </RequireConfig>
 

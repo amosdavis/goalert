@@ -145,10 +145,9 @@ type FavoriteFunc func(r filestore.Reader, userID, targetUserID string) bool
 type DestUsersFunc func(r filestore.Reader, destType string, destArgs map[string]string) []string
 
 // RotationCleanupFunc takes a user who is about to be deleted out of every
-// rotation (rotation_participants and rotation_state), as the Postgres
-// store's removeUserFromRotation does: the participants after them move up,
-// and the participant on call stays the same, or if it was them, becomes the
-// one after them.
+// rotation (rotation_participants and rotation_state): the participants after
+// them move up, and the participant on call stays the same, or if it was them,
+// becomes the one after them.
 type RotationCleanupFunc func(tx *filestore.Tx, userID string) error
 
 // OnCallFuncs are the lookups OnCallOverview needs, all in r.
@@ -252,7 +251,7 @@ func userKeys(ids []string) ([]string, error) {
 // user returns the row as a User, without the alert status contact method,
 // which the Postgres store doesn't read either.
 func (r userRow) user(isFavorite bool) User {
-	return User{ID: r.ID, Name: r.Name, Email: r.Email, AvatarURL: r.AvatarURL, Role: permission.Role(r.Role), isUserFavorite: isFavorite}
+	return User{ID: r.ID, Name: r.Name, Email: r.Email, Role: permission.Role(r.Role), isUserFavorite: isFavorite}
 }
 
 // insert adds a user, without an alert status contact method, like the
@@ -262,7 +261,7 @@ func (d *deltaUsers) insert(ctx context.Context, tx txn.Tx, u *User) error {
 	if err != nil {
 		return err
 	}
-	row := userRow{ID: id, Name: u.Name, Email: u.Email, AvatarURL: u.AvatarURL, Role: string(u.Role)}
+	row := userRow{ID: id, Name: u.Name, Email: u.Email, Role: string(u.Role)}
 	return deltatxn.Write(ctx, d.db, tx, func(s deltatxn.Scope) error {
 		return d.Users.Insert(s.Tx, row, "goalert_user_pkey")
 	})

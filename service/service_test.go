@@ -109,34 +109,6 @@ func TestSearchOptions_Normalize_Only(t *testing.T) {
 	}
 }
 
-func TestSearchOptions_Only_QueryArgs(t *testing.T) {
-	opts := SearchOptions{
-		Only: []string{
-			"A035FD3C-73C8-4F72-BECD-36B027AE1374",
-			"B035FD3C-73C8-4F72-BECD-36B027AE1375",
-		},
-	}
-
-	data := (*renderData)(&opts)
-	args := data.QueryArgs()
-
-	// Find the "only" argument
-	var foundOnly bool
-	for _, arg := range args {
-		if arg.Name == "only" {
-			foundOnly = true
-			if arg.Value == nil {
-				t.Error("QueryArgs() 'only' parameter should not be nil when Only is provided")
-			}
-			break
-		}
-	}
-
-	if !foundOnly {
-		t.Error("QueryArgs() should include 'only' parameter")
-	}
-}
-
 func TestSearchOptions_Only_WithOtherFilters(t *testing.T) {
 	// Test that Only filter works in combination with other filters
 	opts := SearchOptions{
@@ -164,44 +136,6 @@ func TestSearchOptions_Only_WithOtherFilters(t *testing.T) {
 	}
 }
 
-func TestSearchTemplate_Only_SQLGeneration(t *testing.T) {
-	// Test that the SQL template correctly includes the Only filter
-	opts := SearchOptions{
-		Only: []string{
-			"A035FD3C-73C8-4F72-BECD-36B027AE1374",
-			"B035FD3C-73C8-4F72-BECD-36B027AE1375",
-		},
-		Limit: 10,
-	}
-
-	data, err := (*renderData)(&opts).Normalize()
-	if err != nil {
-		t.Fatalf("Normalize() failed: %v", err)
-	}
-
-	// Verify that our QueryArgs include the only parameter
-	args := data.QueryArgs()
-
-	var onlyArg interface{}
-	found := false
-	for _, arg := range args {
-		if arg.Name == "only" {
-			onlyArg = arg.Value
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		t.Fatal("QueryArgs() should include 'only' parameter")
-	}
-
-	// Verify the argument is not nil (UUIDArray should convert the slice)
-	if onlyArg == nil {
-		t.Error("'only' parameter should not be nil when Only slice is provided")
-	}
-}
-
 func TestSearchOptions_Only_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -216,7 +150,7 @@ func TestSearchOptions_Only_EdgeCases(t *testing.T) {
 				Omit: []string{"A035FD3C-73C8-4F72-BECD-36B027AE1374"},
 			},
 			wantErr: false,
-			desc:    "SQL should handle this case (Only will include it, Omit will exclude it - Omit should win)",
+			desc:    "Search should handle this case (Only will include it, Omit will exclude it - Omit should win)",
 		},
 		{
 			name: "Only with favorites filters",

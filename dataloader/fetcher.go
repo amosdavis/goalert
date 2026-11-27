@@ -16,9 +16,6 @@
 //	user2, err := userLoader.FetchOne(ctx, "user-id-2")
 //	user3, err := userLoader.FetchOne(ctx, "user-id-3")
 //
-//	// For database operations with a DB connection:
-//	dbLoader := dataloader.NewStoreLoaderWithDB(ctx, db, dbStore.FindMany, func(u User) string { return u.ID })
-//
 // For parameterized queries, use FetcherParam:
 //
 //	// Create a parameterized loader
@@ -36,8 +33,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/target/goalert/gadb"
 )
 
 type Loader[K comparable, V any] = Fetcher[K, V]
@@ -59,20 +54,6 @@ func NewStoreLoader[V any, K comparable](ctx context.Context, fetchMany FetchFun
 		FetchFunc: func(ctx context.Context, ids []K) ([]V, error) { return fetchMany(ctx, ids) },
 		IDFunc:    idFunc,
 	}
-}
-
-// NewStoreLoaderWithDB creates a new Fetcher that automatically passes a database
-// connection to the fetch function. This is a convenience wrapper around NewStoreLoader
-// for database-based loading operations.
-func NewStoreLoaderWithDB[V any, K comparable](
-	ctx context.Context,
-	db gadb.DBTX,
-	fetchMany func(context.Context, gadb.DBTX, []K) ([]V, error),
-	idFunc IDFunc[K, V],
-) *Fetcher[K, V] {
-	return NewStoreLoader(ctx, func(ctx context.Context, ids []K) ([]V, error) {
-		return fetchMany(ctx, db, ids)
-	}, idFunc)
 }
 
 // Fetcher provides batched loading of data with caching. It batches individual requests

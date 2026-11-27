@@ -228,7 +228,7 @@ func TestDeltaSchedules(t *testing.T) {
 func TestDeltaLease(t *testing.T) {
 	e := newEnv(t)
 	e.cfg.Maintenance.AlertAutoCloseDays, e.cfg.Maintenance.AlertCleanupDays = 1, 1
-	e.cfg.Maintenance.APIKeyExpireDays, e.cfg.Maintenance.ScheduleCleanupDays = 1, 1
+	e.cfg.Maintenance.ScheduleCleanupDays = 1
 	for _, task := range e.db.Tasks() {
 		require.NoError(t, task.Run(e.ctx()), task.Name)
 	}

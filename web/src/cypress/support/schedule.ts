@@ -82,36 +82,36 @@ function setScheduleNotificationRules(
     }
   }`
 
+  const rules = _rules.map((r) => {
+    let time = r.time
+    if (time === undefined) {
+      time = c.bool() ? randClock() : null
+    }
+
+    let weekdayFilter = r.weekdayFilter
+    if (weekdayFilter === undefined) {
+      weekdayFilter = time && c.bool() ? randWeekdayFilter() : null
+    }
+    return {
+      target: r.target ?? {
+        type: 'chanWebhook',
+        id: 'http://www.example.com',
+      },
+      weekdayFilter,
+      time,
+    }
+  })
+
   return cy
-    .getSlackChannels()
-    .then((channels: SlackChannel[]) => {
-      const rules = _rules.map((r) => {
-        let time = r.time
-        if (time === undefined) {
-          time = c.bool() ? randClock() : null
-        }
-
-        let weekdayFilter = r.weekdayFilter
-        if (weekdayFilter === undefined) {
-          weekdayFilter = time && c.bool() ? randWeekdayFilter() : null
-        }
-        return {
-          target: r.target ?? {
-            type: 'slackChannel',
-            id: c.pickone(channels).id,
-          },
-          weekdayFilter,
-          time,
-        }
-      })
-
-      return cy.graphql(mutation, {
+    .updateConfig({ Webhook: { Enable: true } })
+    .then(() =>
+      cy.graphql(mutation, {
         input: {
           scheduleID: schedule,
           rules,
         },
-      })
-    })
+      }),
+    )
     .then(() => cy.graphql(query, { id: schedule }))
     .then((res: GraphQLResponse) => res.schedule)
 }

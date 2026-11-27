@@ -219,7 +219,7 @@ func (t *DeltaTables) FindByDest(r filestore.Reader, dest gadb.DestV1) (Row, boo
 
 // NewDeltaStore returns a notification channel store on the Delta backend.
 func NewDeltaStore(db txn.DB, tables *DeltaTables, reg *nfydest.Registry) *Store {
-	return &Store{reg: reg, delta: &deltaChannels{db: db, reg: reg, DeltaTables: tables}}
+	return &Store{delta: &deltaChannels{db: db, reg: reg, DeltaTables: tables}}
 }
 
 type deltaChannels struct {

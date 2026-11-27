@@ -71,6 +71,8 @@ func TestWriteInteropTable(t *testing.T) {
 			Tags: []string{"db", "prod"}, Detail: testDetail{Note: "n", Count: 3}, Previous: &testDetail{Note: "p", Count: 1},
 		},
 		{ID: 2, Summary: "cpu", Created: at, Tags: []string{}, Detail: testDetail{}},
+		{ID: 3, Summary: "historical", Created: time.Date(1006, 1, 2, 3, 4, 5, 123456789, time.UTC), Tags: []string{}},
+		{ID: 4, Summary: "future", Created: time.Date(4006, 1, 2, 3, 4, 5, 123456789, time.UTC), Tags: []string{}},
 	}
 	userRows := []interopUser{{ID: "u1", Name: "Bob"}, {ID: "u2", Name: "Jane"}, {ID: "u3", Name: "Ann"}}
 
@@ -124,6 +126,10 @@ func TestWriteInteropTable(t *testing.T) {
 		}
 		return m
 	}
+	var expectAlerts []any
+	for _, a := range alertRows {
+		expectAlerts = append(expectAlerts, expectAlert(a))
+	}
 	var expectUsers []any
 	for _, u := range userRows {
 		expectUsers = append(expectUsers, map[string]any{"id": u.ID, "name": u.Name})
@@ -132,7 +138,7 @@ func TestWriteInteropTable(t *testing.T) {
 		"version": 3,
 		"files":   []string{a1.Path, u2.Path, u3.Path},
 		"tables": map[string]any{
-			"alerts": []any{expectAlert(alertRows[0]), expectAlert(alertRows[1])},
+			"alerts": expectAlerts,
 			"users":  expectUsers,
 		},
 	}

@@ -319,7 +319,7 @@ func (t *DeltaTables) FindByDestArgs(r filestore.Reader, destType string, args m
 // NewDeltaStore returns a contact method store on the Delta backend.
 // maxPerUser is the contact_methods_per_user limit in r, or -1 for none.
 func NewDeltaStore(db txn.DB, tables *DeltaTables, reg *nfydest.Registry, maxPerUser func(r filestore.Reader) int) *Store {
-	return &Store{reg: reg, delta: &deltaMethods{db: db, reg: reg, DeltaTables: tables, maxPerUser: maxPerUser}}
+	return &Store{delta: &deltaMethods{db: db, reg: reg, DeltaTables: tables, maxPerUser: maxPerUser}}
 }
 
 type deltaMethods struct {

@@ -221,14 +221,15 @@ the switchover system (`swo/`), and River.
 - **F22 Behavior drift.** About 380 queries, 59 triggers and 67 functions are
   rewritten by hand, and some behavior changes along the way. *Rule:* the 141
   smoke tests are the acceptance check. They run against the new backend, and
-  no test is deleted or weakened to make it pass.
+  no test is deleted or weakened to make it pass. The four that tested what
+  migrations do to existing data went with the migrations (F24).
 - **F23 Codebase left half-migrated.** *Rule:* put a storage interface at each
   package boundary. A running GoAlert uses one backend for everything, never a
   mix, because a single change often spans several packages. Progress is
   measured by how many smoke tests pass on the new backend.
 - **F24 Features removed without saying so.** Switchover (`swo/`), the River UI
   and the pgdump/resetdb devtools only make sense with Postgres. *Rule:* list
-  every feature that is removed or changed.
+  every feature that is removed or changed ([below](#removed-with-postgres)).
 
 ### G. Several pods on one table
 
@@ -401,3 +402,150 @@ the switchover system (`swo/`), and River.
   has expired, by any pod that runs an engine, and given back on a clean stop. A
   pod that can't hold or see a current lease, or whose cycles keep failing, says
   so in its health and metrics.
+
+### K. Removing Postgres
+
+- **F56 Removing Postgres removes what the Delta backend needs.** Code generated
+  from Postgres's schema and queries, and packages named for SQL, carry types
+  and behavior that the Delta path uses: the parameters and rows of alert
+  statistics, pending messages and signals (`gadb`), and turning a broken
+  constraint into a message for the user (`sqlutil.MapError`, which the
+  filestore's constraint errors speak to, F8). Deleting their source breaks the
+  next regeneration, or quietly gives users raw errors. *Rule:* before generated
+  or Postgres-only code is deleted, what the Delta path uses moves into
+  hand-written code; only what nothing uses is deleted, and every package is
+  built and vetted after. A setting only Postgres had is removed with its flag
+  and environment binding, never silently forwarded to another backend (F48).
+
+### L. Removing features (2026-11-27)
+
+GoAlert is made smaller: alert sources, logins, integrations and extras the
+owner does not use are removed ([below](#removed-on-2026-11-27)). Removing code
+can fail in ways of its own:
+
+- **F57 A removed alert source still answers success.** A monitor keeps posting
+  to a removed endpoint (Grafana, Prometheus Alertmanager, Site24x7, email,
+  heartbeats, `/v1/api/alerts`), and the alert is lost if anything replies 2xx
+  (F1). *Rule:* a removed endpoint leaves the router, so its callers get an
+  error their own retries and monitoring can see. Nothing that accepted alerts
+  is replaced by a handler that discards them, and an integration key of a
+  removed type is never treated as a generic one.
+- **F58 A stored setting from a removed feature stops startup.** A saved config
+  names `GitHub.Enable` or `Twilio.SMSCarrierLookup`, or a system limit row
+  names `heartbeat_monitors_per_service`. *Rule:* a stored config still loads
+  when it names removed settings, and they are dropped the next time it is
+  saved. A setting that is still read is never removed from the config.
+- **F59 The UI or an API client asks for a removed field.** GraphQL refuses the
+  whole query when one field in it is unknown, so one leftover field blanks a
+  page. *Rule:* the GraphQL schema, its generated Go and the TypeScript types
+  are regenerated, the web app type-checks, nothing in `web/src` names a
+  removed type or operation, and the Cypress and Playwright suites pass.
+- **F60 Half a feature is left behind.** Its table, store, engine module,
+  cleanup task, config setting, limit, experimental flag, route or document
+  stays, still costing a read at startup, a commit, or a setting that does
+  nothing. *Rule:* a removed feature goes entirely. A search for its names
+  finds only the record of its removal.
+- **F61 Removing a feature removes what a kept one needs.** Email
+  notifications share code with email alerts, SMS notifications share their
+  inbound handler with reply codes, and the cleanup manager also expires
+  sessions. *Rule:* before shared code is deleted, what the kept features use
+  of it is found and kept. A smoke test is deleted only when everything it
+  checks was removed. Tests of kept behavior are never deleted or weakened
+  (F22).
+- **F62 A message promises what no longer exists.** An SMS still says "reply
+  1a to acknowledge", or a reply to one is silently ignored, so the person
+  thinks the alert is handled while it keeps escalating. *Rule:* alert
+  messages offer no reply codes. STOP and START are still handled, since
+  carriers require them. Any other reply is answered, within the existing
+  reply limit, with a short note that replies are not supported.
+- **F63 A safety net goes with a feature.** Notices warn that a service or
+  escalation policy would page nobody; heartbeat monitors page when a source
+  goes quiet. *Rule:* only what the owner chose to remove goes, and anything
+  that warns about paging stays (notices stay). Removing heartbeat monitors is
+  listed below, so whoever relied on them watches their sources another way.
+- **F64 A removed login locks people out.** Someone who only ever signed in
+  with GitHub, or through a linked account, can't sign in. *Rule:* username
+  and password, OIDC and API keys stay. The removal is listed below, and
+  `goalert add-user --user-id` gives an existing user a password.
+- **F65 A removed experimental flag stops startup.** A deployment still passes
+  `--experimental=univ-keys` with `GOALERT_STRICT_EXPERIMENTAL` set. *Rule:*
+  a removed flag is refused like any unknown flag, and the message names it.
+
+## Removed with Postgres
+
+On 2026-11-26 GoAlert stopped supporting Postgres: its data is only ever in a
+Delta table (fresh installs, F18). What went with it (F24):
+
+- **Postgres.** `--db-url`, `--db-url-next`, `GOALERT_DB_URL`, `--db-max-open`
+  and `--db-max-idle` are gone. `--storage-objects` is required.
+- **Migrations.** `goalert migrate`, `goalert export-migrations`,
+  `goalert-migrate` and `migrate/` with `schema.sql`. The schema the parity
+  test checks against is recorded in [filestore-inventory.md](filestore-inventory.md)
+  (F51). `goalert version` no longer prints a migration.
+- **Switchover.** `swo/`, the GraphQL `swoStatus` query and `swoAction`
+  mutation, the Admin → Switchover page and its guide, `docs/switchover.md`,
+  `Procfile.swo` and `make start-swo`.
+- **River.** The job queue, the River UI at `/admin/riverui` (and its CSP
+  hashes, and the dev-only Job Queues link). The engine finds its work in the
+  data (F52).
+- **`LISTEN/NOTIFY`.** A config change reached other instances through it;
+  pods follow the Delta log instead.
+- **`--region-name`** is ignored, with a warning: one pod at a time runs the
+  engine and sends messages, whatever its region (F28).
+- **Postgres's error codes.** Retrying transaction-rollback, connection and lock
+  timeout errors (SQLSTATE classes 40 and 08, `55P03`), treating a canceled
+  query (`57014`) as a client disconnect, and the `SQLErrDetails` log field.
+  Constraint errors keep their Postgres names and messages (F8).
+- **Devtools.** `pgdump-lite`, `psql-lite`, `pgmocktime`, `resetdb` (its random
+  demo data has no Delta equivalent yet), `ordermigrations`, `fetchcounts`,
+  `db-url-set-db`, `procwrap`, sqlc with `sqlc.yaml`, River's CLI, `speedbump`, the
+  `postgres://` scheme of `waitfor`, the Makefile targets `postgres`,
+  `postgres-reset`, `regendb`, `resetdb`, `db-schema`, `new-migration`, `sqlc`,
+  `config.json.bak` and `test-migrations`, the migrations workflow and the
+  schema checks of `codecheck.sh`. `make start` keeps its data in
+  `bin/dev-storage` (`make dev-storage`).
+- **The demo image** has no Postgres: it starts with an empty table and the
+  logins admin and user, without random data.
+- **Smoke tests of what migrations do to existing data**: `TestMigrations`,
+  `TestInProgress`, `TestStatusInProgress` and `TestNCDedup`, with
+  `test/smoke/migratetest`, as the plan said (filestore-plan.md, phase 0). The
+  harness has no `SMOKE_STORAGE=postgres`, `NewMigrationHarness`, `DBURL` or job
+  helpers (`WaitForJobs`, `CountJobs`, `EnqueueJob`).
+- **Go APIs.** `app.NewApp`, `App.DB`, `engine.NewEngine`, the stores' Postgres
+  constructors (`NewStore`, `NewDB`), `txn.DB.BeginTx`, `txn/sqltxn`,
+  `util/sqldrv`, `util.Prepare`, `engine/processinglock`, the SQL parts of
+  `util/sqlutil`, `search`'s query templates, `dataloader.NewStoreLoaderWithDB`,
+  `timeutil.ISODuration.PGXInterval` and the SQL `Scan`/`Value` of
+  `timeutil.WeekdayFilter`. The types the Delta stores still use are in
+  `gadb/values.go` (F56).
+
+**Browser harnesses:** Cypress uses `devtools/cyserver`, an in-memory Delta
+installation with fixture and fake-clock controls, and retains coverage through
+`bin/cyserver.cover`. Playwright uses the file-backed table in
+`bin/integration-storage`; `make reset-integration` creates it with the test
+logins. The switchover browser test and its extra server are gone.
+
+## Removed on 2026-11-27
+
+To make GoAlert smaller, these features are removed (F24, F57-F65):
+
+- **Alert sources.** Grafana, Prometheus Alertmanager and Site24x7 keys, email
+  alerts (the Mailgun webhook, the built-in SMTP server and its
+  `--smtp-listen*`, `--email-integration-domain` and
+  `--smtp-additional-domains` flags), heartbeat monitors, and universal keys
+  with their rules, expressions, signals and the `univ-keys` experimental
+  flag. The generic API (`/api/v2/generic/incoming`) and alerts made in the UI
+  or GraphQL remain.
+- **Logins.** GitHub, account linking, and calendar subscriptions with their
+  tokens and feeds. Username and password, OIDC and GraphQL API keys remain.
+- **The system API.** The gRPC server (`--listen-sysapi` and its certificate
+  flags) and `goalert gen-cert`.
+- **`goalert monitor`** (`remotemonitor`).
+- **The `/v1/...` routes** that duplicated `/api/v2`.
+- **Twilio extras.** SMS reply codes (acknowledging or closing by text), carrier
+  lookup, per-carrier from numbers, RCS, the voice name and language settings,
+  and the admin tools that send a test SMS or look up a number. STOP and START
+  still work (F62).
+- **Alert metrics.** The service metrics and alert count pages and the engine
+  module that computed their data.
+- **User avatars**, **Google Analytics** and **the Feedback link**.

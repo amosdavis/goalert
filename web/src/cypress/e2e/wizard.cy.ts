@@ -8,14 +8,6 @@ const keys = [
     label: 'Generic API',
     value: 'generic',
   },
-  {
-    label: 'Grafana',
-    value: 'grafana',
-  },
-  {
-    label: 'Email',
-    value: 'email',
-  },
 ]
 
 function testWizard(): void {

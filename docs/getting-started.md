@@ -6,64 +6,53 @@ Most options in GoAlert are configured through the UI in the Admin page. In this
 those options will be referenced in the format: `<Section.Option Name>` where `Section` is the section/header within the admin page and
 `Option Name` refers to the label of the individual option being referenced.
 
-The only hard requirement for GoAlert is a running Postgres instance/database.
+The only hard requirement for GoAlert is a place to keep its data: an object store such as a GCS bucket or an Azure storage account, where GoAlert keeps a Delta table ([storage-backends.md](./storage-backends.md) lists every option).
 
 ### Running Behind a Proxy
 
 When running GoAlert behind a reverse proxy, make sure the `--public-url` includes the prefix path, if applicable. Ensure the proxy does _not_ trim the prefix before passing the request to GoAlert; it will be handled internally.
 
-## Database
+## Storage
 
-We recommend using Postgres 17 (or newer) for new installations as newer features will be used in the future.
+GoAlert keeps all of its data in one Delta table in the storage that `--storage-objects` names, for example `gs://BUCKET/PREFIX` or an Azure URL ([storage-backends.md](./storage-backends.md)). Every instance of one GoAlert must name the same storage, and no other program may write to it. Create it once, before the first start:
 
-GoAlert requires the `pgcrypto` extension enabled (you can enable it with `CREATE EXTENSION pgcrypto;`).
-Upon first startup, it will attempt to enable the extension if it's not already enabled, but this requires elevated privileges that may not be available
-in your setup.
+```bash
+goalert create-storage --storage-objects gs://my-bucket/goalert
+```
 
-Note: If you are using default install of Postgres on Debian (maybe others) you may run into an issue where the OOM (out of memory) killer terminates the supervisor process. More information along with steps to resolve can be found [here](https://www.postgresql.org/docs/current/kernel-resources.html#LINUX-MEMORY-OVERCOMMIT).
+Nothing else creates it, so an instance pointed at the wrong place fails to start instead of starting a second, empty GoAlert.
 
-### Switchover
-
-GoAlert natively supports database switchover functionality, allowing you to switch between databases with minimal disruption. This can be especially useful for maintenance, migration, or certain disaster recovery scenarios (it does require both old and new DB to be usable).
-
-To perform a database switchover, GoAlert offers an easy-to-follow, step-by-step guide that you can find in the [Switchover Guide](./switchover.md). We strongly recommend reviewing this guide to understand the best practices and the sequence of steps involved.
-
-Further information about the theory of operation and implementation is available in the [`swo` package README](../swo/README.md).
+GoAlert no longer supports Postgres: `--db-url`, its related flags and environment variables are gone, and there is no import of an existing Postgres database. Database switchover was removed with it.
 
 ### Encryption of Sensitive Data
 
-It is also recommended to set the `--data-encryption-key` which is used to encrypt sensitive information (like API keys) before transmitting to the database.
+It is also recommended to set the `--data-encryption-key` which is used to encrypt sensitive information (like API keys) before it is written to storage.
 
 It can be set to any value as it is internally passed through a key derivation function. All instances of GoAlert must be configured to use the same key for things to work properly.
 
 ## Running GoAlert
 
-To run GoAlert, you can start the binary directly, or from a container image. You will need to specify the `--db-url`, `--public-url`, and `--data-encryption-key` you plan to use.
+To run GoAlert, you can start the binary directly, or from a container image. You will need to specify the `--storage-objects`, `--public-url`, and `--data-encryption-key` you plan to use.
 
-The following examples use `postgres://goalert@localhost/goalert` and `super-awesome-secret-key` respectively.
-
-More information on Postgres connection strings can be found [here](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING).
+The following examples use `gs://my-bucket/goalert` and `super-awesome-secret-key` respectively.
 
 Binary:
 
 ```bash
-goalert --db-url postgres://goalert@localhost/goalert --data-encryption-key super-awesome-secret-key --public-url https://goalert.example.com
+goalert --storage-objects gs://my-bucket/goalert --data-encryption-key super-awesome-secret-key --public-url https://goalert.example.com
 ```
 
 Container:
 
 ```bash
-docker run -p 8081:8081 -e GOALERT_DB_URL=postgres://goalert@localhost/goalert -e GOALERT_DATA_ENCRYPTION_KEY=super-awesome-secret-key -e GOALERT_PUBLIC_URL=https://goalert.example.com goalert/goalert
+docker run -p 8081:8081 -e GOALERT_STORAGE_OBJECTS=gs://my-bucket/goalert -e GOALERT_DATA_ENCRYPTION_KEY=super-awesome-secret-key -e GOALERT_PUBLIC_URL=https://goalert.example.com goalert/goalert
 ```
 
-You should see migrations applied followed by a `Listening.` message and an engine cycle start and end.
+You should see a `Listening.` message and an engine cycle start and end.
 
 ### API Only Mode
 
-When running multiple instances of GoAlert (e.g. in a kubernetes cluster) it is recommended to run a single instance in the default mode, and the rest with the `--api-only` flag set.
-
-While it is safe to run multiple "engine" instances simultaneously, it is generally unnecessary and can cause unwanted contention. It is useful, however, to run an "engine" instance
-in separate geographic regions or availability zones. If messages fail to send from one (e.g. network outage), they may be retried in the other this way.
+Several instances of GoAlert (e.g. in a kubernetes cluster) can share the storage. One at a time runs the engine: it holds a lease, and if it stops, another instance takes over. Instances started with the `--api-only` flag serve the API and UI but never run the engine.
 
 ## First Time Login
 
@@ -91,19 +80,19 @@ Flags:
 Global Flags:
       --data-encryption-key string       Encryption key for sensitive data like signing keys. Used for encrypting new and decrypting existing data.
       --data-encryption-key-old string   Fallback key. Used for decrypting existing data only.
-      --db-url string                    Connection string for Postgres.
-      --db-url-next string               Connection string for the *next* Postgres server (enables DB switchover mode).
+      --storage-objects string           Where GoAlert keeps its data: the URL of an object store, such as gs://BUCKET/PREFIX (see docs/storage-backends.md).
+      --storage-log string               What decides commits: empty for the Delta log in the object store, or the URL of a log (see docs/storage-backends.md).
       --json                             Log in JSON format.
       --stack-traces                     Enables stack traces with all error logs.
   -v, --verbose                          Enable verbose logging.
 ```
 
-Be sure to specify the `--admin` flag, as well as `--db-url` you plan to use.
+Be sure to specify the `--admin` flag, as well as `--storage-objects` you plan to use.
 
 Example usage:
 
 ```bash
-goalert add-user --db-url $GOALERT_DB_URL --admin --user admin --email admin@example.com
+goalert add-user --storage-objects $GOALERT_STORAGE_OBJECTS --admin --user admin --email admin@example.com
 # Prompt will be given for password
 ```
 
@@ -183,42 +172,6 @@ To configure Mailgun to forward to GoAlert:
 
 ### Email/SMTP
 
-GoAlert supports creating alerts from emails received directly as a SMTP server (as an alternative to using Mailgun).
-
-You'll need to create an MX-type DNS record for your GoAlert server.
-
-Note: This SMTP server only handles incoming messages/generating alerts; it will not send outgoing mail. For notifying users via email, you can configure an external SMTP server integration in the admin UI.
-
-To enable the built-in SMTP ingress, pass the `--smtp-listen` and/or `--smtp-listen-tls` flag with the address to listen on, e.g. `--smtp-listen=0.0.0.0:9025`. You may use both flags with different ports. You must also provide a domain name with `--email-integration-domain`, to be used for generating the alert-creating email addresses.
-
-If you use the TLS variant, you must also pass the TLS cert and key. To do so, use either `--smtp-tls-cert-file` and `--smtp-tls-key-file` (with paths to the cert and key files) or `--smtp-tls-cert-data` and `--smtp-tls-key-data` to pass the cert and key data directly as strings. The cert and key must be PEM-encoded.
-
-By default, only the `--email-integration-domain` will be allowed for the TO address on incoming emails. To allow other domains, you can pass a comma-separated list of domains to `--smtp-additional-domains`, e.g. `--smtp-allowed-domains="example.com,foo.io"`. Messages addressed to domains not matching the given list will be rejected.
-
-### Slack
-
-GoAlert supports generating a notification to a Slack channel as part of the Escalation Policy.
-
-For the time being you will need to create your own Slack app in your workspace for GoAlert to interface with.
-
-To configure Slack, first [create a workspace](https://slack.com/create#email) or log in to an existing one.
-
-1. Open the **Slack** section of the GoAlert Admin page
-2. Click `App Manifest`
-3. Click `Create New App`
-4. Follow the prompts to install the app in your workspace
-
-You may now configure the **Slack** section of the GoAlert Admin page.
-
-- You may find your **Access Token** under **OAuth & Permissions** -- it is the **Bot User OAuth Access Token**
-- **Client ID**, **Client Secret**, and **Signing Secret** are found under **Basic Information** in the **App Credentials** section.
-
-Be sure to **Enable** Slack using the toggle.
-
-You must invite the new app (e.g. GoAlert) by typing `/invite @GoAlert` in the desired Slack channel(s).
-
-To have `Interactive Messages` work, you will need to link Slack and GoAlert users using a tool like `goalert-slack-email-sync` in this repo. This will be made easier (e.g., user-initiated) in the future.
-
 ### Twilio
 
 GoAlert relies on bidirectional communication (outbound & inbound) with certain third-party services in order to provide convenient alerting capabilities.
@@ -257,49 +210,32 @@ Additional options are available for running GoAlert in the form of CLI flags. T
 
 | Flag                         | Environment Variable               | Description                                                                                                                                                                   |
 | ---------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`--db-url`**               | `GOALERT_DB_URL`                   | Connection string for Postgres.                                                                                                                                               |
-| **`--db-url-next`**          | `GOALERT_DB_URL_NEXT`              | Connection string for the _next_ Postgres server (enables DB switchover mode).                                                                                                |
 | **`--public-url`**           | `GOALERT_PUBLIC_URL`               | Externally routable URL to the application. Used for validating callback requests, links, auth, and prefix calculation.                                                       |
-| `--data-encryption-key`      | `GOALERT_DATA_ENCRYPTION_KEY`      | Used to generate an encryption key for sensitive data like signing keys. Can be any length. only use this when performing a switchover.                                       |
+| **`--storage-objects`**    | `GOALERT_STORAGE_OBJECTS`          | Where GoAlert keeps its data: the URL of an object store, such as gs://BUCKET/PREFIX (see docs/storage-backends.md).                                                          |
+| `--storage-log`              | `GOALERT_STORAGE_LOG`              | What decides commits: empty for the Delta log in the object store, or the URL of a log (see docs/storage-backends.md).                                                        |
+| `--pod-name`                 | `GOALERT_POD_NAME`                 | Names this instance in the commits it writes (default is the host's name).                                                                                                    |
+| `--data-encryption-key`      | `GOALERT_DATA_ENCRYPTION_KEY`      | Used to generate an encryption key for sensitive data like signing keys. Can be any length.                                                                                    |
 | `--data-encryption-key-old`  | `GOALERT_DATA_ENCRYPTION_KEY_OLD`  | Fallback key. Used for decrypting existing data only. only necessary when changing --data-encryption-key.                                                                     |
 | `--api-only`                 | `GOALERT_API_ONLY`                 | Starts in API-only mode (schedules & notifications will not be processed). Useful in clusters.                                                                                |
-| `--db-max-idle`              | `GOALERT_DB_MAX_IDLE`              | Max idle DB connections. (default 5)                                                                                                                                          |
-| `--db-max-open`              | `GOALERT_DB_MAX_OPEN`              | Max open DB connections. (default 15)                                                                                                                                         |
 | `--disable-https-redirect`   | `GOALERT_DISABLE_HTTPS_REDIRECT`   | Disable automatic HTTPS redirects.                                                                                                                                            |
 | `--enable-secure-headers`    | `GOALERT_ENABLE_SECURE_HEADERS`    | Enable secure headers (X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Content-Security-Policy).                                                                   |
-| `--email-integration-domain` | `GOALERT_EMAIL_INTEGRATION_DOMAIN` | This flag is required to set the domain used for email integration keys when --smtp-listen or --smtp-listen-tls are set.                                                      |
 | `--engine-cycle-time`        | `GOALERT_ENGINE_CYCLE_TIME`        | Time between engine cycles. (default 5s)                                                                                                                                      |
 | `--experimental`             | `GOALERT_EXPERIMENTAL`             | Enable experimental features.                                                                                                                                                 |
-| `--github-base-url`          | `GOALERT_GITHUB_BASE_URL`          | Base URL for GitHub auth and API calls.                                                                                                                                       |
 | `--help`                     | -                                  | Help about any command                                                                                                                                                        |
 | `--json`                     | `GOALERT_JSON`                     | Log in JSON format.                                                                                                                                                           |
 | `--list-experimental`        | `GOALERT_LIST_EXPERIMENTAL`        | List experimental features.                                                                                                                                                   |
 | `--listen`                   | `GOALERT_LISTEN`                   | Listen address:port for the application. (default "localhost:8081")                                                                                                           |
 | `--listen-prometheus`        | `GOALERT_LISTEN_PROMETHEUS`        | Bind address for Prometheus metrics.                                                                                                                                          |
-| `--listen-sysapi`            | `GOALERT_LISTEN_SYSAPI`            | (Experimental) Listen address:port for the system API (gRPC).                                                                                                                 |
 | `--listen-tls`               | `GOALERT_LISTEN_TLS`               | HTTPS listen address:port for the application. Requires setting --tls-cert-data and --tls-key-data OR --tls-cert-file and --tls-key-file.                                     |
 | `--log-engine-cycles`        | `GOALERT_LOG_ENGINE_CYCLES`        | Log start and end of each engine cycle.                                                                                                                                       |
 | `--log-errors-only`          | `GOALERT_LOG_ERRORS_ONLY`          | Only log errors (superseeds other flags).                                                                                                                                     |
 | `--log-requests`             | `GOALERT_LOG_REQUESTS`             | Log all HTTP requests. If false, requests will be logged for debug/trace contexts only.                                                                                       |
 | `--max-request-body-bytes`   | `GOALERT_MAX_REQUEST_BODY_BYTES`   | Max body size for all incoming requests (in bytes). Set to 0 to disable limit. (default 262144)                                                                               |
 | `--max-request-header-bytes` | `GOALERT_MAX_REQUEST_HEADER_BYTES` | Max header size for all incoming requests (in bytes). Set to 0 to disable limit. (default 4096)                                                                               |
-| `--region-name`              | `GOALERT_REGION_NAME`              | Name of region for message processing (case sensitive). Only one instance per-region-name will process outgoing messages. (default "default")                                 |
-| `--slack-base-url`           | `GOALERT_SLACK_BASE_URL`           | Override the Slack base URL.                                                                                                                                                  |
-| `--smtp-additional-domains`  | `GOALERT_SMTP_ADDITIONAL_DOMAINS`  | Specifies additional destination domains that are allowed for the SMTP server. For multiple domains, separate them with a comma, e.g., "domain1.com,domain2.org,domain3.net". |
-| `--smtp-listen`              | `GOALERT_SMTP_LISTEN`              | Listen address:port for an internal SMTP server.                                                                                                                              |
-| `--smtp-listen-tls`          | `GOALERT_SMTP_LISTEN_TLS`          | SMTPS listen address:port for an internal SMTP server. Requires setting --smtp-tls-cert-data and --smtp-tls-key-data OR --smtp-tls-cert-file and --smtp-tls-key-file.         |
-| `--smtp-max-recipients`      | `GOALERT_SMTP_MAX_RECIPIENTS`      | Specifies the maximum number of recipients allowed per message. (default 1)                                                                                                   |
-| `--smtp-tls-cert-data`       | `GOALERT_SMTP_TLS_CERT_DATA`       | Specifies a PEM-encoded certificate. Has no effect if --smtp-listen-tls is unset.                                                                                             |
-| `--smtp-tls-cert-file`       | `GOALERT_SMTP_TLS_CERT_FILE`       | Specifies a path to a PEM-encoded certificate. Has no effect if --smtp-listen-tls is unset.                                                                                   |
-| `--smtp-tls-key-data`        | `GOALERT_SMTP_TLS_KEY_DATA`        | Specifies a PEM-encoded private key. Has no effect if --smtp-listen-tls is unset.                                                                                             |
-| `--smtp-tls-key-file`        | `GOALERT_SMTP_TLS_KEY_FILE`        | Specifies a path to a PEM-encoded private key file. Has no effect if --smtp-listen-tls is unset.                                                                              |
 | `--stack-traces`             | `GOALERT_STACK_TRACES`             | Enables stack traces with all error logs.                                                                                                                                     |
 | `--status-addr`              | `GOALERT_STATUS_ADDR`              | Open a port to emit status updates. Connections are closed when the server shuts down. Can be used to keep containers running until GoAlert has exited.                       |
 | `--strict-experimental`      | `GOALERT_STRICT_EXPERIMENTAL`      | Fail to start if unknown experimental features are specified.                                                                                                                 |
 | `--stub-notifiers`           | `GOALERT_STUB_NOTIFIERS`           | If true, notification senders will be replaced with a stub notifier that always succeeds (useful for staging/sandbox environments).                                           |
-| `--sysapi-ca-file`           | `GOALERT_SYSAPI_CA_FILE`           | (Experimental) Specifies a path to a PEM-encoded certificate(s) to authorize connections from plugin services.                                                                |
-| `--sysapi-cert-file`         | `GOALERT_SYSAPI_CERT_FILE`         | (Experimental) Specifies a path to a PEM-encoded certificate to use when connecting to plugin services.                                                                       |
-| `--sysapi-key-file`          | `GOALERT_SYSAPI_KEY_FILE`          | (Experimental) Specifies a path to a PEM-encoded private key file use when connecting to plugin services.                                                                     |
 | `--tls-cert-data`            | `GOALERT_TLS_CERT_DATA`            | Specifies a PEM-encoded certificate. Has no effect if --listen-tls is unset.                                                                                                  |
 | `--tls-cert-file`            | `GOALERT_TLS_CERT_FILE`            | Specifies a path to a PEM-encoded certificate. Has no effect if --listen-tls is unset.                                                                                        |
 | `--tls-key-data`             | `GOALERT_TLS_KEY_DATA`             | Specifies a PEM-encoded private key. Has no effect if --listen-tls is unset.                                                                                                  |

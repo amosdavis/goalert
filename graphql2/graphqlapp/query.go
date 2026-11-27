@@ -6,7 +6,6 @@ import (
 
 	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/graphql2"
-	"github.com/target/goalert/notification"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/validation/validate"
 
@@ -63,34 +62,6 @@ func (a *Query) ExperimentalFlags(ctx context.Context) ([]string, error) {
 	}
 
 	return flags, nil
-}
-
-func (a *Query) LinkAccountInfo(ctx context.Context, token string) (*graphql2.LinkAccountInfo, error) {
-	m, err := a.AuthLinkStore.FindLinkMetadata(ctx, token)
-	if err != nil {
-		return nil, err
-	}
-	if m == nil {
-		return nil, nil
-	}
-
-	info := &graphql2.LinkAccountInfo{
-		UserDetails: m.UserDetails,
-	}
-	if m.AlertID > 0 {
-		info.AlertID = &m.AlertID
-	}
-	var s graphql2.AlertStatus
-	switch m.AlertAction {
-	case notification.ResultAcknowledge.String():
-		s = graphql2.AlertStatusStatusAcknowledged
-		info.AlertNewStatus = &s
-	case notification.ResultResolve.String():
-		s = graphql2.AlertStatusStatusClosed
-		info.AlertNewStatus = &s
-	}
-
-	return info, nil
 }
 
 func (a *Query) AuthSubjectsForProvider(ctx context.Context, _first *int, _after *string, providerID string) (conn *graphql2.AuthSubjectConnection, err error) {

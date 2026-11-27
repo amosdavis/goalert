@@ -173,7 +173,7 @@ export const Disabled: Story = {
       await canvas.findByPlaceholderText('foobar@example.com'),
     ).toBeDisabled()
     await expect(
-      await canvas.findByPlaceholderText('slack user ID'),
+      await canvas.findByPlaceholderText('user ID'),
     ).toBeDisabled()
     await expect(
       await canvas.findByLabelText('Send alert status updates'),

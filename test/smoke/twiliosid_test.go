@@ -56,8 +56,6 @@ func TestTwilioSID(t *testing.T) {
 
 	// should use a messaging service number
 	assert.NotEqual(t, h.TwilioNumber(""), sms.From())
-	sms.ThenReply("ack 1").
-		ThenExpect("acknowledged")
 
 	d1.ExpectVoice("testing").
 		ThenPress("6").

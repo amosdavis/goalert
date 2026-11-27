@@ -2,7 +2,6 @@ package timeutil
 
 import (
 	"bytes"
-	"database/sql/driver"
 	"encoding"
 	"fmt"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/99designs/gqlgen/graphql"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation"
 )
 
@@ -264,35 +262,4 @@ func (f WeekdayFilter) String() string {
 	flushChain()
 
 	return strings.Join(days, ",")
-}
-
-// Value converts the WeekdayFilter to a DB array of bool.
-func (f WeekdayFilter) Value() (driver.Value, error) {
-	return sqlutil.BoolArray{
-		f[time.Sunday] != 0,
-		f[time.Monday] != 0,
-		f[time.Tuesday] != 0,
-		f[time.Wednesday] != 0,
-		f[time.Thursday] != 0,
-		f[time.Friday] != 0,
-		f[time.Saturday] != 0,
-	}.Value()
-}
-
-// Scan scans the WeekdayFilter from a DB array of bool.
-func (f *WeekdayFilter) Scan(src interface{}) error {
-	var b sqlutil.BoolArray
-	err := b.Scan(src)
-	if err != nil {
-		return err
-	}
-	for i := range f {
-		if i < len(b) && b[i] {
-			f[i] = 1
-		} else {
-			f[i] = 0
-		}
-	}
-
-	return nil
 }

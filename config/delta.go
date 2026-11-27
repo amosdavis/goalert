@@ -54,10 +54,10 @@ func (t *DeltaTables) ReEncrypt(tx *filestore.Tx, keys keyring.Keys) error {
 	return nil
 }
 
-// NewDeltaStore returns a config store on the Delta backend; cfg.DB is not
-// used. changes, from filestore.DeltaDB.Changes("config"), makes every pod
-// reload a new config version at once, as trg_config_update's NOTIFY does on
-// Postgres; without it, pods pick it up within a minute.
+// NewDeltaStore returns a config store on the Delta backend. changes, from
+// filestore.DeltaDB.Changes("config"), makes every pod reload a new config
+// version at once, as trg_config_update's NOTIFY did on Postgres; without it,
+// pods pick it up within a minute.
 func NewDeltaStore(ctx context.Context, cfg StoreConfig, db txn.DB, tables *DeltaTables, changes <-chan struct{}) (*Store, error) {
 	s := newStore(cfg, db)
 	s.delta, s.changes = tables, changes

@@ -3,7 +3,6 @@ package notification
 import (
 	"context"
 
-	"github.com/target/goalert/auth/authlink"
 	"github.com/target/goalert/gadb"
 )
 
@@ -17,9 +16,6 @@ type Receiver interface {
 
 	// ReceiveSubject records a response to a previously sent message from a provider/subject (e.g. Slack user).
 	ReceiveSubject(ctx context.Context, providerID, subjectID, callbackID string, result Result) error
-
-	// AuthLinkURL will generate a URL to link a provider and subject to a GoAlert user.
-	AuthLinkURL(ctx context.Context, providerID, subjectID string, meta authlink.Metadata) (string, error)
 
 	// Start indicates a user has opted-in for notifications to this contact method.
 	Start(context.Context, gadb.DestV1) error

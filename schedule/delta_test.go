@@ -21,7 +21,6 @@ import (
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/txn/deltatxn"
 	"github.com/target/goalert/util/errutil"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/util/timeutil"
 )
 
@@ -82,9 +81,9 @@ func createDeltaSchedule(t *testing.T, s *Store, name string) *Schedule {
 
 func requireConstraint(t *testing.T, err error, name string) {
 	t.Helper()
-	dbErr := sqlutil.MapError(err)
-	require.NotNil(t, dbErr, "expected a constraint error, got %v", err)
-	assert.Equal(t, name, dbErr.ConstraintName)
+	var ce interface{ ConstraintName() string }
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, name, ce.ConstraintName())
 }
 
 func scheduleIDs(schedules []Schedule) []string {

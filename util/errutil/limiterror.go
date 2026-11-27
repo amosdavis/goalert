@@ -79,16 +79,8 @@ func (l *limitErr) Error() string {
 		return "too many unacknowledged alerts for this service"
 	case limit.TargetsPerSchedule:
 		return "too many targets on this schedule"
-	case limit.HeartbeatMonitorsPerService:
-		return "too many heartbeat monitors on this service"
 	case limit.UserOverridesPerSchedule:
 		return "too many user overrides on this schedule"
-	case limit.CalendarSubscriptionsPerUser:
-		return "too many calendar subscriptions for this user"
-	case limit.PendingSignalsPerService:
-		return "too many pending signals for this service"
-	case limit.PendingSignalsPerDestPerService:
-		return "too many pending signals for this destination on this service"
 	}
 
 	return "exceeded limit"

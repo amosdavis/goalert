@@ -12,9 +12,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/deltastores"
-	"github.com/target/goalert/engine"
 	"github.com/target/goalert/filestore"
-	"github.com/target/goalert/notification"
+
 	"github.com/target/goalert/notification/nfydest"
 	"github.com/target/goalert/objstore"
 	"github.com/target/goalert/storagebackend"
@@ -139,8 +138,8 @@ func CreateStorage(ctx context.Context, cfg Config) error {
 	return errors.Wrap(deltastores.Create(ctx, b, cfg.storageOptions(name)), "create storage")
 }
 
-// NewStorageApp is NewApp for a GoAlert whose data is in a Delta table. The app
-// closes it when it shuts down.
+// NewStorageApp constructs a new App on the storage that st is, and binds the
+// listening socket. The app closes st when it shuts down.
 func NewStorageApp(c Config, st *Storage) (*App, error) {
 	app, err := newApp(c)
 	if err != nil {
@@ -159,10 +158,9 @@ func (app *App) initStorageStores(ctx context.Context) error {
 	s, err := deltastores.New(ctx, app.storage.DB, app.storage.Tables, deltastores.Options{
 		Logger: app.cfg.LegacyLogger, Registry: app.DestRegistry,
 		Config: config.StoreConfig{
-			Keys:               app.cfg.EncryptionKeys,
-			FallbackURL:        fallback.String(),
-			ExplicitURL:        app.cfg.PublicURL,
-			IngressEmailDomain: app.cfg.EmailIntegrationDomain,
+			Keys:        app.cfg.EncryptionKeys,
+			FallbackURL: fallback.String(),
+			ExplicitURL: app.cfg.PublicURL,
 		},
 	})
 	if err != nil {
@@ -171,35 +169,25 @@ func (app *App) initStorageStores(ctx context.Context) error {
 	app.stores = s
 	app.ConfigStore = s.Config
 	app.OAuthKeyring, app.SessionKeyring = s.OAuthKeyring, s.SessionKeyring
-	app.APIKeyring, app.AuthLinkKeyring = s.APIKeyring, s.AuthLinkKeyring
-	app.AlertStore, app.AlertLogStore, app.AlertMetricsStore = s.Alert, s.AlertLog, s.AlertMetrics
-	app.AuthBasicStore, app.AuthLinkStore, app.APIKeyStore = s.AuthBasic, s.AuthLink, s.APIKey
+	app.APIKeyring = s.APIKeyring
+	app.AlertStore, app.AlertLogStore = s.Alert, s.AlertLog
+	app.AuthBasicStore, app.APIKeyStore = s.AuthBasic, s.APIKey
 	app.UserStore, app.ContactMethodStore, app.NotificationRuleStore = s.User, s.ContactMethod, s.NotificationRule
 	app.FavoriteStore, app.LabelStore, app.LimitStore = s.Favorite, s.Label, s.Limit
 	app.ServiceStore, app.EscalationStore = s.Service, s.Escalation
-	app.IntegrationKeyStore, app.HeartbeatStore = s.IntegrationKey, s.Heartbeat
+	app.IntegrationKeyStore = s.IntegrationKey
 	app.ScheduleStore, app.ScheduleRuleStore, app.OverrideStore = s.Schedule, s.Rule, s.Override
-	app.RotationStore, app.OnCallStore, app.CalSubStore = s.Rotation, s.OnCall, s.CalSub
+	app.RotationStore, app.OnCallStore = s.Rotation, s.OnCall
 	app.NotificationStore, app.NCStore, app.NoticeStore = s.Notification, s.NotificationChannel, s.Notice
 	app.NonceStore, app.TimeZoneStore = s.Nonce, s.TimeZone
 	return nil
 }
 
-func (app *App) initStorageEngine(ctx context.Context) (err error) {
-	app.notificationManager = notification.NewManager(app.DestRegistry)
-	app.Engine, err = engine.NewDeltaEngine(ctx, engine.DeltaConfig{
-		DB: app.storage.DB, Tables: app.storage.Tables, Name: app.storage.PodName,
-	}, app.engineConfig())
-	return errors.Wrap(err, "init engine")
-}
-
 // Health returns why GoAlert does not work, if it does not: the storage refuses
 // writes or can't be reached (F21, F31, F33), or the engine does not work (F55).
 func (app *App) Health() error {
-	if app.storage != nil {
-		if err := app.storage.DB.Health(); err != nil {
-			return err
-		}
+	if err := app.storage.DB.Health(); err != nil {
+		return err
 	}
 	return app.Engine.Health()
 }

@@ -3,199 +3,20 @@ package graphqlapp
 import (
 	context "context"
 	"net/url"
-	"slices"
 
-	"github.com/google/uuid"
 	"github.com/target/goalert/config"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/search"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/validation"
-	"github.com/target/goalert/validation/validate"
 )
 
 type IntegrationKey App
 
-type KeyConfig App
-
 func (a *App) IntegrationKey() graphql2.IntegrationKeyResolver { return (*IntegrationKey)(a) }
-func (a *App) KeyConfig() graphql2.KeyConfigResolver           { return (*KeyConfig)(a) }
-
-func (k *KeyConfig) OneRule(ctx context.Context, key *gadb.UIKConfigV1, ruleID string) (*gadb.UIKRuleV1, error) {
-	for _, r := range key.Rules {
-		if r.ID.String() == ruleID {
-			return &r, nil
-		}
-	}
-
-	return nil, validation.NewFieldError("RuleID", "not found")
-}
 
 func (q *Query) IntegrationKey(ctx context.Context, id string) (*integrationkey.IntegrationKey, error) {
 	return q.IntKeyStore.FindOne(ctx, id)
-}
-
-func (q *Query) ActionInputValidate(ctx context.Context, input gadb.UIKActionV1) (bool, error) {
-	err := (*App)(q).ValidateDestination(ctx, "input.dest", &input.Dest)
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
-}
-
-func (m *Mutation) GenerateKeyToken(ctx context.Context, keyID string) (string, error) {
-	id, err := validate.ParseUUID("ID", keyID)
-	if err != nil {
-		return "", err
-	}
-	return m.IntKeyStore.GenerateToken(ctx, nil, id)
-}
-
-func (m *Mutation) DeleteSecondaryToken(ctx context.Context, keyID string) (bool, error) {
-	id, err := validate.ParseUUID("ID", keyID)
-	if err != nil {
-		return false, err
-	}
-
-	err = m.IntKeyStore.DeleteSecondaryToken(ctx, nil, id)
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
-}
-
-func (m *Mutation) PromoteSecondaryToken(ctx context.Context, keyID string) (bool, error) {
-	id, err := validate.ParseUUID("ID", keyID)
-	if err != nil {
-		return false, err
-	}
-
-	err = m.IntKeyStore.PromoteSecondaryToken(ctx, nil, id)
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
-}
-
-func (key *IntegrationKey) TokenInfo(ctx context.Context, raw *integrationkey.IntegrationKey) (*graphql2.TokenInfo, error) {
-	id, err := validate.ParseUUID("ID", raw.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	prim, sec, err := key.IntKeyStore.TokenHints(ctx, nil, id)
-	if err != nil {
-		return nil, err
-	}
-
-	return &graphql2.TokenInfo{
-		PrimaryHint:   prim,
-		SecondaryHint: sec,
-	}, nil
-}
-
-func (m *Mutation) UpdateKeyConfig(ctx context.Context, input graphql2.UpdateKeyConfigInput) (bool, error) {
-	actions := slices.Clone(input.DefaultActions)
-	for _, r := range input.Rules {
-		actions = append(actions, r.Actions...)
-	}
-	if input.SetRule != nil {
-		actions = append(actions, input.SetRule.Actions...)
-	}
-	if input.SetRuleActions != nil {
-		actions = append(actions, input.SetRuleActions.Actions...)
-	}
-	for _, act := range actions {
-		ctx = (*App)(m).resolveDests(ctx, act.Dest)
-	}
-
-	err := withContextTx(ctx, m.DB, func(ctx context.Context, tx txn.Tx) error {
-		id, err := validate.ParseUUID("IntegrationKey.ID", input.KeyID)
-		if err != nil {
-			return err
-		}
-
-		cfg, err := m.IntKeyStore.Config(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-
-		if input.Rules != nil {
-			cfg.Rules = input.Rules
-		}
-
-		if input.SetRule != nil {
-			if input.SetRule.ID == uuid.Nil {
-				// Since we don't have a rule ID, we need to create a new rule.
-				cfg.Rules = append(cfg.Rules, *input.SetRule)
-			} else {
-				var found bool
-				for i, r := range cfg.Rules {
-					if r.ID == input.SetRule.ID {
-						cfg.Rules[i] = *input.SetRule
-						found = true
-						break
-					}
-				}
-				if !found {
-					return validation.NewFieldError("SetRule.ID", "not found")
-				}
-			}
-		}
-		if input.SetRuleActions != nil {
-			var found bool
-			for i, r := range cfg.Rules {
-				if r.ID != input.SetRuleActions.ID {
-					continue
-				}
-
-				cfg.Rules[i].Actions = input.SetRuleActions.Actions
-				found = true
-				break
-			}
-			if !found {
-				return validation.NewFieldError("SetRuleActions.RuleID", "not found")
-			}
-		}
-
-		if input.DeleteRule != nil {
-			for i, r := range cfg.Rules {
-				if r.ID.String() == *input.DeleteRule {
-					cfg.Rules = append(cfg.Rules[:i], cfg.Rules[i+1:]...)
-					break
-				}
-			}
-		}
-		if input.SetRuleOrder != nil {
-			rules := make(map[string]gadb.UIKRuleV1, len(cfg.Rules))
-			for _, r := range cfg.Rules {
-				rules[r.ID.String()] = r
-			}
-			cfg.Rules = cfg.Rules[:0]
-			for _, id := range input.SetRuleOrder {
-				if r, ok := rules[id]; ok {
-					cfg.Rules = append(cfg.Rules, r)
-				}
-			}
-		}
-
-		if input.DefaultActions != nil {
-			cfg.DefaultActions = input.DefaultActions
-		}
-
-		err = m.IntKeyStore.SetConfig(ctx, tx, id, cfg)
-		return err
-	})
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
 }
 
 func (m *Mutation) CreateIntegrationKey(ctx context.Context, input graphql2.CreateIntegrationKeyInput) (key *integrationkey.IntegrationKey, err error) {
@@ -218,42 +39,18 @@ func (m *Mutation) CreateIntegrationKey(ctx context.Context, input graphql2.Crea
 	return key, err
 }
 
-func (key *IntegrationKey) Config(ctx context.Context, raw *integrationkey.IntegrationKey) (*gadb.UIKConfigV1, error) {
-	id, err := validate.ParseUUID("IntegrationKey.ID", raw.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	return key.IntKeyStore.Config(ctx, nil, id)
-}
-
 func (key *IntegrationKey) Type(ctx context.Context, raw *integrationkey.IntegrationKey) (graphql2.IntegrationKeyType, error) {
 	return graphql2.IntegrationKeyType(raw.Type), nil
 }
 
 func (key *IntegrationKey) Href(ctx context.Context, raw *integrationkey.IntegrationKey) (string, error) {
+	if raw.Type != integrationkey.TypeGeneric {
+		return "", nil
+	}
 	cfg := config.FromContext(ctx)
 	q := make(url.Values)
 	q.Set("token", raw.ID)
-	switch raw.Type {
-	case integrationkey.TypeGeneric:
-		return cfg.CallbackURL("/api/v2/generic/incoming", q), nil
-	case integrationkey.TypeGrafana:
-		return cfg.CallbackURL("/api/v2/grafana/incoming", q), nil
-	case integrationkey.TypeSite24x7:
-		return cfg.CallbackURL("/api/v2/site24x7/incoming", q), nil
-	case integrationkey.TypePrometheusAlertmanager:
-		return cfg.CallbackURL("/api/v2/prometheusalertmanager/incoming", q), nil
-	case integrationkey.TypeEmail:
-		if !cfg.EmailIngressEnabled() {
-			return "", nil
-		}
-		return "mailto:" + raw.ID + "@" + cfg.EmailIngressDomain(), nil
-	case integrationkey.TypeUniversal:
-		return cfg.CallbackURL("/api/v2/uik"), nil
-	}
-
-	return "", nil
+	return cfg.CallbackURL("/api/v2/generic/incoming", q), nil
 }
 
 func (q *Query) IntegrationKeys(ctx context.Context, input *graphql2.IntegrationKeySearchOptions) (conn *graphql2.IntegrationKeyConnection, err error) {

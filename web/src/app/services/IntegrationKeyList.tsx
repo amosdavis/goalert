@@ -114,22 +114,9 @@ export default function IntegrationKeyList(props: {
   if (fetching && !data) return <Spinner />
   if (error) return <GenericError error={error.message} />
 
-  const uikActions = (key: IntegrationKey): React.ReactNode => {
+  const keyActions = (key: IntegrationKey): React.ReactNode => {
     return (
       <Grid container spacing={2} alignItems='center' wrap='nowrap'>
-        {key.type === 'universal' && (
-          <Grid item>
-            <AppLink to={key.id}>
-              <Button
-                title='Manage configuration and tokens for this key.'
-                onClick={() => {}}
-                variant='contained'
-              >
-                Manage
-              </Button>
-            </AppLink>
-          </Grid>
-        )}
         <Grid item>
           <IconButton
             title='Delete this key.'
@@ -159,7 +146,7 @@ export default function IntegrationKeyList(props: {
             type={key.type}
           />
         }
-        action={uikActions(key)}
+        action={keyActions(key)}
       />
     ))
 
@@ -172,7 +159,7 @@ export default function IntegrationKeyList(props: {
         key={key.id}
         title={key.name}
         subText={<Chip label={key.externalSystemName} sx={{ mt: 1 }} />}
-        action={uikActions(key)}
+        action={keyActions(key)}
       />
     ))
 

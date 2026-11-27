@@ -82,11 +82,6 @@ export default function LocalDev(): React.JSX.Element {
         />
 
         <DevTool
-          name='gRPC'
-          desc='UI for interacting with the gRPC server interface (sysapi).'
-          url='http://localhost:8234'
-        />
-        <DevTool
           name='GraqphiQL'
           desc='UI for interacting with the GraphQL API.'
           url='/api/graphql/explore'

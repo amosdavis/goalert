@@ -2,144 +2,18 @@ package escalation
 
 import (
 	"context"
-	"database/sql"
-
-	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/notification/nfydest"
-	"github.com/target/goalert/notification/slack"
-	"github.com/target/goalert/notificationchannel"
-	"github.com/target/goalert/permission"
-	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
-	"github.com/target/goalert/util/log"
-	"github.com/target/goalert/util/sqlutil"
-	"github.com/target/goalert/validation/validate"
 
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
+	"github.com/target/goalert/notification/nfydest"
+	"github.com/target/goalert/permission"
+	"github.com/target/goalert/txn"
+	"github.com/target/goalert/validation/validate"
 )
 
-type Config struct {
-	NCStore         *notificationchannel.Store
-	Registry        *nfydest.Registry
-	LogStore        *alertlog.Store
-	SlackLookupFunc func(ctx context.Context, channelID string) (*slack.Channel, error)
-}
-
+// Store provides escalation policy operations on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	delta *deltaStore // set on the Delta backend, where nothing else but reg is
-
-	log     *alertlog.Store
-	ncStore *notificationchannel.Store
-	reg     *nfydest.Registry
-	slackFn func(ctx context.Context, channelID string) (*slack.Channel, error)
-
-	findOnePolicy          *sql.Stmt
-	findOnePolicyForUpdate *sql.Stmt
-	findManyPolicies       *sql.Stmt
-
-	findAllPoliciesBySchedule *sql.Stmt
-	createPolicy              *sql.Stmt
-	updatePolicy              *sql.Stmt
-	deletePolicy              *sql.Stmt
-
-	findOneStepForUpdate *sql.Stmt
-	findAllSteps         *sql.Stmt
-	findAllOnCallSteps   *sql.Stmt
-	createStep           *sql.Stmt
-	updateStepDelay      *sql.Stmt
-	updateStepMultiAck   *sql.Stmt
-	updateStepNumber     *sql.Stmt
-	deleteStep           *sql.Stmt
-}
-
-func NewStore(ctx context.Context, db *sql.DB, cfg Config) (*Store, error) {
-	p := &util.Prepare{DB: db, Ctx: ctx}
-
-	return &Store{
-		db:      db,
-		log:     cfg.LogStore,
-		slackFn: cfg.SlackLookupFunc,
-		ncStore: cfg.NCStore,
-		reg:     cfg.Registry,
-
-		findOnePolicy: p.P(`
-			SELECT
-				e.id,
-				e.name,
-				e.description,
-				e.repeat,
-				fav is distinct from null
-			FROM
-				escalation_policies e
-			LEFT JOIN user_favorites fav ON
-				fav.tgt_escalation_policy_id = e.id AND fav.user_id = $2
-			WHERE e.id = $1
-		`),
-		findOnePolicyForUpdate: p.P(`SELECT id, name, description, repeat FROM escalation_policies WHERE id = $1 FOR UPDATE`),
-		findManyPolicies: p.P(`
-            SELECT
-                e.id,
-                e.name,
-                e.description,
-                e.repeat,
-                fav is distinct from null
-            FROM
-                escalation_policies e
-            LEFT JOIN user_favorites fav ON
-                fav.tgt_escalation_policy_id = e.id AND fav.user_id = $2
-            WHERE e.id = any($1)
-        `),
-		findAllPoliciesBySchedule: p.P(`
-			SELECT DISTINCT
-				step.escalation_policy_id,
-				pol.name,
-				pol.description,
-				pol.repeat
-			FROM
-				escalation_policy_actions as act
-			JOIN
-				escalation_policy_steps as step on step.id = act.escalation_policy_step_id
-			JOIN
-				escalation_policies as pol on pol.id = step.escalation_policy_id
-			WHERE
-				act.schedule_id = $1
-		`),
-		createPolicy: p.P(`INSERT INTO escalation_policies (id, name, description, repeat) VALUES ($1, $2, $3, $4)`),
-		updatePolicy: p.P(`UPDATE escalation_policies SET name = $2, description = $3, repeat = $4 WHERE id = $1`),
-		deletePolicy: p.P(`DELETE FROM escalation_policies WHERE id = any($1)`),
-
-		findOneStepForUpdate: p.P(`SELECT id, escalation_policy_id, delay, step_number, multi_ack FROM escalation_policy_steps WHERE id = $1 FOR UPDATE`),
-		findAllSteps:         p.P(`SELECT id, escalation_policy_id, delay, step_number, multi_ack FROM escalation_policy_steps WHERE escalation_policy_id = $1 ORDER BY step_number`),
-		findAllOnCallSteps: p.P(`
-			SELECT step.id, step.escalation_policy_id, step.delay, step.step_number, step.multi_ack
-			FROM ep_step_on_call_users oc
-			JOIN escalation_policy_steps step ON step.id = oc.ep_step_id
-			WHERE oc.user_id = $1 AND oc.end_time isnull
-			ORDER BY step.escalation_policy_id, step.step_number
-		`),
-
-		createStep: p.P(`
-			INSERT INTO escalation_policy_steps
-				(id, escalation_policy_id, delay, step_number, multi_ack)
-			VALUES ($1, $2, $3, DEFAULT, $4)
-			RETURNING step_number
-		`),
-		updateStepDelay:    p.P(`UPDATE escalation_policy_steps SET delay = $2 WHERE id = $1`),
-		updateStepMultiAck: p.P(`UPDATE escalation_policy_steps SET multi_ack = $2 WHERE id = $1`),
-		updateStepNumber:   p.P(`UPDATE escalation_policy_steps SET step_number = $2 WHERE id = $1`),
-		deleteStep:         p.P(`DELETE FROM escalation_policy_steps WHERE id = $1 RETURNING escalation_policy_id`),
-	}, p.Err
-}
-
-func (s *Store) logChange(ctx context.Context, tx txn.Tx, policyID string) {
-	stx := sqltxn.Unwrap(tx)
-	err := s.log.LogEPTx(ctx, stx, policyID, alertlog.TypePolicyUpdated, nil)
-	if err != nil {
-		log.Log(ctx, errors.Wrap(err, "append alertlog (escalation policy update)"))
-	}
+	delta *deltaStore // deltastore.go
+	reg   *nfydest.Registry
 }
 
 // FindManyPolicies returns escalation policies for the given IDs.
@@ -154,30 +28,7 @@ func (s *Store) FindManyPolicies(ctx context.Context, ids []string) ([]Policy, e
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findManyPolicies(ctx, ids)
-	}
-
-	rows, err := s.findManyPolicies.QueryContext(ctx, sqlutil.UUIDArray(ids), permission.UserNullUUID(ctx))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Policy
-	var p Policy
-	for rows.Next() {
-		err = rows.Scan(&p.ID, &p.Name, &p.Description, &p.Repeat, &p.isUserFavorite)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, p)
-	}
-
-	return result, nil
+	return s.delta.findManyPolicies(ctx, ids)
 }
 
 // CreatePolicyTx creates a new escalation policy in the database.
@@ -194,21 +45,7 @@ func (s *Store) CreatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) (*Poli
 
 	n.ID = uuid.New().String()
 
-	if s.delta != nil {
-		if err := s.delta.createPolicy(ctx, tx, n); err != nil {
-			return nil, err
-		}
-		return n, nil
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.createPolicy
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	_, err = stmt.ExecContext(ctx, n.ID, n.Name, n.Description, n.Repeat)
-	if err != nil {
+	if err := s.delta.createPolicy(ctx, tx, n); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -230,24 +67,7 @@ func (s *Store) UpdatePolicyTx(ctx context.Context, tx txn.Tx, p *Policy) error 
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.updatePolicy(ctx, tx, n)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.updatePolicy
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	_, err = stmt.ExecContext(ctx, n.ID, n.Name, n.Description, n.Repeat)
-	if err != nil {
-		return err
-	}
-
-	s.logChange(ctx, nil, p.ID)
-
-	return nil
+	return s.delta.updatePolicy(ctx, tx, n)
 }
 
 // DeleteManyPoliciesTx deletes multiple policies in a single transaction.
@@ -261,17 +81,7 @@ func (s *Store) DeleteManyPoliciesTx(ctx context.Context, tx txn.Tx, ids []strin
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.deletePolicies(ctx, tx, ids)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.deletePolicy
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-	_, err = stmt.ExecContext(ctx, sqlutil.UUIDArray(ids))
-	return err
+	return s.delta.deletePolicies(ctx, tx, ids)
 }
 
 // FindOnePolicyTx returns a policy by ID.
@@ -286,20 +96,7 @@ func (s *Store) FindOnePolicyTx(ctx context.Context, tx txn.Tx, id string) (*Pol
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findOnePolicy(ctx, tx, id, false)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.findOnePolicy
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	row := stmt.QueryRowContext(ctx, id)
-	var p Policy
-	err = row.Scan(&p.ID, &p.Name, &p.Description, &p.Repeat)
-	return &p, err
+	return s.delta.findOnePolicy(ctx, tx, id, false)
 }
 
 // FindOnePolicyForUpdateTx returns a single policy locked to the tx for updating.
@@ -314,20 +111,7 @@ func (s *Store) FindOnePolicyForUpdateTx(ctx context.Context, tx txn.Tx, id stri
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findOnePolicy(ctx, tx, id, true)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.findOnePolicyForUpdate
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	row := stmt.QueryRowContext(ctx, id)
-	var p Policy
-	err = row.Scan(&p.ID, &p.Name, &p.Description, &p.Repeat)
-	return &p, err
+	return s.delta.findOnePolicy(ctx, tx, id, true)
 }
 
 // FindAllPoliciesBySchedule will return all policies that have the given schedule assigned to them.
@@ -340,27 +124,7 @@ func (s *Store) FindAllPoliciesBySchedule(ctx context.Context, scheduleID string
 	if err != nil {
 		return nil, err
 	}
-	if s.delta != nil {
-		return s.delta.findAllPoliciesBySchedule(ctx, scheduleID)
-	}
-
-	rows, err := s.findAllPoliciesBySchedule.QueryContext(ctx, scheduleID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var p Policy
-	var policies []Policy
-	for rows.Next() {
-		err = rows.Scan(&p.ID, &p.Name, &p.Description, &p.Repeat)
-		if err != nil {
-			return nil, err
-		}
-		policies = append(policies, p)
-	}
-
-	return policies, nil
+	return s.delta.findAllPoliciesBySchedule(ctx, scheduleID)
 }
 
 // FindOneStepForUpdateTx returns a step locked within the tx for update.
@@ -375,24 +139,7 @@ func (s *Store) FindOneStepForUpdateTx(ctx context.Context, tx txn.Tx, id string
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findOneStep(ctx, tx, id)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.findOneStepForUpdate
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	row := stmt.QueryRowContext(ctx, id)
-	var st Step
-	err = row.Scan(&st.ID, &st.PolicyID, &st.DelayMinutes, &st.StepNumber, &st.MultiAck)
-	if err != nil {
-		return nil, err
-	}
-
-	return &st, nil
+	return s.delta.findOneStep(ctx, tx, id)
 }
 
 func (s *Store) FindAllSteps(ctx context.Context, policyID string) ([]Step, error) {
@@ -410,32 +157,7 @@ func (s *Store) FindAllOnCallStepsForUserTx(ctx context.Context, tx txn.Tx, user
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findAllOnCallSteps(ctx, tx, userID)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.findAllOnCallSteps
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	rows, err := stmt.QueryContext(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Step
-	for rows.Next() {
-		var s Step
-		err = rows.Scan(&s.ID, &s.PolicyID, &s.DelayMinutes, &s.StepNumber, &s.MultiAck)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, s)
-	}
-	return result, nil
+	return s.delta.findAllOnCallSteps(ctx, tx, userID)
 }
 
 // FindAllStepsTx returns all steps for a policy.
@@ -450,32 +172,7 @@ func (s *Store) FindAllStepsTx(ctx context.Context, tx txn.Tx, policyID string) 
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findAllSteps(ctx, tx, policyID)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.findAllSteps
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	rows, err := stmt.QueryContext(ctx, policyID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Step
-	for rows.Next() {
-		var s Step
-		err = rows.Scan(&s.ID, &s.PolicyID, &s.DelayMinutes, &s.StepNumber, &s.MultiAck)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, s)
-	}
-	return result, nil
+	return s.delta.findAllSteps(ctx, tx, policyID)
 }
 
 // CreateStepTx adds a step to an escalation policy.
@@ -492,25 +189,9 @@ func (s *Store) CreateStepTx(ctx context.Context, tx txn.Tx, st *Step) (*Step, e
 
 	n.ID = uuid.New()
 
-	if s.delta != nil {
-		if err := s.delta.createStep(ctx, tx, n); err != nil {
-			return nil, err
-		}
-		return n, nil
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.createStep
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	err = stmt.QueryRowContext(ctx, n.ID, n.PolicyID, n.DelayMinutes, n.MultiAck).Scan(&n.StepNumber)
-	if err != nil {
+	if err := s.delta.createStep(ctx, tx, n); err != nil {
 		return nil, err
 	}
-
-	s.logChange(ctx, stx, st.PolicyID)
 	return n, nil
 }
 
@@ -521,22 +202,7 @@ func (s *Store) UpdateStepNumberTx(ctx context.Context, tx txn.Tx, stepID uuid.U
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.updateStepNumber(ctx, tx, stepID, stepNumber)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	numStmt := s.updateStepNumber
-	if stx != nil {
-		numStmt = stx.StmtContext(ctx, numStmt)
-	}
-
-	_, err = numStmt.ExecContext(ctx, stepID, stepNumber)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return s.delta.updateStepNumber(ctx, tx, stepID, stepNumber)
 }
 
 // UpdateStepDelayTx updates the delay for a step.
@@ -551,22 +217,7 @@ func (s *Store) UpdateStepDelayTx(ctx context.Context, tx txn.Tx, stepID uuid.UU
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.updateStepDelay(ctx, tx, stepID, stepDelay)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.updateStepDelay
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	_, err = stmt.ExecContext(ctx, stepID, stepDelay)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return s.delta.updateStepDelay(ctx, tx, stepID, stepDelay)
 }
 
 // UpdateStepMultiAckTx updates the multi-ack setting for a step.
@@ -576,22 +227,7 @@ func (s *Store) UpdateStepMultiAckTx(ctx context.Context, tx txn.Tx, stepID uuid
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.updateStepMultiAck(ctx, tx, stepID, multiAck)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.updateStepMultiAck
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-
-	_, err = stmt.ExecContext(ctx, stepID, multiAck)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return s.delta.updateStepMultiAck(ctx, tx, stepID, multiAck)
 }
 
 // DeleteStepTx deletes a step from an escalation policy.
@@ -600,23 +236,5 @@ func (s *Store) DeleteStepTx(ctx context.Context, tx txn.Tx, id uuid.UUID) (stri
 	if err != nil {
 		return "", err
 	}
-	if s.delta != nil {
-		return s.delta.deleteStep(ctx, tx, id)
-	}
-
-	stx := sqltxn.Unwrap(tx)
-	stmt := s.deleteStep
-	if stx != nil {
-		stmt = stx.StmtContext(ctx, stmt)
-	}
-	row := stmt.QueryRowContext(ctx, id)
-	var polID string
-	err = row.Scan(&polID)
-	if err != nil {
-		return "", err
-	}
-
-	s.logChange(ctx, stx, polID)
-
-	return polID, nil
+	return s.delta.deleteStep(ctx, tx, id)
 }

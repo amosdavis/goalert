@@ -5,10 +5,9 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/target/goalert/config"
 	"github.com/target/goalert/graphql2"
 	"github.com/target/goalert/notification"
-	"github.com/target/goalert/notification/twilio"
+
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user/contactmethod"
@@ -77,12 +76,6 @@ func (a *ContactMethod) LastTestMessageState(ctx context.Context, obj *contactme
 		return nil, nil
 	}
 
-	cfg := config.FromContext(ctx)
-	if obj.Dest.Type == twilio.DestTypeTwilioSMS && cfg.Twilio.RCSSenderID != "" && status.SrcValue == cfg.Twilio.RCSSenderID {
-		// TODO: remove this when we have a better way to get the sender name
-		status.SrcValue = cfg.ApplicationName()
-	}
-
 	return notificationStateFromSendResult(status.Status, status.SrcValue), nil
 }
 
@@ -98,12 +91,6 @@ func (a *ContactMethod) LastVerifyMessageState(ctx context.Context, obj *contact
 	}
 	if status == nil {
 		return nil, nil
-	}
-
-	cfg := config.FromContext(ctx)
-	if obj.Dest.Type == twilio.DestTypeTwilioSMS && cfg.Twilio.RCSSenderID != "" && status.SrcValue == cfg.Twilio.RCSSenderID {
-		// TODO: remove this when we have a better way to get the sender name
-		status.SrcValue = cfg.ApplicationName()
 	}
 
 	return notificationStateFromSendResult(status.Status, status.SrcValue), nil

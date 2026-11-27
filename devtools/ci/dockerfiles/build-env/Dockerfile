@@ -13,18 +13,6 @@ RUN apt-get update && apt-get install -y \
     dbus-x11 xvfb && \
     rm -rf /var/lib/apt/lists/*
 
-# Postgres
-RUN mkdir -p /usr/share/postgresql-common/pgdg && curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
-
-RUN echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/postgresql.list
-
-RUN apt-get update && apt-get install -y \
-    postgresql-13 postgresql-client-13 \
-    postgresql-14 postgresql-client-14 \
-    postgresql-15 postgresql-client-15 \
-    postgresql-16 postgresql-client-16 \
-    postgresql-17 postgresql-client-17 \
-    && rm -rf /var/lib/apt/lists/*
 
 # google chrome
 RUN \
@@ -34,19 +22,6 @@ RUN \
     apt-get install -y google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
-# Postgres
-ENV PGUSER=postgres DB_URL=postgresql://postgres@?client_encoding=UTF8&sslmode=disable
-COPY setup_postgres.sh /usr/bin/setup_postgres
-RUN setup_postgres 13 14 15 16 17
-
-COPY start_postgres.sh /opt/start_postgres.sh
-COPY stop_postgres.sh /opt/stop_postgres.sh
-COPY shell-runner.c /opt/shell-runner.c
-RUN gcc /opt/shell-runner.c -o /opt/shell-runner
-RUN chown postgres:postgres /opt/shell-runner
-RUN chmod +xs /opt/shell-runner
-RUN ln -s /opt/shell-runner /usr/bin/start_postgres
-RUN ln -s /opt/shell-runner /usr/bin/stop_postgres
 
 # Cypress
 ENV QT_X11_NO_MITSHM=1 _X11_NO_MITSHM=1 _MITSHM=0 CYPRESS_CACHE_FOLDER=/home/user/.cache/Cypress

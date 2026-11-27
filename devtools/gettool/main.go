@@ -43,8 +43,6 @@ func main() {
 		err = getPrometheus(*version, *output)
 	case "protoc":
 		err = getProtoC(*version, *output)
-	case "sqlc":
-		err = getSqlc(*version, *output)
 	case "bun":
 		err = getBun(*version, *output)
 	case "mailpit":

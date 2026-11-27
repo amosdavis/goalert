@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	cryptoRand "crypto/rand"
-	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -17,35 +16,28 @@ import (
 	"github.com/target/goalert/keyring"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
 	"github.com/target/goalert/util/errutil"
 	"github.com/target/goalert/util/jsonutil"
 	"github.com/target/goalert/util/log"
 )
 
-// Store handles saving and loading configuration from a postgres database.
+// Store handles saving and loading configuration on the Delta backend.
 type Store struct {
-	rawCfg             Config
-	cfgVers            int
-	fallbackURL        string
-	explicitURL        string
-	ingressEmailDomain string
-	mx                 sync.RWMutex
-	db                 *sql.DB
-	txdb               txn.DB
-	delta              *DeltaTables    // the Delta backend, if set (delta.go)
-	changes            <-chan struct{} // config changes on the Delta backend
-	keys               keyring.Keys
-	latestConfig       *sql.Stmt
-	setConfig          *sql.Stmt
-	lock               *sql.Stmt
+	rawCfg      Config
+	cfgVers     int
+	fallbackURL string
+	explicitURL string
+	mx          sync.RWMutex
+	txdb        txn.DB
+	delta       *DeltaTables
+	changes     <-chan struct{} // config changes on the Delta backend
+	keys        keyring.Keys
 
 	closeCh chan struct{}
 }
 
+// StoreConfig is what a config store needs besides its tables.
 type StoreConfig struct {
-	DB   *sql.DB
 	Keys keyring.Keys
 
 	// FallbackURL is the URL to use when the DB config does not specify a public URL.
@@ -53,39 +45,15 @@ type StoreConfig struct {
 
 	// ExplicitURL is the full public URL to use for all links.
 	ExplicitURL string
-
-	// IngressEmailDomain is the domain to use for ingress email addresses.
-	IngressEmailDomain string
-}
-
-// NewStore will create a new Store with the given StoreConfig parameters. It will automatically detect
-// new configuration changes.
-func NewStore(ctx context.Context, cfg StoreConfig) (*Store, error) {
-	p := util.Prepare{Ctx: ctx, DB: cfg.DB}
-
-	s := newStore(cfg, sqltxn.DB{DB: cfg.DB})
-	s.latestConfig = p.P(`select id, data, schema from config where schema <= $1 order by id desc limit 1`)
-	s.setConfig = p.P(`insert into config (id, schema, data) values (DEFAULT, $1, $2) returning (id)`)
-	s.lock = p.P(`lock config in exclusive mode`)
-	if p.Err != nil {
-		return nil, p.Err
-	}
-
-	if err := s.start(ctx); err != nil {
-		return nil, err
-	}
-	return s, nil
 }
 
 func newStore(cfg StoreConfig, db txn.DB) *Store {
 	return &Store{
-		db:                 cfg.DB,
-		txdb:               db,
-		fallbackURL:        cfg.FallbackURL,
-		explicitURL:        cfg.ExplicitURL,
-		ingressEmailDomain: cfg.IngressEmailDomain,
-		keys:               cfg.Keys,
-		closeCh:            make(chan struct{}),
+		txdb:        db,
+		fallbackURL: cfg.FallbackURL,
+		explicitURL: cfg.ExplicitURL,
+		keys:        cfg.Keys,
+		closeCh:     make(chan struct{}),
 	}
 }
 
@@ -126,7 +94,7 @@ func (s *Store) start(ctx context.Context) error {
 				})
 			case <-s.changes:
 				// A new version, from this pod or another: reload now, as
-				// the Postgres store does on its NOTIFY.
+				// the Postgres store did on its NOTIFY.
 				permission.SudoContext(logger.BackgroundContext(), func(ctx context.Context) {
 					err := s.Reload(ctx)
 					if err != nil {
@@ -153,15 +121,6 @@ func (s *Store) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func wrapTx(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
-	stx := sqltxn.Unwrap(tx)
-	if stx == nil {
-		return stmt
-	}
-
-	return stx.StmtContext(ctx, stmt)
-}
-
 // Reload will re-read and update the current config state from the DB.
 func (s *Store) Reload(ctx context.Context) error {
 	cfg, id, err := s.reloadTx(ctx, nil)
@@ -171,7 +130,6 @@ func (s *Store) Reload(ctx context.Context) error {
 	rawCfg := *cfg
 	rawCfg.fallbackURL = s.fallbackURL
 	rawCfg.explicitURL = s.explicitURL
-	rawCfg.intEmailDomain = s.ingressEmailDomain
 
 	err = cfg.Validate()
 	if err != nil {
@@ -234,7 +192,7 @@ func (s *Store) ConfigData(ctx context.Context, tx txn.Tx) (id, schemaVersion in
 	}
 
 	var found bool
-	id, schemaVersion, data, found, err = s.latestRow(ctx, tx)
+	id, schemaVersion, data, found, err = s.deltaLatest(ctx, tx)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -248,34 +206,6 @@ func (s *Store) ConfigData(ctx context.Context, tx txn.Tx) (id, schemaVersion in
 	}
 
 	return id, schemaVersion, data, nil
-}
-
-// latestRow reads the newest config this version can read.
-func (s *Store) latestRow(ctx context.Context, tx txn.Tx) (id, schemaVersion int, data []byte, found bool, err error) {
-	if s.delta != nil {
-		return s.deltaLatest(ctx, tx)
-	}
-	err = wrapTx(ctx, tx, s.latestConfig).QueryRowContext(ctx, SchemaVersion).Scan(&id, &data, &schemaVersion)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, nil, false, nil
-	}
-	if err != nil {
-		return 0, 0, nil, false, err
-	}
-	return id, schemaVersion, data, true, nil
-}
-
-// insertRow adds a config version and returns its id.
-func (s *Store) insertRow(ctx context.Context, tx txn.Tx, data []byte) (int, error) {
-	if s.delta != nil {
-		return s.deltaInsert(ctx, tx, data)
-	}
-	var id int
-	err := wrapTx(ctx, tx, s.setConfig).QueryRowContext(ctx, SchemaVersion, data).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-	return id, nil
 }
 
 // SetConfigData will replace the current DB config with data.
@@ -296,7 +226,7 @@ func (s *Store) SetConfigData(ctx context.Context, tx txn.Tx, data []byte) (int,
 		return 0, errors.Wrap(err, "encrypt config")
 	}
 
-	return s.insertRow(ctx, tx, data)
+	return s.deltaInsert(ctx, tx, data)
 }
 
 func (s *Store) reloadTx(ctx context.Context, tx txn.Tx) (*Config, int, error) {
@@ -347,16 +277,8 @@ func (s *Store) SetConfig(ctx context.Context, cfg Config) error {
 }
 
 func (s *Store) updateConfigTx(ctx context.Context, tx txn.Tx, fn func(Config) (Config, error)) (int, error) {
-	// On Postgres, the table lock keeps the read-modify-write whole. On the
-	// Delta backend, a transaction that loses a race runs again (F4), so fn
-	// must do no I/O (F3).
-	if s.delta == nil {
-		_, err := sqltxn.Unwrap(tx).StmtContext(ctx, s.lock).ExecContext(ctx)
-		if err != nil {
-			return 0, err
-		}
-	}
-
+	// A transaction that loses a race runs again (F4), which keeps the
+	// read-modify-write whole, so fn must do no I/O (F3).
 	cfg, _, err := s.reloadTx(ctx, tx)
 	if err != nil {
 		return 0, err

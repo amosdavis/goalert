@@ -5,7 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math"
+
 	"slices"
 	"strconv"
 	"sync"
@@ -33,10 +33,10 @@ type DeltaLog struct {
 	SubType             *string    `parquet:"sub_type,optional"`
 	SubUserID           *string    `parquet:"sub_user_id,optional"`
 	SubIntegrationKeyID *string    `parquet:"sub_integration_key_id,optional"`
-	SubHBMonitorID      *string    `parquet:"sub_hb_monitor_id,optional"`
-	SubChannelID        *string    `parquet:"sub_channel_id,optional"`
-	SubClassifier       string     `parquet:"sub_classifier"`
-	Meta                []byte     `parquet:"meta,optional"`
+
+	SubChannelID  *string `parquet:"sub_channel_id,optional"`
+	SubClassifier string  `parquet:"sub_classifier"`
+	Meta          []byte  `parquet:"meta,optional"`
 }
 
 // events are the values of enum_alert_log_event.
@@ -195,12 +195,11 @@ func (t *DeltaTables) hasRecentDuplicate(r filestore.Reader, alertID int64, now 
 // needs. They run in its transactions, so they must do no I/O. A method that
 // needs one that is absent returns deltatxn.ErrNotPorted.
 type DeltaLookups struct {
-	// Names, for reading entries: the joins with users, integration_keys,
-	// heartbeat_monitors and notification_channels.
-	UserName             func(r filestore.Reader, id string) (name string, ok bool)
-	IntegrationKeyName   func(r filestore.Reader, id string) (name string, ok bool)
-	HeartbeatMonitorName func(r filestore.Reader, id string) (name string, ok bool)
-	ChannelName          func(r filestore.Reader, id string) (name string, ok bool)
+	// Names, for reading entries: the joins with users, integration_keys
+	// and notification_channels.
+	UserName           func(r filestore.Reader, id string) (name string, ok bool)
+	IntegrationKeyName func(r filestore.Reader, id string) (name string, ok bool)
+	ChannelName        func(r filestore.Reader, id string) (name string, ok bool)
 
 	// What describes the subject of a new entry. A destination that doesn't
 	// exist is sql.ErrNoRows. MessageDest is that of an outgoing message: its
@@ -209,7 +208,6 @@ type DeltaLookups struct {
 	ContactMethodDest  func(r filestore.Reader, id string) (gadb.DestV1, error)
 	MessageDest        func(r filestore.Reader, messageID string) (gadb.DestV1, error)
 	IntegrationKeyType func(r filestore.Reader, id string) (typ integrationkey.Type, ok bool)
-	HeartbeatInterval  func(r filestore.Reader, monitorID string) (interval time.Duration, ok bool)
 
 	// PolicyServices returns the IDs of the services that use an escalation
 	// policy (services), and AlertIDs those of a service's alerts with one of
@@ -220,7 +218,7 @@ type DeltaLookups struct {
 
 // NewDeltaStore returns an alert log on the Delta backend.
 func NewDeltaStore(db txn.DB, tables *DeltaTables, reg *nfydest.Registry, lookups DeltaLookups) *Store {
-	return &Store{reg: reg, delta: &deltaLogs{db: db, reg: reg, DeltaTables: tables, DeltaLookups: lookups}}
+	return &Store{delta: &deltaLogs{db: db, reg: reg, DeltaTables: tables, DeltaLookups: lookups}}
 }
 
 type deltaLogs struct {
@@ -317,18 +315,6 @@ func (d deltaSubjects) messageDest(_ context.Context, id uuid.UUID) (gadb.NullDe
 	return d.dest(d.MessageDest, id)
 }
 
-// heartbeatMinutes rounds as EXTRACT(...)::int does.
-func (d deltaSubjects) heartbeatMinutes(_ context.Context, id uuid.UUID) (int32, error) {
-	if d.HeartbeatInterval == nil {
-		return 0, deltatxn.ErrNotPorted
-	}
-	interval, ok := d.HeartbeatInterval(d.r, id.String())
-	if !ok {
-		return 0, sql.ErrNoRows
-	}
-	return int32(math.Round(interval.Minutes())), nil
-}
-
 func (d deltaSubjects) integrationKeyType(_ context.Context, id string) (integrationkey.Type, error) {
 	if d.IntegrationKeyType == nil {
 		return "", deltatxn.ErrNotPorted
@@ -371,10 +357,10 @@ func (e *Entry) row(alertID int64) DeltaLog {
 		SubType:             optText(string(e.subject._type)),
 		SubUserID:           optID(e.subject.userID),
 		SubIntegrationKeyID: optID(e.subject.integrationKeyID),
-		SubHBMonitorID:      optID(e.subject.heartbeatMonitorID),
-		SubChannelID:        optID(e.subject.channelID),
-		SubClassifier:       e.subject.classifier,
-		Meta:                e.meta,
+
+		SubChannelID:  optID(e.subject.channelID),
+		SubClassifier: e.subject.classifier,
+		Meta:          e.meta,
 	}
 }
 
@@ -502,7 +488,7 @@ func (d *deltaLogs) entry(r filestore.Reader, l DeltaLog) (*Entry, error) {
 	for _, err := range []error{
 		subject(r, d.UserName, l.SubUserID, &e.subject.userID, &e.subject.userName),
 		subject(r, d.IntegrationKeyName, l.SubIntegrationKeyID, &e.subject.integrationKeyID, &e.subject.integrationKeyName),
-		subject(r, d.HeartbeatMonitorName, l.SubHBMonitorID, &e.subject.heartbeatMonitorID, &e.subject.heartbeatMonitorName),
+
 		subject(r, d.ChannelName, l.SubChannelID, &e.subject.channelID, &e.subject.channelName),
 	} {
 		if err != nil {

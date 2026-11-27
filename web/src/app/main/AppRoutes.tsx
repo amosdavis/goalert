@@ -2,12 +2,8 @@ import React, { JSXElementConstructor, useLayoutEffect } from 'react'
 import { gql, useQuery } from 'urql'
 import { Switch, Route, useLocation, RouteProps, useRoute } from 'wouter'
 import AdminMessageLogsLayout from '../admin/admin-message-logs/AdminMessageLogsLayout'
-import AdminAlertCounts from '../admin/admin-alert-counts/AdminAlertCounts'
-import AdminServiceMetrics from '../admin/admin-service-metrics/AdminServiceMetrics'
 import AdminConfig from '../admin/AdminConfig'
 import AdminLimits from '../admin/AdminLimits'
-import AdminToolbox from '../admin/AdminToolbox'
-import AdminSwitchover from '../admin/switchover/AdminSwitchover'
 import AdminAPIKeys from '../admin/AdminAPIKeys'
 import AlertsList from '../alerts/AlertsList'
 import AlertDetailPage from '../alerts/pages/AlertDetailPage'
@@ -26,14 +22,11 @@ import ScheduleList from '../schedules/ScheduleList'
 import ScheduleOverrideList from '../schedules/ScheduleOverrideList'
 import ScheduleRuleList from '../schedules/ScheduleRuleList'
 import ScheduleShiftList from '../schedules/ScheduleShiftList'
-import AlertMetrics from '../services/AlertMetrics/AlertMetrics'
-import HeartbeatMonitorList from '../services/HeartbeatMonitorList'
 import IntegrationKeyList from '../services/IntegrationKeyList'
 import ServiceAlerts from '../services/ServiceAlerts'
 import ServiceDetails from '../services/ServiceDetails'
 import ServiceLabelList from '../services/ServiceLabelList'
 import ServiceList from '../services/ServiceList'
-import UserCalendarSubscriptionList from '../users/UserCalendarSubscriptionList'
 import UserDetails from '../users/UserDetails'
 import UserList from '../users/UserList'
 import UserOnCallAssignmentList from '../users/UserOnCallAssignmentList'
@@ -41,9 +34,6 @@ import UserSessionList from '../users/UserSessionList'
 import { useSessionInfo } from '../util/RequireConfig'
 import WizardRouter from '../wizard/WizardRouter'
 import LocalDev from '../localdev/LocalDev'
-import AdminSwitchoverGuide from '../admin/switchover/AdminSwitchoverGuide'
-import UniversalKeyPage from '../services/UniversalKey/UniversalKeyPage'
-import { useExpFlag } from '../util/useExpFlag'
 import AdminMaint from '../admin/AdminMaint'
 import PolicyAlertsList from '../escalation-policies/PolicyAlertsList'
 
@@ -74,7 +64,6 @@ const alertQuery = gql`
     }
   }
 `
-const EXP_ROUTE_UNIV_KEY = '/services/:serviceID/integration-keys/:keyID'
 // Allow any component to be used as a route.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const routes: Record<string, JSXElementConstructor<any>> = {
@@ -103,17 +92,12 @@ export const routes: Record<string, JSXElementConstructor<any>> = {
   '/services/:serviceID': ServiceDetails,
   '/services/:serviceID/alerts': ServiceAlerts,
   '/services/:serviceID/alerts/:alertID': AlertDetailPage,
-  '/services/:serviceID/heartbeat-monitors': HeartbeatMonitorList,
   '/services/:serviceID/integration-keys': IntegrationKeyList,
-  [EXP_ROUTE_UNIV_KEY]: UniversalKeyPage,
   '/services/:serviceID/labels': ServiceLabelList,
-  '/services/:serviceID/alert-metrics': AlertMetrics,
 
   '/users': UserList,
   '/users/:userID': UserDetails,
   '/users/:userID/on-call-assignments': UserOnCallAssignmentList,
-  '/users/:userID/schedule-calendar-subscriptions':
-    UserCalendarSubscriptionList,
   '/users/:userID/sessions': UserSessionList,
 
   '/profile': Spinner, // should redirect once user ID loads
@@ -122,12 +106,7 @@ export const routes: Record<string, JSXElementConstructor<any>> = {
   '/admin/config': AdminConfig,
   '/admin/maintenance': AdminMaint,
   '/admin/limits': AdminLimits,
-  '/admin/toolbox': AdminToolbox,
   '/admin/message-logs': AdminMessageLogsLayout,
-  '/admin/alert-counts': AdminAlertCounts,
-  '/admin/service-metrics': AdminServiceMetrics,
-  '/admin/switchover': AdminSwitchover,
-  '/admin/switchover/guide': AdminSwitchoverGuide,
   '/admin/api-keys': AdminAPIKeys,
 
   '/wizard': WizardRouter,
@@ -152,8 +131,6 @@ export default function AppRoutes(): React.JSX.Element {
     variables: { id: urlAlertID },
   })
   const alertServiceID = urlAlertID && alertQ.data?.alert?.serviceID
-
-  const hasUnivKeysFlag = useExpFlag('univ-keys')
 
   useLayoutEffect(() => {
     if (path.endsWith('/') && path !== '/') {
@@ -198,16 +175,9 @@ export default function AppRoutes(): React.JSX.Element {
 
   return (
     <Switch>
-      {Object.entries(routes)
-        .filter((value) => {
-          if (value[0] === EXP_ROUTE_UNIV_KEY && !hasUnivKeysFlag) {
-            return false
-          }
-          return true
-        })
-        .map(([path, component]) => (
-          <ParamRoute key={path} path={path} component={component} />
-        ))}
+      {Object.entries(routes).map(([path, component]) => (
+        <ParamRoute key={path} path={path} component={component} />
+      ))}
       <Route component={PageNotFound} />
     </Switch>
   )

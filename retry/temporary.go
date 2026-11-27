@@ -2,13 +2,9 @@ package retry
 
 import (
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"net"
-	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/target/goalert/util/sqlutil"
 )
 
 type clientErr interface {
@@ -59,25 +55,6 @@ func IsTemporaryError(err error) bool {
 		return true
 	}
 
-	if errors.Is(err, sql.ErrConnDone) {
-		return true
-	}
-	if errors.Is(err, driver.ErrBadConn) {
-		return true
-	}
-	if e := sqlutil.MapError(err); e != nil {
-		switch {
-		// Allow retry for tx or connection errors:
-		// - Class 40 — Transaction Rollback
-		// - Class 08 — Connection Exception
-		//
-		// https://www.postgresql.org/docs/10/static/errcodes-appendix.html
-		case strings.HasPrefix(e.Code, "40"), strings.HasPrefix(e.Code, "08"):
-			return true
-		case e.Code == "55P03": // lock_timeout
-			return true
-		}
-	}
 	return false
 }
 

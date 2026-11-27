@@ -21,17 +21,13 @@ const (
 	TargetTypeRotation
 	TargetTypeService
 	TargetTypeSchedule
-	TargetTypeCalendarSubscription
 	TargetTypeUser
 	TargetTypeNotificationChannel
-	TargetTypeSlackChannel
-	TargetTypeSlackUserGroup
 	TargetTypeChanWebhook
 	TargetTypeIntegrationKey
 	TargetTypeUserOverride
 	TargetTypeNotificationRule
 	TargetTypeContactMethod
-	TargetTypeHeartbeatMonitor
 	TargetTypeUserSession
 )
 
@@ -55,18 +51,13 @@ func (tt *TargetType) UnmarshalText(data []byte) error {
 		*tt = TargetTypeService
 	case "schedule":
 		*tt = TargetTypeSchedule
-	case "calendarSubscription":
-		*tt = TargetTypeCalendarSubscription
+
 	case "user":
 		*tt = TargetTypeUser
 	case "integrationKey":
 		*tt = TargetTypeIntegrationKey
 	case "notificationChannel":
 		*tt = TargetTypeNotificationChannel
-	case "slackChannel":
-		*tt = TargetTypeSlackChannel
-	case "slackUserGroup":
-		*tt = TargetTypeSlackUserGroup
 	case "chanWebhook":
 		*tt = TargetTypeChanWebhook
 	case "userOverride":
@@ -75,8 +66,7 @@ func (tt *TargetType) UnmarshalText(data []byte) error {
 		*tt = TargetTypeContactMethod
 	case "notificationRule":
 		*tt = TargetTypeNotificationRule
-	case "heartbeatMonitor":
-		*tt = TargetTypeHeartbeatMonitor
+
 	case "userSession":
 		*tt = TargetTypeUserSession
 	default:
@@ -107,8 +97,7 @@ func (tt TargetType) MarshalText() ([]byte, error) {
 		return []byte("service"), nil
 	case TargetTypeSchedule:
 		return []byte("schedule"), nil
-	case TargetTypeCalendarSubscription:
-		return []byte("calendarSubscription"), nil
+
 	case TargetTypeUser:
 		return []byte("user"), nil
 	case TargetTypeIntegrationKey:
@@ -117,18 +106,13 @@ func (tt TargetType) MarshalText() ([]byte, error) {
 		return []byte("userOverride"), nil
 	case TargetTypeNotificationChannel:
 		return []byte("notificationChannel"), nil
-	case TargetTypeSlackChannel:
-		return []byte("slackChannel"), nil
-	case TargetTypeSlackUserGroup:
-		return []byte("slackUserGroup"), nil
 	case TargetTypeChanWebhook:
 		return []byte("chanWebhook"), nil
 	case TargetTypeContactMethod:
 		return []byte("contactMethod"), nil
 	case TargetTypeNotificationRule:
 		return []byte("notificationRule"), nil
-	case TargetTypeHeartbeatMonitor:
-		return []byte("heartbeatMonitor"), nil
+
 	case TargetTypeUserSession:
 		return []byte("userSession"), nil
 	}

@@ -48,7 +48,6 @@ type Server struct {
 	messages map[string]*SMS
 	calls    map[string]*VoiceCall
 	msgSvc   map[string][]string
-	rcs      map[string]string
 
 	mux *http.ServeMux
 
@@ -57,9 +56,6 @@ type Server struct {
 	sidSeq uint64
 
 	workers sync.WaitGroup
-
-	carrierInfo   map[string]twilio.CarrierInfo
-	carrierInfoMx sync.Mutex
 }
 
 // NewServer creates a new Server.
@@ -68,20 +64,18 @@ func NewServer(cfg Config) *Server {
 		cfg.MinQueueTime = 100 * time.Millisecond
 	}
 	s := &Server{
-		cfg:         cfg,
-		callbacks:   make(map[string]string),
-		mux:         http.NewServeMux(),
-		messages:    make(map[string]*SMS),
-		calls:       make(map[string]*VoiceCall),
-		msgSvc:      make(map[string][]string),
-		smsCh:       make(chan *SMS),
-		smsInCh:     make(chan *SMS),
-		callCh:      make(chan *VoiceCall),
-		callInCh:    make(chan *VoiceCall),
-		errs:        make(chan error, 10000),
-		shutdown:    make(chan struct{}),
-		carrierInfo: make(map[string]twilio.CarrierInfo),
-		rcs:         make(map[string]string),
+		cfg:       cfg,
+		callbacks: make(map[string]string),
+		mux:       http.NewServeMux(),
+		messages:  make(map[string]*SMS),
+		calls:     make(map[string]*VoiceCall),
+		msgSvc:    make(map[string][]string),
+		smsCh:     make(chan *SMS),
+		smsInCh:   make(chan *SMS),
+		callCh:    make(chan *VoiceCall),
+		callInCh:  make(chan *VoiceCall),
+		errs:      make(chan error, 10000),
+		shutdown:  make(chan struct{}),
 	}
 
 	base := "/2010-04-01/Accounts/" + cfg.AccountSID
@@ -90,7 +84,6 @@ func NewServer(cfg Config) *Server {
 	s.mux.HandleFunc(base+"/Messages.json", s.serveNewMessage)
 	s.mux.HandleFunc(base+"/Calls/", s.serveCallStatus)
 	s.mux.HandleFunc(base+"/Messages/", s.serveMessageStatus)
-	s.mux.HandleFunc("/v1/PhoneNumbers/", s.serveLookup)
 
 	s.workers.Add(1)
 	go s.loop()
@@ -191,14 +184,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.mux.ServeHTTP(w, req)
 }
 
-// SetCarrierInfo will set/update the carrier info (used for the Lookup API) for the given number.
-func (s *Server) SetCarrierInfo(number string, info twilio.CarrierInfo) {
-	s.carrierInfoMx.Lock()
-	defer s.carrierInfoMx.Unlock()
-
-	s.carrierInfo[number] = info
-}
-
 // getFromNumber will return a random number from the messaging service if ID is a
 // messaging SID, or the value itself otherwise.
 func (s *Server) getFromNumber(id string) string {
@@ -236,24 +221,6 @@ func (s *Server) NewMessagingService(url string, numbers ...string) (string, err
 	s.msgSvc[svcID] = numbers
 
 	return svcID, nil
-}
-
-// EnableRCS enables RCS for the given messaging service ID, returning the RCS sender ID.
-func (s *Server) EnableRCS(msgSvcID string) (string, error) {
-	s.mx.Lock()
-	defer s.mx.Unlock()
-
-	if _, ok := s.msgSvc[msgSvcID]; !ok {
-		return "", errors.New("messaging service not found")
-	}
-	seq := atomic.AddUint64(&s.sidSeq, 1)
-	rcsID := fmt.Sprintf("test_%04d_agent", seq)
-	s.rcs[msgSvcID] = rcsID
-
-	url := s.msgSvc[msgSvcID][0]
-	s.callbacks["SMS:"+rcsID] = url
-
-	return rcsID, nil
 }
 
 // RegisterSMSCallback will set/update a callback URL for SMS calls made to the given number.

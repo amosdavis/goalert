@@ -53,7 +53,7 @@ func (s *Store) DisplayInfo(ctx context.Context, args map[string]string) (*nfyde
 	}
 
 	return &nfydest.DisplayInfo{
-		IconURL:     cfg.CallbackURL("/api/v2/user-avatar/" + u.ID),
+		IconURL:     FallbackIconURL,
 		IconAltText: "User",
 		LinkURL:     cfg.CallbackURL("/users/" + u.ID),
 		Text:        u.Name,

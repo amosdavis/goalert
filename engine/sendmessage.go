@@ -2,10 +2,9 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
+
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/target/goalert/alert/alertlog"
 	"github.com/target/goalert/engine/message"
@@ -178,66 +177,10 @@ func (p *Engine) buildMessage(ctx context.Context, msg *message.Message) (notifM
 			ScheduleID:   msg.ScheduleID,
 			Users:        onCallUsers,
 		}
-	case notification.MessageTypeSignalMessage:
-		id, err := uuid.Parse(msg.ID)
-		if err != nil {
-			return nil, false, nil, errors.Wrap(err, "parse signal message id")
-		}
-		rawParams, err := p.b.signalParams(ctx, id)
-		if err != nil {
-			return nil, false, nil, errors.Wrap(err, "get signal message params")
-		}
 
-		var params map[string]string
-		err = json.Unmarshal(rawParams, &params)
-		if err != nil {
-			return nil, false, nil, errors.Wrap(err, "parse signal message params")
-		}
-
-		notifMsg = notification.SignalMessage{
-			Base:   msg.Base(),
-			Params: params,
-		}
 	default:
 		log.Log(ctx, errors.New("SEND NOT IMPLEMENTED FOR MESSAGE TYPE "+string(msg.Type)))
 		return nil, false, &notification.SendResult{ID: msg.ID, Status: notification.Status{State: notification.StateFailedPerm}}, nil
 	}
 	return notifMsg, isFirstAlertMessage, nil, nil
-}
-
-func (p *Engine) sendMessage(ctx context.Context, msg *message.Message) (*notification.SendResult, error) {
-	ctx = p.messageContext(ctx, msg)
-	notifMsg, isFirstAlertMessage, res, err := p.buildMessage(ctx, msg)
-	if err != nil || res != nil {
-		return res, err
-	}
-
-	meta := alertlog.NotificationMetaData{
-		MessageID: msg.ID,
-	}
-
-	res, err = p.cfg.NotificationManager.SendMessage(ctx, notifMsg)
-	if err != nil {
-		return nil, err
-	}
-
-	switch msg.Type {
-	case notification.MessageTypeAlert:
-		p.cfg.AlertLogStore.MustLog(ctx, msg.AlertID, alertlog.TypeNotificationSent, meta)
-	case notification.MessageTypeAlertBundle:
-		err = p.cfg.AlertLogStore.LogServiceTx(ctx, nil, msg.ServiceID, alertlog.TypeNotificationSent, meta)
-		if err != nil {
-			log.Log(ctx, errors.Wrap(err, "append alert log"))
-		}
-	}
-
-	if isFirstAlertMessage && res.State.IsOK() {
-		_, err = p.b.trackStatus.ExecContext(ctx, msg.DestID.NCID, msg.DestID.CMID, msg.AlertID)
-		if err != nil {
-			// non-fatal, but log because it means status updates will not work for that alert/dest.
-			log.Log(ctx, fmt.Errorf("track status updates for alert #%d for %s: %w", msg.AlertID, msg.Dest.String(), err))
-		}
-	}
-
-	return res, nil
 }

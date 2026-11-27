@@ -1,9 +1,10 @@
+// Package sqlutil describes a broken constraint the way Postgres did, by its
+// SQLSTATE and constraint name. The Delta backend's constraint errors describe
+// themselves that way (filestore.UniqueError and the others), so the code that
+// turns one into a message for the user stays the same (F8, F22).
 package sqlutil
 
-import (
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/pkg/errors"
-)
+import "github.com/pkg/errors"
 
 // Error represents a driver-agnostic SQL error.
 type Error struct {
@@ -21,8 +22,7 @@ type Error struct {
 
 func (e Error) Error() string { return e.err.Error() }
 
-// constraintError is a broken constraint on a backend other than Postgres,
-// in Postgres's terms.
+// constraintError is a broken constraint, in Postgres's terms.
 type constraintError interface {
 	error
 	SQLState() string
@@ -34,23 +34,6 @@ type constraintError interface {
 
 // MapError will return a Error from the given err object or nil otherwise.
 func MapError(err error) *Error {
-	var pgxErr *pgconn.PgError
-
-	if errors.As(err, &pgxErr) {
-		return &Error{
-			err:            err,
-			Code:           pgxErr.Code,
-			Message:        pgxErr.Message,
-			Detail:         pgxErr.Detail,
-			Hint:           pgxErr.Hint,
-			Where:          pgxErr.Where,
-			TableName:      pgxErr.TableName,
-			ConstraintName: pgxErr.ConstraintName,
-			ColumnName:     pgxErr.ColumnName,
-			Position:       int(pgxErr.Position),
-		}
-	}
-
 	var e Error
 	if errors.As(err, &e) {
 		return &e

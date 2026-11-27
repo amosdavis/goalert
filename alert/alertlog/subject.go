@@ -10,11 +10,10 @@ type SubjectType string
 
 // Possible subject types
 const (
-	SubjectTypeUser             SubjectType = "user"
-	SubjectTypeIntegrationKey   SubjectType = "integration_key"
-	SubjectTypeHeartbeatMonitor SubjectType = "heartbeat_monitor"
-	SubjectTypeChannel          SubjectType = "channel"
-	SubjectTypeNone             SubjectType = ""
+	SubjectTypeUser           SubjectType = "user"
+	SubjectTypeIntegrationKey SubjectType = "integration_key"
+	SubjectTypeChannel        SubjectType = "channel"
+	SubjectTypeNone           SubjectType = ""
 )
 
 // Scan handles reading a Type from the DB enum
@@ -34,7 +33,7 @@ func (s *SubjectType) Scan(value interface{}) error {
 }
 func (s SubjectType) Value() (driver.Value, error) {
 	switch s {
-	case SubjectTypeUser, SubjectTypeIntegrationKey, SubjectTypeHeartbeatMonitor, SubjectTypeChannel:
+	case SubjectTypeUser, SubjectTypeIntegrationKey, SubjectTypeChannel:
 		return string(s), nil
 	default:
 		return nil, nil
@@ -75,8 +74,7 @@ func subjectString(infinitive bool, s *Subject) string {
 	switch s.Type {
 	case SubjectTypeIntegrationKey:
 		str += " integration"
-	case SubjectTypeHeartbeatMonitor:
-		str += " heartbeat monitor"
+
 	}
 
 	if s.Classifier != "" {

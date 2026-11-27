@@ -12,7 +12,6 @@ import (
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/test/smoke/harness"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 )
 
 // TestOverrideConflict checks that two transactions creating the same
@@ -34,7 +33,7 @@ func TestOverrideConflict(t *testing.T) {
 	h := harness.NewHarness(t, sql, "sched-module-v3")
 	defer h.Close()
 
-	db := sqltxn.DB{DB: h.App().DB()}
+	db := h.App().Txn()
 
 	ctx := permission.SystemContext(context.Background(), "Smoketest")
 	ctx, cancel := context.WithCancel(ctx)

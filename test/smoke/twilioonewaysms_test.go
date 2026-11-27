@@ -7,7 +7,7 @@ import (
 	"github.com/target/goalert/test/smoke/harness"
 )
 
-// TestTwilioOneWaySMS checks that two-way SMS can be disabled via config.
+// TestTwilioOneWaySMS checks that two-way SMS replies are rejected.
 func TestTwilioOneWaySMS(t *testing.T) {
 	t.Parallel()
 
@@ -40,7 +40,6 @@ func TestTwilioOneWaySMS(t *testing.T) {
 `
 	h := harness.NewHarness(t, sql, "ids-to-uuids")
 	defer h.Close()
-	h.SetConfigValue("Twilio.DisableTwoWaySMS", "true")
 
 	h.CreateAlert(h.UUID("sid"), "testing")
 
@@ -51,5 +50,5 @@ func TestTwilioOneWaySMS(t *testing.T) {
 
 	assert.NotContains(t, s.Body(), "ack")
 
-	s.ThenReply("a").ThenExpect("disabled")
+	s.ThenReply("a").ThenExpect("not supported")
 }

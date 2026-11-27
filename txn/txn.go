@@ -1,9 +1,6 @@
-// Package txn defines GoAlert's backend-neutral transaction handle. Stores
-// take a txn.Tx instead of a *sql.Tx, so the same callers work on Postgres
-// and on the filestore backend (docs/filestore-plan.md, phase 2).
-//
-// *sql.Tx already satisfies Tx, so existing callers keep compiling while
-// store signatures change. Package txn/sqltxn adapts the Postgres side.
+// Package txn defines GoAlert's transaction handle. Stores take a txn.Tx, and
+// the Delta backend's (package txn/deltatxn) is the only one
+// (docs/filestore-plan.md, phase 2).
 package txn
 
 import "context"
@@ -29,9 +26,4 @@ type DB interface {
 	// again when another pod commits first (F4), so it must do no I/O
 	// beyond the stores it calls (F3).
 	Run(ctx context.Context, opts *Options, fn func(tx Tx) error) error
-
-	// BeginTx starts a transaction that the caller commits or rolls back.
-	// It is for Postgres-only code, and goes away with Postgres; everything
-	// else uses Run.
-	BeginTx(ctx context.Context, opts *Options) (Tx, error)
 }

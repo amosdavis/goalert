@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification"
-	"github.com/target/goalert/notification/slack"
 	"github.com/target/goalert/notification/twilio"
 )
 
@@ -22,8 +21,8 @@ func sms(value string) gadb.DestV1 {
 	return gadb.NewDestV1(twilio.DestTypeTwilioSMS, twilio.FieldPhoneNumber, value)
 }
 
-func slackCh(value string) gadb.DestV1 {
-	return gadb.NewDestV1(slack.DestTypeSlackChannel, slack.FieldSlackChannelID, value)
+func webhookCh(value string) gadb.DestV1 {
+	return gadb.NewDestV1("builtin-webhook", "webhook_url", value)
 }
 
 func TestQueue_Sort(t *testing.T) {
@@ -33,11 +32,11 @@ func TestQueue_Sort(t *testing.T) {
 		Sent:
 		- Test to User C
 		- Verify to User H (< 60 seconds ago)
-		- Alert to Slack for Service B
+		- Alert to Webhook for Service B
 
 		Pending:
 		- Alert to User A, Service A (first alert)
-		- Alert to User E, Service B (created 2nd -- SMS so Slack doesn't affect first alert status)
+		- Alert to User E, Service B (created 2nd -- SMS so Webhook doesn't affect first alert status)
 		- Alert to User H, Service C (created 3rd) -- Not sent, user H already notified
 		- Verify to User F
 		- Verify to User A -- Not sent, (will get an alert for Service A)
@@ -71,7 +70,7 @@ func TestQueue_Sort(t *testing.T) {
 		{
 			Type:      notification.MessageTypeAlert,
 			ServiceID: "Service B",
-			Dest:      slackCh("Slack B"),
+			Dest:      webhookCh("Webhook B"),
 			SentAt:    n.Add(-30 * time.Second),
 		},
 

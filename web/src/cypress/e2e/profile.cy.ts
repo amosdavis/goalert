@@ -75,36 +75,6 @@ function testProfile(): void {
         expect(appbarColor).not.to.equal(el.css('background-color')),
       )
     })
-
-    it('should not display feedback by default', () => {
-      cy.get('[aria-label="Manage Profile"]').click()
-      cy.get('[data-cy=feedback]').should('not.exist')
-    })
-
-    it('should display feedback with default href when enabled', () => {
-      cy.updateConfig({ Feedback: { Enable: true } })
-      cy.reload()
-      cy.get('[aria-label="Manage Profile"]').click()
-      cy.get('[data-cy="manage-profile"]')
-        .find('[data-cy=feedback]')
-        .should('have.attr', 'href')
-        .and(
-          'match',
-          /https:\/\/www\.surveygizmo\.com\/s3\/4106900\/GoAlert-Feedback/,
-        )
-    })
-
-    it('should display feedback with correct href when overridden', () => {
-      cy.updateConfig({
-        Feedback: { Enable: true, OverrideURL: 'https://www.goalert.me' },
-      }).then(() => {
-        cy.get('[aria-label="Manage Profile"]').click()
-        cy.get('[data-cy="manage-profile"]')
-          .find('[data-cy=feedback]')
-          .should('have.attr', 'href')
-          .and('match', /https:\/\/www\.goalert\.me/)
-      })
-    })
   })
 }
 

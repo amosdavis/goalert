@@ -8,16 +8,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/target/goalert/app/csp"
 	"github.com/target/goalert/config"
-	"github.com/target/goalert/expflag"
 	"github.com/target/goalert/genericapi"
-	"github.com/target/goalert/grafana"
-	"github.com/target/goalert/mailgun"
 	"github.com/target/goalert/notification/twilio"
-	"github.com/target/goalert/permission"
-	prometheus "github.com/target/goalert/prometheusalertmanager"
-	"github.com/target/goalert/site24x7"
 	"github.com/target/goalert/util/errutil"
 	"github.com/target/goalert/util/log"
 	"github.com/target/goalert/web"
@@ -118,8 +111,6 @@ func (app *App) initHTTP(ctx context.Context) error {
 	generic := genericapi.NewHandler(genericapi.Config{
 		AlertStore:          app.AlertStore,
 		IntegrationKeyStore: app.IntegrationKeyStore,
-		HeartbeatStore:      app.HeartbeatStore,
-		UserStore:           app.UserStore,
 	})
 
 	mux.Handle("POST /api/graphql", app.graphql2.Handler())
@@ -133,62 +124,18 @@ func (app *App) initHTTP(ctx context.Context) error {
 	basicAuth := app.AuthHandler.IdentityProviderHandler("basic")
 	mux.HandleFunc("POST /api/v2/identity/providers/basic", basicAuth)
 
-	githubAuth := app.AuthHandler.IdentityProviderHandler("github")
-	mux.HandleFunc("POST /api/v2/identity/providers/github", githubAuth)
-	mux.HandleFunc("GET /api/v2/identity/providers/github/callback", githubAuth)
-
 	oidcAuth := app.AuthHandler.IdentityProviderHandler("oidc")
 	mux.HandleFunc("POST /api/v2/identity/providers/oidc", oidcAuth)
 	mux.HandleFunc("GET /api/v2/identity/providers/oidc/callback", oidcAuth)
 
-	if expflag.ContextHas(ctx, expflag.UnivKeys) {
-		mux.HandleFunc("POST /api/v2/uik", app.UIKHandler.ServeHTTP)
-	}
-	mux.HandleFunc("POST /api/v2/mailgun/incoming", mailgun.IngressWebhooks(app.AlertStore, app.IntegrationKeyStore))
-	mux.HandleFunc("POST /api/v2/grafana/incoming", grafana.GrafanaToEventsAPI(app.AlertStore, app.IntegrationKeyStore))
-	mux.HandleFunc("POST /api/v2/site24x7/incoming", site24x7.Site24x7ToEventsAPI(app.AlertStore, app.IntegrationKeyStore))
-	mux.HandleFunc("POST /api/v2/prometheusalertmanager/incoming", prometheus.PrometheusAlertmanagerEventsAPI(app.AlertStore, app.IntegrationKeyStore))
-
 	mux.HandleFunc("POST /api/v2/generic/incoming", generic.ServeCreateAlert)
-	mux.HandleFunc("POST /api/v2/heartbeat/{heartbeatID}", generic.ServeHeartbeatCheck)
-	mux.HandleFunc("GET /api/v2/user-avatar/{userID}", generic.ServeUserAvatar)
-	mux.HandleFunc("GET /api/v2/calendar", app.CalSubStore.ServeICalData)
 
 	mux.HandleFunc("POST /api/v2/twilio/message", app.twilioSMS.ServeMessage)
 	mux.HandleFunc("POST /api/v2/twilio/message/status", app.twilioSMS.ServeStatusCallback)
 	mux.HandleFunc("POST /api/v2/twilio/call", app.twilioVoice.ServeCall)
 	mux.HandleFunc("POST /api/v2/twilio/call/status", app.twilioVoice.ServeStatusCallback)
 
-	mux.HandleFunc("POST /api/v2/slack/message-action", app.slackChan.ServeMessageAction)
-
 	middleware = append(middleware,
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/graphql2", "/api/graphql"),
-		httpRedirect(app.cfg.HTTPPrefix, "/v1/graphql2/explore", "/api/graphql/explore"),
-
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/config", "/api/v2/config"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/identity/providers", "/api/v2/identity/providers"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/identity/providers/", "/api/v2/identity/providers/"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/identity/logout", "/api/v2/identity/logout"),
-
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/webhooks/mailgun", "/api/v2/mailgun/incoming"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/webhooks/grafana", "/api/v2/grafana/incoming"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/api/alerts", "/api/v2/generic/incoming"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/api/heartbeat/", "/api/v2/heartbeat/"),
-		httpRewriteWith(app.cfg.HTTPPrefix, "/v1/api/users/", func(req *http.Request) *http.Request {
-			parts := strings.Split(strings.TrimSuffix(req.URL.Path, "/avatar"), "/")
-			req.URL.Path = "/api/v2/user-avatar/" + parts[len(parts)-1]
-			return req
-		}),
-
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/sms/messages", "/api/v2/twilio/message"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/sms/status", "/api/v2/twilio/message/status"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/voice/call", "/api/v2/twilio/call?type=alert"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/voice/alert-status", "/api/v2/twilio/call?type=alert-status"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/voice/test", "/api/v2/twilio/call?type=test"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/voice/stop", "/api/v2/twilio/call?type=stop"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/voice/verify", "/api/v2/twilio/call?type=verify"),
-		httpRewrite(app.cfg.HTTPPrefix, "/v1/twilio/voice/status", "/api/v2/twilio/call/status"),
-
 		func(next http.Handler) http.Handler {
 			twilioHandler := twilio.WrapValidation(
 				// go back to the regular mux after validation
@@ -227,32 +174,6 @@ func (app *App) initHTTP(ctx context.Context) error {
 
 	mux.Handle("GET /api/graphql/explore", webH)
 	mux.Handle("GET /api/graphql/explore/", webH)
-
-	if app.storage != nil {
-		return app.setHTTPServer(mux, middleware)
-	}
-
-	mux.HandleFunc("GET /admin/riverui/", func(w http.ResponseWriter, r *http.Request) {
-		err := permission.LimitCheckAny(r.Context(), permission.Admin)
-		if permission.IsUnauthorized(err) {
-			// render login since we're on a UI route
-			webH.ServeHTTP(w, r)
-			return
-		}
-		if errutil.HTTPError(r.Context(), w, err) {
-			return
-		}
-
-		app.RiverUI.ServeHTTP(csp.NonceResponseWriter(csp.NonceValue(r.Context()), w), r)
-	})
-	mux.HandleFunc("POST /admin/riverui/api/", func(w http.ResponseWriter, r *http.Request) {
-		err := permission.LimitCheckAny(r.Context(), permission.Admin)
-		if errutil.HTTPError(r.Context(), w, err) {
-			return
-		}
-
-		app.RiverUI.ServeHTTP(w, r)
-	})
 
 	return app.setHTTPServer(mux, middleware)
 }

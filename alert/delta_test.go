@@ -15,11 +15,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/notification/nfydest"
@@ -63,7 +61,6 @@ type deltaEnv struct {
 	schema   *filestore.Schema
 	tables   *DeltaTables
 	logs     *alertlog.DeltaTables
-	metrics  *alertmetrics.DeltaTables
 	services *filestore.Table[svcRow]
 	channels *filestore.Table[idRow]
 	methods  *filestore.Table[idRow]
@@ -96,9 +93,7 @@ func newDeltaEnv(t *testing.T) *deltaEnv {
 	e.jobs = filestore.NewTable(s, "jobs", func(r jobRow) string { return filestore.IntKey(r.ID) })
 	e.tables = DefineDeltaTables(s)
 	e.logs = alertlog.DefineDeltaTables(s)
-	e.metrics = alertmetrics.DefineDeltaTables(s)
 	DeclareDeltaForeignKeys(e.tables, e.services, e.channels, e.methods)
-	alertmetrics.DeclareDeltaForeignKeys(e.metrics, e.tables.Alerts)
 	filestore.References(e.states, "escalation_policy_state_alert_id_fkey", e.tables.Alerts,
 		func(r stateRow) (string, bool) { return filestore.IntKey(r.AlertID), true }, filestore.Cascade, nil)
 	require.NoError(t, filestore.CreateDelta(context.Background(), e.store, s, filestore.DeltaOptions{WriterID: "admin", Clock: clock}))
@@ -134,11 +129,11 @@ func (e *deltaEnv) pod(t *testing.T, name string) *pod {
 		return d, nil
 	}
 	p.logs = alertlog.NewDeltaStore(p.db, e.logs, nfydest.NewRegistry(), alertlog.DeltaLookups{
-		UserName: nameOf, IntegrationKeyName: nameOf, HeartbeatMonitorName: nameOf, ChannelName: nameOf,
+		UserName: nameOf, IntegrationKeyName: nameOf, ChannelName: nameOf,
 		ChannelDest: destOf, ContactMethodDest: destOf, MessageDest: destOf,
 		AlertIDs: e.tables.AlertIDs,
 	})
-	p.Store = NewDeltaStore(p.db, e.tables, p.logs, e.logs, e.metrics, DeltaLookups{
+	p.Store = NewDeltaStore(p.db, e.tables, p.logs, e.logs, DeltaLookups{
 		Service: func(r filestore.Reader, id string) (DeltaService, bool) {
 			s, ok := e.services.Get(r, id)
 			return DeltaService{Name: s.Name, EscalationPolicyID: s.PolicyID, InMaintenance: s.Maint}, ok
@@ -313,19 +308,19 @@ func TestDeltaCreateOrUpdate(t *testing.T) {
 	e := newDeltaEnv(t)
 	p := e.pod(t, "a")
 	svcID := p.addService(t, "Web")
-	in := &Alert{Summary: "Disk full", Details: "on db1", ServiceID: strings.ToUpper(svcID), Source: SourceGrafana, Dedup: NewUserDedup("disk")}
+	in := &Alert{Summary: "Disk full", Details: "on db1", ServiceID: strings.ToUpper(svcID), Source: SourceGeneric, Dedup: NewUserDedup("disk")}
 	before := p.fdb.View().Index()
 
 	n, isNew, err := p.CreateOrUpdate(sysCtx, in)
 	require.NoError(t, err)
 	assert.True(t, isNew)
-	want := &Alert{ID: 1, Status: StatusTriggered, Summary: "Disk full", Details: "on db1", Source: SourceGrafana, ServiceID: in.ServiceID, CreatedAt: start, Dedup: in.Dedup}
+	want := &Alert{ID: 1, Status: StatusTriggered, Summary: "Disk full", Details: "on db1", Source: SourceGeneric, ServiceID: in.ServiceID, CreatedAt: start, Dedup: in.Dedup}
 	assert.Equal(t, want, n)
-	assert.Equal(t, &Alert{Summary: "Disk full", Details: "on db1", ServiceID: strings.ToUpper(svcID), Source: SourceGrafana, Dedup: NewUserDedup("disk")}, in, "the caller's alert is not changed")
+	assert.Equal(t, &Alert{Summary: "Disk full", Details: "on db1", ServiceID: strings.ToUpper(svcID), Source: SourceGeneric, Dedup: NewUserDedup("disk")}, in, "the caller's alert is not changed")
 
 	row, hasState := e.row(t, 1)
 	assert.Equal(t, DeltaAlert{
-		ID: 1, Summary: "Disk full", Details: "on db1", ServiceID: &svcID, Source: "grafana", Status: "triggered",
+		ID: 1, Summary: "Disk full", Details: "on db1", ServiceID: &svcID, Source: "generic", Status: "triggered",
 		CreatedAt: start, DedupKey: text("user:1:disk"), LastEscalation: &start,
 	}, row)
 	assert.True(t, hasState, "trg_10_insert_ep_state_on_alert_insert (F2)")
@@ -341,7 +336,7 @@ func TestDeltaCreateOrUpdate(t *testing.T) {
 		n, isNew, err = b.CreateOrUpdate(sysCtx, again)
 		require.NoError(t, err)
 		assert.False(t, isNew)
-		assert.Equal(t, &Alert{ID: 1, Status: StatusTriggered, Summary: "Disk full", Details: "on db1", Source: SourceGrafana, ServiceID: svcID, CreatedAt: start, Dedup: again.Dedup}, n, "the existing alert")
+		assert.Equal(t, &Alert{ID: 1, Status: StatusTriggered, Summary: "Disk full", Details: "on db1", Source: SourceGeneric, ServiceID: svcID, CreatedAt: start, Dedup: again.Dedup}, n, "the existing alert")
 	}
 	assert.Equal(t, []string{"created", "duplicate_suppressed"}, e.events(t, 1), "one entry about duplicates in 5 seconds")
 
@@ -966,9 +961,7 @@ func TestDeltaServiceCascade(t *testing.T) {
 	p.write(t, func(tx *filestore.Tx) error {
 		require.NoError(t, e.channels.Put(tx, idRow{ID: chID}))
 		for id := range int64(2) {
-			us := int64(1)
 			require.NoError(t, e.tables.Subscribe(tx, DeltaSubscription{AlertID: id + 1, ChannelID: &chID, LastAlertStatus: "triggered"}))
-			require.NoError(t, e.metrics.Insert(deltatxn.Scope{Tx: tx, Reader: tx, Now: tx.Now()}, alertmetrics.DeltaMetric{AlertID: id + 1, ServiceID: svcID, TimeToClose: &us, ClosedAt: start}))
 		}
 		return nil
 	})
@@ -979,7 +972,7 @@ func TestDeltaServiceCascade(t *testing.T) {
 	e.read(t, func(r filestore.Reader) {
 		for name, n := range map[string]int{
 			"alerts": e.tables.Alerts.Len(r), "alert_data": e.tables.data.Len(r), "alert_feedback": e.tables.feedback.Len(r),
-			"alert_status_subscriptions": e.tables.Subscriptions.Len(r), "alert_metrics": e.metrics.Metrics.Len(r), "state": e.states.Len(r),
+			"alert_status_subscriptions": e.tables.Subscriptions.Len(r), "state": e.states.Len(r),
 		} {
 			assert.Equal(t, 1, n, name)
 		}
@@ -1250,7 +1243,7 @@ func TestDeltaCreateCloseRace(t *testing.T) {
 func TestDeltaServiceStats(t *testing.T) {
 	e := newDeltaEnv(t)
 	p := e.pod(t, "a")
-	svc1, svc2, svc3 := p.addService(t, "1"), p.addService(t, "2"), p.addService(t, "3")
+	svc1, svc2 := p.addService(t, "1"), p.addService(t, "2")
 	id1, id2 := uuid.MustParse(svc1), uuid.MustParse(svc2)
 	for i := range 5 {
 		_, _, err := p.CreateOrUpdate(sysCtx, &Alert{Summary: strconv.Itoa(i), ServiceID: svc1})
@@ -1274,62 +1267,6 @@ func TestDeltaServiceStats(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, counts)
 
-	// Statistics. The first 4 are the smoke test's.
-	us := func(d time.Duration) *int64 {
-		n := d.Microseconds()
-		return &n
-	}
-	jan := func(d, h, m, s int) time.Time { return time.Date(2022, 1, d, h, m, s, 0, time.UTC) }
-	p.write(t, func(tx *filestore.Tx) error {
-		sc := deltatxn.Scope{Tx: tx, Reader: tx, Now: tx.Now()}
-		for i, m := range []alertmetrics.DeltaMetric{
-			{ServiceID: svc1, TimeToAck: us(time.Hour), TimeToClose: us(2 * time.Hour), ClosedAt: jan(1, 0, 1, 0)},
-			{ServiceID: svc1, TimeToAck: us(time.Hour), TimeToClose: us(2 * time.Hour), ClosedAt: jan(1, 23, 59, 59)},
-			{ServiceID: svc1, TimeToClose: us(2 * time.Hour), Escalated: true, ClosedAt: jan(1, 0, 3, 0)},
-			{ServiceID: svc2, TimeToClose: us(time.Second), ClosedAt: jan(1, 0, 4, 0)},
-			{ServiceID: svc1, TimeToAck: us(30 * time.Minute), TimeToClose: us(3 * time.Hour), Escalated: true, ClosedAt: jan(2, 0, 5, 0)},
-			{ServiceID: svc3, TimeToClose: us(time.Second), ClosedAt: jan(1, 0, 4, 0)},
-		} {
-			m.AlertID = int64(i + 1)
-			require.NoError(t, e.metrics.Insert(sc, m))
-		}
-		return nil
-	})
-	day := pgtype.Interval{Days: 1, Valid: true}
-	stats := func(ids []uuid.UUID, stride pgtype.Interval, origin, from, to time.Time) ([]gadb.ServiceAlertStatsRow, error) {
-		return p.ServiceAlertStats(userCtx, gadb.ServiceAlertStatsParams{Stride: stride, Origin: origin, ServiceIds: ids, StartTime: from, EndTime: to})
-	}
-	rows, err := stats([]uuid.UUID{id1, id1}, day, jan(1, 0, 0, 0), jan(1, 0, 0, 0), jan(3, 0, 0, 0))
-	require.NoError(t, err)
-	assert.Equal(t, []gadb.ServiceAlertStatsRow{
-		{Bucket: jan(1, 0, 0, 0), AvgTimeToAckSeconds: 3600, AvgTimeToCloseSeconds: 7200, AlertCount: 3, EscalatedCount: 1, ServiceID: id1},
-		{Bucket: jan(2, 0, 0, 0), AvgTimeToAckSeconds: 1800, AvgTimeToCloseSeconds: 10800, AlertCount: 1, EscalatedCount: 1, ServiceID: id1},
-	}, rows, "the average time to ack leaves out alerts that were not acknowledged")
-	rows, err = stats([]uuid.UUID{id1}, day, jan(1, 0, 0, 0), jan(1, 0, 3, 0), jan(1, 23, 59, 59))
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.EqualValues(t, 2, rows[0].AlertCount, "BETWEEN includes both ends")
-	rows, err = stats([]uuid.UUID{id1, id2}, day, jan(1, 0, 0, 0), time.Time{}, jan(1, 12, 0, 0))
-	require.NoError(t, err)
-	assert.Len(t, rows, 2, "a row for each service")
-	rows, err = stats([]uuid.UUID{id1}, pgtype.Interval{Microseconds: 3_600_000_000, Valid: true}, time.Time{}, time.Time{}, jan(1, 0, 10, 0))
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, jan(1, 0, 0, 0), rows[0].Bucket, "an origin long ago")
-	rows, err = stats([]uuid.UUID{id1}, day, jan(9, 12, 0, 0), time.Time{}, jan(1, 0, 10, 0))
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, jan(0, 12, 0, 0), rows[0].Bucket, "an origin in the future")
-	rows, err = stats([]uuid.UUID{id1}, day, jan(1, 0, 0, 0), jan(5, 0, 0, 0), jan(6, 0, 0, 0))
-	require.NoError(t, err)
-	assert.Nil(t, rows)
-	for _, bad := range []pgtype.Interval{{Months: 1, Valid: true}, {Valid: true}, {Days: -1, Valid: true}} {
-		_, err = stats([]uuid.UUID{id1}, bad, jan(1, 0, 0, 0), time.Time{}, jan(3, 0, 0, 0))
-		require.Error(t, err)
-		rows, err = stats([]uuid.UUID{id1}, bad, jan(1, 0, 0, 0), jan(5, 0, 0, 0), jan(6, 0, 0, 0))
-		require.NoError(t, err, "date_bin is only asked about rows")
-		assert.Nil(t, rows)
-	}
 }
 
 func TestDeltaPendingMessages(t *testing.T) {
@@ -1478,9 +1415,6 @@ func (e *deltaEnv) reference(r filestore.Reader, opts SearchOptions, limit int) 
 				ok = ok && (so > sa || (so == sa && a.ID < id))
 			}
 		}
-		m, has := e.metrics.Metrics.Get(r, filestore.IntKey(a.ID))
-		ok = ok && (opts.ClosedBefore.IsZero() || (has && m.ClosedAt.Before(opts.ClosedBefore)))
-		ok = ok && (opts.NotClosedBefore.IsZero() || (has && m.ClosedAt.After(opts.NotClosedBefore)))
 		if ok {
 			rows = append(rows, a)
 		}
@@ -1517,7 +1451,6 @@ func TestDeltaSearch(t *testing.T) {
 	words := []string{"disk", "disks", "full", "failed", "failing", "web", "the", "database", "down", "5"}
 	day := func(n int) time.Time { return start.AddDate(0, 0, -n) }
 	p.write(t, func(tx *filestore.Tx) error {
-		sc := deltatxn.Scope{Tx: tx, Reader: tx, Now: tx.Now()}
 		for i := range 60 {
 			a := DeltaAlert{
 				Summary:   words[rng.IntN(len(words))] + " " + words[rng.IntN(len(words))],
@@ -1531,10 +1464,6 @@ func TestDeltaSearch(t *testing.T) {
 			}
 			a, err := p.DeltaInsert(tx, a)
 			require.NoError(t, err)
-			if a.Status == "closed" && rng.IntN(4) > 0 {
-				us := int64(1)
-				require.NoError(t, e.metrics.Insert(sc, alertmetrics.DeltaMetric{AlertID: a.ID, ServiceID: *a.ServiceID, TimeToClose: &us, ClosedAt: day(rng.IntN(20) * 25)}))
-			}
 			if rng.IntN(5) == 0 {
 				event := []string{"notification_sent", "no_notification_sent", "acknowledged"}[rng.IntN(3)]
 				require.NoError(t, e.logs.Insert(tx, alertlog.DeltaLog{AlertID: &a.ID, Event: event, SubUserID: &userID}))
@@ -1575,7 +1504,7 @@ func TestDeltaSearch(t *testing.T) {
 		for range rng.IntN(3) {
 			opts.Omit = append(opts.Omit, rng.IntN(62))
 		}
-		for _, at := range []*time.Time{&opts.Before, &opts.NotBefore, &opts.ClosedBefore, &opts.NotClosedBefore} {
+		for _, at := range []*time.Time{&opts.Before, &opts.NotBefore} {
 			if rng.IntN(4) == 0 {
 				*at = day(rng.IntN(20) * 25).Add(time.Duration(rng.IntN(2)) * time.Hour)
 			}

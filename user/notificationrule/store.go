@@ -2,43 +2,16 @@ package notificationrule
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/google/uuid"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
-	"github.com/target/goalert/util"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
 )
 
-// Store allows the lookup and management of NotificationRules.
+// Store allows the lookup and management of NotificationRules on the Delta backend.
 type Store struct {
-	delta *deltaRules // set when the store runs on the Delta backend
-
-	db *sql.DB
-
-	insert           *sql.Stmt
-	delete           *sql.Stmt
-	findAll          *sql.Stmt
-	findAllByUserIDs *sql.Stmt
-	lookupUserID     *sql.Stmt
-}
-
-// NewDB will create a DB backend from a sql.DB. An error will be returned if statements fail to prepare.
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
-	prep := &util.Prepare{DB: db, Ctx: ctx}
-	p := prep.P
-	s := &Store{db: db}
-
-	s.insert = p("INSERT INTO user_notification_rules (id,user_id,delay_minutes,contact_method_id) VALUES ($1,$2,$3,$4)")
-	s.findAll = p("SELECT id,user_id,delay_minutes,contact_method_id FROM user_notification_rules WHERE user_id = $1")
-	s.findAllByUserIDs = p("SELECT id,user_id,delay_minutes,contact_method_id FROM user_notification_rules WHERE user_id = any($1)")
-	s.delete = p("DELETE FROM user_notification_rules WHERE id = any($1)")
-	s.lookupUserID = p("SELECT user_id FROM user_notification_rules WHERE id = any($1)")
-
-	return s, prep.Err
+	delta *deltaRules
 }
 
 // Insert implements the NotificationRuleStore interface by inserting the new NotificationRule into the database.
@@ -62,29 +35,11 @@ func (s *Store) CreateTx(ctx context.Context, tx txn.Tx, n *NotificationRule) (*
 
 	n.ID = uuid.New().String()
 
-	if s.delta != nil {
-		err = s.delta.insert(ctx, tx, n)
-		if err != nil {
-			return nil, err
-		}
-		return n, nil
-	}
-
-	_, err = wrapTx(ctx, sqltxn.Unwrap(tx), s.insert).ExecContext(ctx, n.ID, n.UserID, n.DelayMinutes, n.ContactMethodID)
-	if err != nil {
+	if err := s.delta.insert(ctx, tx, n); err != nil {
 		return nil, err
 	}
 
 	return n, nil
-}
-
-func wrapTx(ctx context.Context, tx txn.Tx, stmt *sql.Stmt) *sql.Stmt {
-	stx := sqltxn.Unwrap(tx)
-	if stx == nil {
-		return stmt
-	}
-
-	return stx.StmtContext(ctx, stmt)
 }
 
 // DeleteTx will delete notification rules with the provided ids.
@@ -102,38 +57,7 @@ func (s *Store) DeleteTx(ctx context.Context, tx txn.Tx, ids ...string) error {
 	if err != nil {
 		return err
 	}
-	if s.delta != nil {
-		return s.delta.delete(ctx, tx, ids)
-	}
-	stx := sqltxn.Unwrap(tx)
-
-	if permission.Admin(ctx) {
-		_, err = wrapTx(ctx, stx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
-		return err
-	}
-
-	rows, err := wrapTx(ctx, stx, s.lookupUserID).QueryContext(ctx, sqlutil.UUIDArray(ids))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var checks []permission.Checker
-	var userID string
-	for rows.Next() {
-		err = rows.Scan(&userID)
-		if err != nil {
-			return err
-		}
-		checks = append(checks, permission.MatchUser(userID))
-	}
-
-	err = permission.LimitCheckAny(ctx, checks...)
-	if err != nil {
-		return err
-	}
-	_, err = wrapTx(ctx, stx, s.delete).ExecContext(ctx, sqlutil.UUIDArray(ids))
-	return err
+	return s.delta.delete(ctx, tx, ids)
 }
 
 // FindAll implements the NotificationRuleStore interface.
@@ -148,31 +72,10 @@ func (s *Store) FindAll(ctx context.Context, userID string) ([]NotificationRule,
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findByUsers(ctx, userID)
-	}
-
-	rows, err := s.findAll.QueryContext(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	notificationrules := []NotificationRule{}
-	for rows.Next() {
-		var n NotificationRule
-		err = rows.Scan(&n.ID, &n.UserID, &n.DelayMinutes, &n.ContactMethodID)
-		if err != nil {
-			return nil, err
-		}
-		notificationrules = append(notificationrules, n)
-	}
-
-	return notificationrules, nil
+	return s.delta.findByUsers(ctx, userID)
 }
 
-// FindAllByUserIDs finds all notification rules associated with any of the given user IDs,
-// batched into a single query.
+// FindAllByUserIDs finds all notification rules associated with any of the given user IDs.
 func (s *Store) FindAllByUserIDs(ctx context.Context, userIDs []string) ([]NotificationRule, error) {
 	err := validate.ManyUUID("UserID", userIDs, 100)
 	if err != nil {
@@ -184,25 +87,5 @@ func (s *Store) FindAllByUserIDs(ctx context.Context, userIDs []string) ([]Notif
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findByUsers(ctx, userIDs...)
-	}
-
-	rows, err := s.findAllByUserIDs.QueryContext(ctx, sqlutil.UUIDArray(userIDs))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	notificationrules := []NotificationRule{}
-	for rows.Next() {
-		var n NotificationRule
-		err = rows.Scan(&n.ID, &n.UserID, &n.DelayMinutes, &n.ContactMethodID)
-		if err != nil {
-			return nil, err
-		}
-		notificationrules = append(notificationrules, n)
-	}
-
-	return notificationrules, nil
+	return s.delta.findByUsers(ctx, userIDs...)
 }

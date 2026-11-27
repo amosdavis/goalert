@@ -8,22 +8,6 @@ const keys = [
     label: 'Generic API',
     value: 'generic',
   },
-  {
-    label: 'Grafana',
-    value: 'grafana',
-  },
-  {
-    label: 'Site24x7 Webhook URL',
-    value: 'site24x7',
-  },
-  {
-    label: 'Prometheus Alertmanager',
-    value: 'prometheusAlertmanager',
-  },
-  {
-    label: 'Email',
-    value: 'email',
-  },
 ]
 
 const users = [

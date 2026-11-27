@@ -5,14 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math"
 	"slices"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/alert/internal/deltaquery"
 	"github.com/target/goalert/filestore"
 	"github.com/target/goalert/gadb"
@@ -347,8 +345,8 @@ type DeltaLookups struct {
 }
 
 // NewDeltaStore returns an alert store on the Delta backend.
-func NewDeltaStore(db txn.DB, tables *DeltaTables, logDB *alertlog.Store, logs *alertlog.DeltaTables, metrics *alertmetrics.DeltaTables, lookups DeltaLookups) *Store {
-	return &Store{logDB: logDB, delta: &deltaAlerts{db: db, log: logDB, DeltaTables: tables, DeltaLookups: lookups, logs: logs, metrics: metrics}}
+func NewDeltaStore(db txn.DB, tables *DeltaTables, logDB *alertlog.Store, logs *alertlog.DeltaTables, lookups DeltaLookups) *Store {
+	return &Store{delta: &deltaAlerts{db: db, log: logDB, DeltaTables: tables, DeltaLookups: lookups, logs: logs}}
 }
 
 type deltaAlerts struct {
@@ -356,8 +354,7 @@ type deltaAlerts struct {
 	log *alertlog.Store
 	*DeltaTables
 	DeltaLookups
-	logs    *alertlog.DeltaTables
-	metrics *alertmetrics.DeltaTables
+	logs *alertlog.DeltaTables
 }
 
 // run runs fn in tx, or in a transaction of its own. fn gets the transaction,
@@ -964,106 +961,6 @@ func (d *deltaAlerts) serviceAlertCounts(ctx context.Context, serviceIDs []uuid.
 		return nil
 	})
 	return rows, err
-}
-
-// binStart is date_bin(stride, t, origin), in microseconds.
-func binStart(stride, t, origin int64) int64 {
-	mod := (t - origin) % stride
-	if mod < 0 {
-		mod += stride
-	}
-	return t - mod
-}
-
-// avgSeconds is EXTRACT(EPOCH FROM AVG(...)) of intervals in microseconds, or 0
-// without any.
-func avgSeconds(sum, n int64) float64 {
-	if n == 0 {
-		return 0
-	}
-	return math.RoundToEven(float64(sum)/float64(n)) / 1e6
-}
-
-func (d *deltaAlerts) serviceAlertStats(ctx context.Context, p gadb.ServiceAlertStatsParams) ([]gadb.ServiceAlertStatsRow, error) {
-	stride := int64(p.Stride.Days)*int64(24*time.Hour/time.Microsecond) + p.Stride.Microseconds
-	start, end, origin := p.StartTime.UnixMicro(), p.EndTime.UnixMicro(), p.Origin.UnixMicro()
-
-	serviceIDs := slices.Clone(p.ServiceIds)
-	slices.SortFunc(serviceIDs, compareUUID)
-	serviceIDs = slices.Compact(serviceIDs) // like `service_id = any($1)`
-
-	type key struct {
-		bucket  int64
-		service uuid.UUID
-	}
-	type totals struct{ count, escalated, ackSum, ackN, closeSum, closeN int64 }
-	var groups map[key]*totals
-	err := deltatxn.Read(ctx, d.db, nil, func(s deltatxn.Scope) error {
-		groups = make(map[key]*totals)
-		var err error
-		for _, id := range serviceIDs {
-			d.metrics.AscendService(s.Reader, id.String(), func(m alertmetrics.DeltaMetric) bool {
-				at := m.ClosedAt.UnixMicro()
-				if at < start || at > end {
-					return true
-				}
-				// As date_bin does, only once there is something to put in a bin.
-				switch {
-				case p.Stride.Months != 0:
-					err = errors.New("timestamps cannot be binned into intervals containing months or years")
-					return false
-				case stride <= 0:
-					err = errors.New("stride must be greater than zero")
-					return false
-				}
-				k := key{bucket: binStart(stride, at, origin), service: id}
-				g := groups[k]
-				if g == nil {
-					g = &totals{}
-					groups[k] = g
-				}
-				g.count++
-				if m.Escalated {
-					g.escalated++
-				}
-				if m.TimeToAck != nil {
-					g.ackSum += *m.TimeToAck
-					g.ackN++
-				}
-				if m.TimeToClose != nil {
-					g.closeSum += *m.TimeToClose
-					g.closeN++
-				}
-				return true
-			})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []gadb.ServiceAlertStatsRow // nil without rows, like the Postgres query
-	for k, g := range groups {
-		rows = append(rows, gadb.ServiceAlertStatsRow{
-			Bucket:                time.UnixMicro(k.bucket).UTC(),
-			AvgTimeToAckSeconds:   avgSeconds(g.ackSum, g.ackN),
-			AvgTimeToCloseSeconds: avgSeconds(g.closeSum, g.closeN),
-			AlertCount:            g.count,
-			EscalatedCount:        g.escalated,
-			ServiceID:             k.service,
-		})
-	}
-	slices.SortFunc(rows, func(a, b gadb.ServiceAlertStatsRow) int {
-		if c := a.Bucket.Compare(b.Bucket); c != 0 {
-			return c
-		}
-		return compareUUID(a.ServiceID, b.ServiceID)
-	})
-	return rows, nil
 }
 
 func compareUUID(a, b uuid.UUID) int { return slices.Compare(a[:], b[:]) }

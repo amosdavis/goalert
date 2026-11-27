@@ -2,13 +2,10 @@ package apikey
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"sync"
 
 	"github.com/golang/groupcache/lru"
 	"github.com/google/uuid"
-	"github.com/target/goalert/gadb"
 )
 
 // polCache handles caching of policyInfo objects, as well as negative caching
@@ -97,16 +94,5 @@ func (c *polCache) Get(ctx context.Context, key uuid.UUID) (value *policyInfo, o
 }
 
 func (s *Store) _verifyPolicyID(ctx context.Context, id uuid.UUID) (bool, error) {
-	if s.delta != nil {
-		return s.delta.isValid(ctx, id)
-	}
-	valid, err := gadb.New(s.db).APIKeyAuthCheck(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-
-	return valid, nil
+	return s.delta.isValid(ctx, id)
 }

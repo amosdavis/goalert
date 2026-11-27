@@ -129,7 +129,6 @@ func (in *Install) Pod(t testing.TB) *Pod {
 	reg.RegisterProvider(ctx, s.Schedule)
 	reg.RegisterProvider(ctx, s.Rotation)
 	reg.RegisterProvider(ctx, s.User)
-	reg.RegisterProvider(ctx, s.Alert)
 	return &Pod{Stores: s, T: t, Install: in, Delta: db, Registry: reg}
 }
 
@@ -327,8 +326,8 @@ func (dests) TypeInfo(context.Context) (*nfydest.TypeInfo, error) {
 	return &nfydest.TypeInfo{
 		Type: DestType, Name: "Test", Enabled: true,
 		SupportsAlertNotifications: true, SupportsStatusUpdates: true, SupportsUserVerification: true,
-		SupportsOnCallNotify: true, SupportsSignals: true,
-		RequiredFields: []nfydest.FieldConfig{{FieldID: "addr", Label: "Address"}},
+		SupportsOnCallNotify: true,
+		RequiredFields:       []nfydest.FieldConfig{{FieldID: "addr", Label: "Address"}},
 	}, nil
 }
 

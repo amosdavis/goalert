@@ -52,7 +52,7 @@ func TestGenericAPIClose(t *testing.T) {
 	defer h.Close()
 
 	fire := func(key, summary, dedup string, close bool) {
-		u := h.URL() + "/v1/api/alerts?key=" + key
+		u := h.URL() + "/api/v2/generic/incoming?token=" + key
 		v := make(url.Values)
 		v.Set("summary", summary)
 		if dedup != "" {
@@ -90,7 +90,7 @@ func TestGenericAPIClose(t *testing.T) {
 
 	d.ExpectSMS("test1")
 
-	u := h.URL() + "/v1/api/alerts?key=" + key
+	u := h.URL() + "/api/v2/generic/incoming?token=" + key
 	resp, err := http.Post(u, "application/json", strings.NewReader(`{"summary": "json"}`))
 	if err != nil {
 		t.Fatal("post to generic endpoint failed:", err)
@@ -101,7 +101,7 @@ func TestGenericAPIClose(t *testing.T) {
 
 	h.Twilio(t).Device(h.Phone("1")).ExpectSMS("json")
 
-	u = h.URL() + "/v1/api/alerts?action=close&key=" + key
+	u = h.URL() + "/api/v2/generic/incoming?action=close&token=" + key
 	resp, err = http.Post(u, "application/json", strings.NewReader(`{"summary": "json"}`))
 	if err != nil {
 		t.Fatal("post to generic endpoint failed:", err)

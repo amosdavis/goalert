@@ -22,7 +22,7 @@ func TestIntegrationKey_Normalize(t *testing.T) {
 	}
 
 	valid := []IntegrationKey{
-		{Name: "SampleIntegrationKey", ServiceID: "e93facc0-4764-012d-7bfb-002500d5d1a6", Type: TypeGrafana},
+		{Name: "SampleIntegrationKey", ServiceID: "e93facc0-4764-012d-7bfb-002500d5d1a6", Type: TypeGeneric},
 	}
 	invalid := []IntegrationKey{
 		{},

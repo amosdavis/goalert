@@ -18,23 +18,18 @@ import (
 	"github.com/pkg/errors"
 	"github.com/target/goalert/alert"
 	"github.com/target/goalert/alert/alertlog"
-	"github.com/target/goalert/alert/alertmetrics"
 	"github.com/target/goalert/apikey"
 	"github.com/target/goalert/auth"
-	"github.com/target/goalert/auth/authlink"
 	"github.com/target/goalert/auth/basic"
-	"github.com/target/goalert/calsub"
 	"github.com/target/goalert/config"
 	"github.com/target/goalert/escalation"
 	"github.com/target/goalert/graphql2"
-	"github.com/target/goalert/heartbeat"
 	"github.com/target/goalert/integrationkey"
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
 	"github.com/target/goalert/notice"
 	"github.com/target/goalert/notification"
 	"github.com/target/goalert/notification/nfydest"
-	"github.com/target/goalert/notification/slack"
 	"github.com/target/goalert/notification/twilio"
 	"github.com/target/goalert/notificationchannel"
 	"github.com/target/goalert/oncall"
@@ -44,7 +39,6 @@ import (
 	"github.com/target/goalert/schedule/rotation"
 	"github.com/target/goalert/schedule/rule"
 	"github.com/target/goalert/service"
-	"github.com/target/goalert/swo"
 	"github.com/target/goalert/timezone"
 	"github.com/target/goalert/txn"
 	"github.com/target/goalert/user"
@@ -60,34 +54,28 @@ import (
 )
 
 type App struct {
-	DB                txn.DB
-	AuthBasicStore    *basic.Store
-	UserStore         *user.Store
-	CMStore           *contactmethod.Store
-	NRStore           *notificationrule.Store
-	NCStore           *notificationchannel.Store
-	AlertStore        *alert.Store
-	AlertMetricsStore *alertmetrics.Store
-	AlertLogStore     *alertlog.Store
-	ServiceStore      *service.Store
-	FavoriteStore     *favorite.Store
-	PolicyStore       *escalation.Store
-	ScheduleStore     *schedule.Store
-	CalSubStore       *calsub.Store
-	RotationStore     *rotation.Store
-	OnCallStore       *oncall.Store
-	IntKeyStore       *integrationkey.Store
-	LabelStore        *label.Store
-	RuleStore         *rule.Store
-	OverrideStore     *override.Store
-	ConfigStore       *config.Store
-	LimitStore        *limit.Store
-	SlackStore        *slack.ChannelSender
-	HeartbeatStore    *heartbeat.Store
-	NoticeStore       *notice.Store
-	APIKeyStore       *apikey.Store
-
-	AuthLinkStore *authlink.Store
+	DB             txn.DB
+	AuthBasicStore *basic.Store
+	UserStore      *user.Store
+	CMStore        *contactmethod.Store
+	NRStore        *notificationrule.Store
+	NCStore        *notificationchannel.Store
+	AlertStore     *alert.Store
+	AlertLogStore  *alertlog.Store
+	ServiceStore   *service.Store
+	FavoriteStore  *favorite.Store
+	PolicyStore    *escalation.Store
+	ScheduleStore  *schedule.Store
+	RotationStore  *rotation.Store
+	OnCallStore    *oncall.Store
+	IntKeyStore    *integrationkey.Store
+	LabelStore     *label.Store
+	RuleStore      *rule.Store
+	OverrideStore  *override.Store
+	ConfigStore    *config.Store
+	LimitStore     *limit.Store
+	NoticeStore    *notice.Store
+	APIKeyStore    *apikey.Store
 
 	NotificationManager *notification.Manager
 
@@ -100,8 +88,6 @@ type App struct {
 
 	// ReEncryptAll encrypts all that is secret with the newest key.
 	ReEncryptAll func(ctx context.Context) error
-
-	SWO *swo.Manager
 
 	DestReg *nfydest.Registry
 }
@@ -216,17 +202,7 @@ func (a *App) Handler() http.Handler {
 		}()
 		fieldCtx := graphql.GetFieldContext(ctx)
 
-		start := time.Now()
 		res, err = next(ctx)
-		errVal := "0"
-		if err != nil {
-			errVal = "1"
-		}
-		if fieldCtx.IsMethod {
-			metricResolverHist.
-				WithLabelValues(fmt.Sprintf("%s.%s", fieldCtx.Object, fieldCtx.Field.Name), errVal).
-				Observe(time.Since(start).Seconds())
-		}
 		if err == nil && fieldCtx.Object == "Mutation" {
 			ctx = log.WithFields(ctx, log.Fields{
 				"MutationName": fieldCtx.Field.Name,
@@ -271,18 +247,6 @@ func (a *App) Handler() http.Handler {
 				Extensions: map[string]interface{}{
 					"code":    graphql2.ErrorCodeInvalidDestFieldValue,
 					"fieldID": argErr.FieldID,
-				},
-			}
-		}
-
-		var paramErr *nfydest.ActionParamError
-		if errors.As(err, &paramErr) {
-			return &gqlerror.Error{
-				Message: paramErr.Err.Error(),
-				Path:    graphql.GetPath(ctx),
-				Extensions: map[string]interface{}{
-					"code": graphql2.ErrorCodeInvalidMapFieldValue,
-					"key":  paramErr.ParamID,
 				},
 			}
 		}

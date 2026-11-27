@@ -1,48 +1,20 @@
-import React, { useEffect, useState } from 'react'
+import React from 'react'
 import { Layers, RotateRight, Today, VpnKey, Person } from '@mui/icons-material'
 import { useSessionInfo } from './RequireConfig'
 import { Avatar, SvgIconProps, AvatarProps, Skeleton } from '@mui/material'
-import { pathPrefix } from '../env'
 
 interface UserAvatarProps extends AvatarProps {
   userID: string
-}
-
-function useValidImage(srcURL?: string): boolean {
-  const [valid, setValid] = useState(false)
-
-  useEffect(() => {
-    setValid(false)
-    if (!srcURL) return
-
-    const image = new Image()
-    image.onload = () => setValid(true)
-    image.src = srcURL
-
-    return () => {
-      image.onload = null
-    }
-  }, [srcURL])
-
-  return valid
 }
 
 function useAvatar(
   Fallback: React.FC<SvgIconProps>,
   otherProps: AvatarProps,
   loading = false,
-  imgSrc?: string,
 ): JSX.Element {
-  const validImage = useValidImage(imgSrc)
-
   const av = (
-    <Avatar
-      alt=''
-      src={validImage ? imgSrc : undefined}
-      data-cy={validImage ? null : 'avatar-fallback'}
-      {...otherProps}
-    >
-      {validImage ? null : <Fallback color='primary' />}
+    <Avatar alt='' data-cy='avatar-fallback' {...otherProps}>
+      <Fallback color='primary' />
     </Avatar>
   )
 
@@ -54,23 +26,14 @@ function useAvatar(
 }
 
 export function UserAvatar(props: UserAvatarProps): JSX.Element {
-  const { userID, ...otherProps } = props
-  return useAvatar(
-    Person,
-    otherProps as AvatarProps,
-    false,
-    pathPrefix + `/api/v2/user-avatar/${userID}`,
-  )
+  const otherProps = { ...props }
+  delete (otherProps as Partial<UserAvatarProps>).userID
+  return useAvatar(Person, otherProps)
 }
 
 export function CurrentUserAvatar(props: AvatarProps): JSX.Element {
-  const { ready, userID } = useSessionInfo()
-  return useAvatar(
-    Person,
-    props,
-    !ready,
-    ready ? pathPrefix + `/api/v2/user-avatar/${userID}` : undefined,
-  )
+  const { ready } = useSessionInfo()
+  return useAvatar(Person, props, !ready)
 }
 
 export function ServiceAvatar(props: AvatarProps): JSX.Element {

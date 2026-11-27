@@ -2,28 +2,18 @@ package favorite
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"slices"
 
-	"github.com/google/uuid"
-	"github.com/pkg/errors"
 	"github.com/target/goalert/assignment"
-	"github.com/target/goalert/gadb"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/txn"
-	"github.com/target/goalert/txn/sqltxn"
 	"github.com/target/goalert/validation/validate"
 )
 
-// Store allows the lookup and management of Favorites.
+// Store allows the lookup and management of Favorites on the Delta backend.
 type Store struct {
-	db    *sql.DB
-	delta *deltaFavorites // the Delta backend, if set (delta.go)
+	delta *deltaFavorites
 }
-
-// NewStore will create a new Store.
-func NewStore(ctx context.Context, db *sql.DB) (*Store, error) { return &Store{db: db}, nil }
 
 // Set will store the target as a favorite of the given user. Must be authorized as System or the same user.
 // It is safe to call multiple times.
@@ -42,29 +32,7 @@ func (s *Store) Set(ctx context.Context, tx txn.Tx, userID string, tgt assignmen
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.set(ctx, tx, userID, tgt)
-	}
-	args := gadb.UserFavSetParams{UserID: uuid.MustParse(userID)}
-	switch tgt.TargetType() {
-	case assignment.TargetTypeService:
-		args.TgtServiceID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeSchedule:
-		args.TgtScheduleID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeRotation:
-		args.TgtRotationID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeEscalationPolicy:
-		args.TgtEscalationPolicyID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeUser:
-		args.TgtUserID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	}
-
-	err = gadb.New(sqltxn.DBTX(s.db, tx)).UserFavSet(ctx, args)
-	if err != nil {
-		return fmt.Errorf("set favorite: %w", err)
-	}
-
-	return nil
+	return s.delta.set(ctx, tx, userID, tgt)
 }
 
 // Unset will remove the target as a favorite of the given user. Must be authorized as System or the same user.
@@ -85,33 +53,7 @@ func (s *Store) Unset(ctx context.Context, tx txn.Tx, userID string, tgt assignm
 		return err
 	}
 
-	if s.delta != nil {
-		return s.delta.unset(ctx, tx, userID, tgt)
-	}
-	args := gadb.UserFavUnsetParams{UserID: uuid.MustParse(userID)}
-	switch tgt.TargetType() {
-	case assignment.TargetTypeService:
-		args.TgtServiceID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeSchedule:
-		args.TgtScheduleID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeRotation:
-		args.TgtRotationID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeEscalationPolicy:
-		args.TgtEscalationPolicyID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	case assignment.TargetTypeUser:
-		args.TgtUserID = uuid.NullUUID{Valid: true, UUID: uuid.MustParse(tgt.TargetID())}
-	}
-
-	err = gadb.New(sqltxn.DBTX(s.db, tx)).UserFavUnset(ctx, args)
-	if errors.Is(err, sql.ErrNoRows) {
-		// ignoring since it is safe to unset favorite (with retries)
-		err = nil
-	}
-	if err != nil {
-		return fmt.Errorf("unset favorite: %w", err)
-	}
-
-	return nil
+	return s.delta.unset(ctx, tx, userID, tgt)
 }
 
 func (s *Store) FindAll(ctx context.Context, tx txn.Tx, userID string, filter []assignment.TargetType) ([]assignment.Target, error) {
@@ -128,43 +70,7 @@ func (s *Store) FindAll(ctx context.Context, tx txn.Tx, userID string, filter []
 		return nil, err
 	}
 
-	if s.delta != nil {
-		return s.delta.findAll(ctx, tx, userID, func(t assignment.TargetType) bool {
-			return len(filter) == 0 || slices.Contains(filter, t)
-		})
-	}
-	args := gadb.UserFavFindAllParams{
-		UserID:                  uuid.MustParse(userID),
-		AllowServices:           len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeService),
-		AllowSchedules:          len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeSchedule),
-		AllowRotations:          len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeRotation),
-		AllowEscalationPolicies: len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeEscalationPolicy),
-		AllowUsers:              len(filter) == 0 || slices.Contains(filter, assignment.TargetTypeUser),
-	}
-
-	favs, err := gadb.New(sqltxn.DBTX(s.db, tx)).UserFavFindAll(ctx, args)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find all favorites: %w", err)
-	}
-
-	targets := make([]assignment.Target, 0, len(favs))
-	for _, fav := range favs {
-		switch {
-		case fav.TgtServiceID.Valid:
-			targets = append(targets, assignment.ServiceTarget(fav.TgtServiceID.UUID.String()))
-		case fav.TgtScheduleID.Valid:
-			targets = append(targets, assignment.ScheduleTarget(fav.TgtScheduleID.UUID.String()))
-		case fav.TgtRotationID.Valid:
-			targets = append(targets, assignment.RotationTarget(fav.TgtRotationID.UUID.String()))
-		case fav.TgtEscalationPolicyID.Valid:
-			targets = append(targets, assignment.EscalationPolicyTarget(fav.TgtEscalationPolicyID.UUID.String()))
-		case fav.TgtUserID.Valid:
-			targets = append(targets, assignment.UserTarget(fav.TgtUserID.UUID.String()))
-		}
-	}
-
-	return targets, nil
+	return s.delta.findAll(ctx, tx, userID, func(t assignment.TargetType) bool {
+		return len(filter) == 0 || slices.Contains(filter, t)
+	})
 }

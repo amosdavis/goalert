@@ -117,8 +117,8 @@ func isBytes(t reflect.Type) bool {
 	return t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8
 }
 
-// normalizeTime keeps microseconds, in UTC. checkTimes has refused the times
-// for which this is not what parquet-go reads back.
+// normalizeTime keeps microseconds, in UTC. checkTimes has refused times that
+// do not fit Delta's signed 64-bit microsecond representation.
 func normalizeTime(dst, src reflect.Value) {
 	t := src.Interface().(time.Time)
 	dst.Set(reflect.ValueOf(time.UnixMicro(t.UnixMicro()).UTC()))

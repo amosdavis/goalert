@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	ast1 "github.com/expr-lang/expr/ast"
 	"github.com/target/goalert/alert"
 	"github.com/target/goalert/alert/alertlog"
 	"github.com/target/goalert/assignment"
@@ -19,7 +18,6 @@ import (
 	"github.com/target/goalert/label"
 	"github.com/target/goalert/limit"
 	"github.com/target/goalert/notification"
-	"github.com/target/goalert/notification/slack"
 	"github.com/target/goalert/override"
 	"github.com/target/goalert/schedule"
 	"github.com/target/goalert/schedule/rotation"
@@ -38,11 +36,6 @@ type AlertConnection struct {
 	PageInfo *PageInfo     `json:"pageInfo"`
 }
 
-type AlertDataPoint struct {
-	Timestamp  time.Time `json:"timestamp"`
-	AlertCount int       `json:"alertCount"`
-}
-
 type AlertLogEntryConnection struct {
 	Nodes    []alertlog.Entry `json:"nodes"`
 	PageInfo *PageInfo        `json:"pageInfo"`
@@ -56,11 +49,6 @@ type AlertMetadata struct {
 type AlertMetadataInput struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
-}
-
-type AlertMetricsOptions struct {
-	RInterval         timeutil.ISORInterval `json:"rInterval"`
-	FilterByServiceID []string              `json:"filterByServiceID,omitempty"`
 }
 
 type AlertPendingNotification struct {
@@ -85,16 +73,6 @@ type AlertSearchOptions struct {
 	Sort              *AlertSearchSort `json:"sort,omitempty"`
 	CreatedBefore     *time.Time       `json:"createdBefore,omitempty"`
 	NotCreatedBefore  *time.Time       `json:"notCreatedBefore,omitempty"`
-	ClosedBefore      *time.Time       `json:"closedBefore,omitempty"`
-	NotClosedBefore   *time.Time       `json:"notClosedBefore,omitempty"`
-}
-
-// AlertStats returns aggregated statistics about alerts.
-type AlertStats struct {
-	AvgAckSec      []TimeSeriesBucket `json:"avgAckSec"`
-	AvgCloseSec    []TimeSeriesBucket `json:"avgCloseSec"`
-	AlertCount     []TimeSeriesBucket `json:"alertCount"`
-	EscalatedCount []TimeSeriesBucket `json:"escalatedCount"`
 }
 
 type AlertsByStatus struct {
@@ -118,24 +96,6 @@ type CalcRotationHandoffTimesInput struct {
 	Count            int                   `json:"count"`
 }
 
-type Clause struct {
-	Field    ast1.Node `json:"field"`
-	Operator string    `json:"operator"`
-	// Value is a constant value that the field should be compared against.
-	Value ast1.Node `json:"value"`
-	// Negate indicates whether the clause should be negated (e.g., not contains vs. contains).
-	Negate bool `json:"negate"`
-}
-
-type ClauseInput struct {
-	Field    ast1.Node `json:"field"`
-	Operator string    `json:"operator"`
-	// Value is a constant value that the field should be compared against.
-	Value ast1.Node `json:"value"`
-	// Negate indicates whether the clause should be negated (e.g., not contains vs. contains).
-	Negate bool `json:"negate"`
-}
-
 type ClearTemporarySchedulesInput struct {
 	ScheduleID string    `json:"scheduleID"`
 	Start      time.Time `json:"start"`
@@ -151,18 +111,6 @@ type CloseMatchingAlertInput struct {
 	Details *string `json:"details,omitempty"`
 	// Preferred over providing the summary & details.
 	Dedup *string `json:"dedup,omitempty"`
-}
-
-type Condition struct {
-	Clauses []Clause `json:"clauses"`
-}
-
-type ConditionInput struct {
-	Clauses []ClauseInput `json:"clauses"`
-}
-
-type ConditionToExprInput struct {
-	Condition *ConditionInput `json:"condition"`
 }
 
 type ConfigHint struct {
@@ -230,18 +178,6 @@ type CreateGQLAPIKeyInput struct {
 	Query       string    `json:"query"`
 }
 
-type CreateHeartbeatMonitorInput struct {
-	ServiceID         *string `json:"serviceID,omitempty"`
-	Name              string  `json:"name"`
-	TimeoutMinutes    int     `json:"timeoutMinutes"`
-	AdditionalDetails *string `json:"additionalDetails,omitempty"`
-	// If non-empty, the monitor will be muted with this reason.
-	//
-	// Muting a monitor will prevent it from triggering new alerts, but existing
-	// alerts will remain active until closed or the monitor is healthy again.
-	Muted *string `json:"muted,omitempty"`
-}
-
 type CreateIntegrationKeyInput struct {
 	ServiceID *string            `json:"serviceID,omitempty"`
 	Type      IntegrationKeyType `json:"type"`
@@ -273,22 +209,13 @@ type CreateScheduleInput struct {
 }
 
 type CreateServiceInput struct {
-	Name                 string                        `json:"name"`
-	Description          *string                       `json:"description,omitempty"`
-	Favorite             *bool                         `json:"favorite,omitempty"`
-	EscalationPolicyID   *string                       `json:"escalationPolicyID,omitempty"`
-	NewEscalationPolicy  *CreateEscalationPolicyInput  `json:"newEscalationPolicy,omitempty"`
-	NewIntegrationKeys   []CreateIntegrationKeyInput   `json:"newIntegrationKeys,omitempty"`
-	Labels               []SetLabelInput               `json:"labels,omitempty"`
-	NewHeartbeatMonitors []CreateHeartbeatMonitorInput `json:"newHeartbeatMonitors,omitempty"`
-}
-
-type CreateUserCalendarSubscriptionInput struct {
-	Name            string `json:"name"`
-	ReminderMinutes []int  `json:"reminderMinutes,omitempty"`
-	ScheduleID      string `json:"scheduleID"`
-	Disabled        *bool  `json:"disabled,omitempty"`
-	FullSchedule    *bool  `json:"fullSchedule,omitempty"`
+	Name                string                       `json:"name"`
+	Description         *string                      `json:"description,omitempty"`
+	Favorite            *bool                        `json:"favorite,omitempty"`
+	EscalationPolicyID  *string                      `json:"escalationPolicyID,omitempty"`
+	NewEscalationPolicy *CreateEscalationPolicyInput `json:"newEscalationPolicy,omitempty"`
+	NewIntegrationKeys  []CreateIntegrationKeyInput  `json:"newIntegrationKeys,omitempty"`
+	Labels              []SetLabelInput              `json:"labels,omitempty"`
 }
 
 type CreateUserContactMethodInput struct {
@@ -300,8 +227,6 @@ type CreateUserContactMethodInput struct {
 	Value                   *string                          `json:"value,omitempty"`
 	NewUserNotificationRule *CreateUserNotificationRuleInput `json:"newUserNotificationRule,omitempty"`
 	// If true, this contact method will receive status updates.
-	//
-	// Note: Some contact method types, like Slack, will always receive status updates and this value is ignored.
 	EnableStatusUpdates *bool `json:"enableStatusUpdates,omitempty"`
 	// If true, this contact method will be private and only visible to the user.
 	Private *bool `json:"private,omitempty"`
@@ -335,10 +260,6 @@ type CreatedGQLAPIKey struct {
 	Token string `json:"token"`
 }
 
-type DebugCarrierInfoInput struct {
-	Number string `json:"number"`
-}
-
 type DebugMessage struct {
 	ID          string     `json:"id"`
 	CreatedAt   time.Time  `json:"createdAt"`
@@ -369,18 +290,6 @@ type DebugMessagesInput struct {
 	First         *int       `json:"first,omitempty"`
 	CreatedBefore *time.Time `json:"createdBefore,omitempty"`
 	CreatedAfter  *time.Time `json:"createdAfter,omitempty"`
-}
-
-type DebugSendSMSInfo struct {
-	ID          string `json:"id"`
-	ProviderURL string `json:"providerURL"`
-	FromNumber  string `json:"fromNumber"`
-}
-
-type DebugSendSMSInput struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	Body string `json:"body"`
 }
 
 type DestinationDisplayInfoError struct {
@@ -428,18 +337,6 @@ type EscalationPolicySearchOptions struct {
 	FavoritesOnly *bool `json:"favoritesOnly,omitempty"`
 	// Sort favorite escalation policies first.
 	FavoritesFirst *bool `json:"favoritesFirst,omitempty"`
-}
-
-// Expr contains helpers for working with Expr expressions.
-type Expr struct {
-	// exprToCondition converts an Expr expression to a Condition.
-	ExprToCondition *Condition `json:"exprToCondition"`
-	// conditionToExpr converts a Condition to an Expr expression.
-	ConditionToExpr string `json:"conditionToExpr"`
-}
-
-type ExprToConditionInput struct {
-	Expr string `json:"expr"`
 }
 
 // FieldSearchConnection is a connection to a list of FieldSearchResult.
@@ -542,12 +439,6 @@ type LabelValueSearchOptions struct {
 	Omit   []string `json:"omit,omitempty"`
 }
 
-type LinkAccountInfo struct {
-	UserDetails    string       `json:"userDetails"`
-	AlertID        *int         `json:"alertID,omitempty"`
-	AlertNewStatus *AlertStatus `json:"alertNewStatus,omitempty"`
-}
-
 type MessageLogConnection struct {
 	Nodes    []DebugMessage              `json:"nodes"`
 	PageInfo *PageInfo                   `json:"pageInfo"`
@@ -597,15 +488,6 @@ type PageInfo struct {
 	HasNextPage bool    `json:"hasNextPage"`
 }
 
-type PhoneNumberInfo struct {
-	ID          string `json:"id"`
-	CountryCode string `json:"countryCode"`
-	RegionCode  string `json:"regionCode"`
-	Formatted   string `json:"formatted"`
-	Valid       bool   `json:"valid"`
-	Error       string `json:"error"`
-}
-
 type Query struct {
 }
 
@@ -624,33 +506,6 @@ type RotationSearchOptions struct {
 	FavoritesOnly *bool `json:"favoritesOnly,omitempty"`
 	// Sort favorite rotations first.
 	FavoritesFirst *bool `json:"favoritesFirst,omitempty"`
-}
-
-type SWOConnection struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Type    string `json:"type"`
-	IsNext  bool   `json:"isNext"`
-	Count   int    `json:"count"`
-}
-
-type SWONode struct {
-	ID       string `json:"id"`
-	CanExec  bool   `json:"canExec"`
-	IsLeader bool   `json:"isLeader"`
-	// The uptime of the node in seconds. Empty if the node/connection is *not* a GoAlert instance in SWO mode.
-	Uptime      string          `json:"uptime"`
-	ConfigError string          `json:"configError"`
-	Connections []SWOConnection `json:"connections,omitempty"`
-}
-
-type SWOStatus struct {
-	State         SWOState  `json:"state"`
-	LastStatus    string    `json:"lastStatus"`
-	LastError     string    `json:"lastError"`
-	Nodes         []SWONode `json:"nodes"`
-	MainDBVersion string    `json:"mainDBVersion"`
-	NextDBVersion string    `json:"nextDBVersion"`
 }
 
 type ScheduleConnection struct {
@@ -693,18 +548,6 @@ type ScheduleTargetInput struct {
 
 type SendContactMethodVerificationInput struct {
 	ContactMethodID string `json:"contactMethodID"`
-}
-
-type SendSignalInput struct {
-	Dest      *gadb.DestV1      `json:"dest"`
-	ServiceID string            `json:"serviceID"`
-	Params    map[string]string `json:"params,omitempty"`
-}
-
-type ServiceAlertStatsOptions struct {
-	Start     *time.Time         `json:"start,omitempty"`
-	End       *time.Time         `json:"end,omitempty"`
-	TsOptions *TimeSeriesOptions `json:"tsOptions,omitempty"`
 }
 
 type ServiceConnection struct {
@@ -755,30 +598,6 @@ type SetTemporaryScheduleInput struct {
 	Shifts     []schedule.FixedShift `json:"shifts"`
 }
 
-type SlackChannelConnection struct {
-	Nodes    []slack.Channel `json:"nodes"`
-	PageInfo *PageInfo       `json:"pageInfo"`
-}
-
-type SlackChannelSearchOptions struct {
-	First  *int     `json:"first,omitempty"`
-	After  *string  `json:"after,omitempty"`
-	Search *string  `json:"search,omitempty"`
-	Omit   []string `json:"omit,omitempty"`
-}
-
-type SlackUserGroupConnection struct {
-	Nodes    []slack.UserGroup `json:"nodes"`
-	PageInfo *PageInfo         `json:"pageInfo"`
-}
-
-type SlackUserGroupSearchOptions struct {
-	First  *int     `json:"first,omitempty"`
-	After  *string  `json:"after,omitempty"`
-	Search *string  `json:"search,omitempty"`
-	Omit   []string `json:"omit,omitempty"`
-}
-
 type StringConnection struct {
 	Nodes    []string  `json:"nodes"`
 	PageInfo *PageInfo `json:"pageInfo"`
@@ -823,13 +642,6 @@ type TimeZoneSearchOptions struct {
 	Omit   []string `json:"omit,omitempty"`
 }
 
-type TokenInfo struct {
-	// primaryHint is a hint for the primary token. It is empty if the primary token is not set.
-	PrimaryHint string `json:"primaryHint"`
-	// secondaryHint is a hint for the secondary token. It is empty if the secondary token is not set.
-	SecondaryHint string `json:"secondaryHint"`
-}
-
 type UpdateAlertsByServiceInput struct {
 	ServiceID string      `json:"serviceID"`
 	NewStatus AlertStatus `json:"newStatus"`
@@ -870,33 +682,6 @@ type UpdateGQLAPIKeyInput struct {
 	Description *string `json:"description,omitempty"`
 }
 
-type UpdateHeartbeatMonitorInput struct {
-	ID                string  `json:"id"`
-	Name              *string `json:"name,omitempty"`
-	TimeoutMinutes    *int    `json:"timeoutMinutes,omitempty"`
-	AdditionalDetails *string `json:"additionalDetails,omitempty"`
-	// If non-empty, the monitor will be muted with this reason.
-	//
-	// Muting a monitor will prevent it from triggering new alerts, but existing
-	// alerts will remain active until closed or the monitor is healthy again.
-	Muted *string `json:"muted,omitempty"`
-}
-
-type UpdateKeyConfigInput struct {
-	KeyID string           `json:"keyID"`
-	Rules []gadb.UIKRuleV1 `json:"rules,omitempty"`
-	// setRule allows you to set a single rule. If ID is provided, the rule with that ID will be updated. If ID is not provided, a new rule will be created and appended to the list of rules.
-	SetRule *gadb.UIKRuleV1 `json:"setRule,omitempty"`
-	// setRuleActions allows you to set the actions for a single rule by ID.
-	SetRuleActions *gadb.UIKRuleV1 `json:"setRuleActions,omitempty"`
-	// setRuleOrder allows you to reorder rules by ID.
-	SetRuleOrder []string `json:"setRuleOrder,omitempty"`
-	// deleteRule allows you to delete a single rule by ID.
-	DeleteRule *string `json:"deleteRule,omitempty"`
-	// defaultAction is the action to take if no rules match the request.
-	DefaultActions []gadb.UIKActionV1 `json:"defaultActions,omitempty"`
-}
-
 type UpdateRotationInput struct {
 	ID          string         `json:"id"`
 	Name        *string        `json:"name,omitempty"`
@@ -925,21 +710,11 @@ type UpdateServiceInput struct {
 	MaintenanceExpiresAt *time.Time `json:"maintenanceExpiresAt,omitempty"`
 }
 
-type UpdateUserCalendarSubscriptionInput struct {
-	ID              string  `json:"id"`
-	Name            *string `json:"name,omitempty"`
-	ReminderMinutes []int   `json:"reminderMinutes,omitempty"`
-	Disabled        *bool   `json:"disabled,omitempty"`
-	FullSchedule    *bool   `json:"fullSchedule,omitempty"`
-}
-
 type UpdateUserContactMethodInput struct {
 	ID    string  `json:"id"`
 	Name  *string `json:"name,omitempty"`
 	Value *string `json:"value,omitempty"`
 	// If true, this contact method will receive status updates.
-	//
-	// Note: Some contact method types, like Slack, will always receive status updates and this value is ignored.
 	EnableStatusUpdates *bool `json:"enableStatusUpdates,omitempty"`
 	// If true, this contact method will be private and only visible to the user.
 	Private *bool `json:"private,omitempty"`
@@ -1197,7 +972,6 @@ const (
 	ContactMethodTypeVoice   ContactMethodType = "VOICE"
 	ContactMethodTypeEmail   ContactMethodType = "EMAIL"
 	ContactMethodTypeWebhook ContactMethodType = "WEBHOOK"
-	ContactMethodTypeSLACkDm ContactMethodType = "SLACK_DM"
 )
 
 var AllContactMethodType = []ContactMethodType{
@@ -1205,12 +979,11 @@ var AllContactMethodType = []ContactMethodType{
 	ContactMethodTypeVoice,
 	ContactMethodTypeEmail,
 	ContactMethodTypeWebhook,
-	ContactMethodTypeSLACkDm,
 }
 
 func (e ContactMethodType) IsValid() bool {
 	switch e {
-	case ContactMethodTypeSms, ContactMethodTypeVoice, ContactMethodTypeEmail, ContactMethodTypeWebhook, ContactMethodTypeSLACkDm:
+	case ContactMethodTypeSms, ContactMethodTypeVoice, ContactMethodTypeEmail, ContactMethodTypeWebhook:
 		return true
 	}
 	return false
@@ -1273,20 +1046,17 @@ const (
 	//
 	// A separate error will be returned for each invalid value.
 	ErrorCodeInvalidMapFieldValue ErrorCode = "INVALID_MAP_FIELD_VALUE"
-	// The expr expression is too complex to be converted to a Condition.
-	ErrorCodeExprTooComplex ErrorCode = "EXPR_TOO_COMPLEX"
 )
 
 var AllErrorCode = []ErrorCode{
 	ErrorCodeInvalidInputValue,
 	ErrorCodeInvalidDestFieldValue,
 	ErrorCodeInvalidMapFieldValue,
-	ErrorCodeExprTooComplex,
 }
 
 func (e ErrorCode) IsValid() bool {
 	switch e {
-	case ErrorCodeInvalidInputValue, ErrorCodeInvalidDestFieldValue, ErrorCodeInvalidMapFieldValue, ErrorCodeExprTooComplex:
+	case ErrorCodeInvalidInputValue, ErrorCodeInvalidDestFieldValue, ErrorCodeInvalidMapFieldValue:
 		return true
 	}
 	return false
@@ -1330,26 +1100,16 @@ func (e ErrorCode) MarshalJSON() ([]byte, error) {
 type IntegrationKeyType string
 
 const (
-	IntegrationKeyTypeGeneric                IntegrationKeyType = "generic"
-	IntegrationKeyTypeGrafana                IntegrationKeyType = "grafana"
-	IntegrationKeyTypeSite24x7               IntegrationKeyType = "site24x7"
-	IntegrationKeyTypePrometheusAlertmanager IntegrationKeyType = "prometheusAlertmanager"
-	IntegrationKeyTypeEmail                  IntegrationKeyType = "email"
-	IntegrationKeyTypeUniversal              IntegrationKeyType = "universal"
+	IntegrationKeyTypeGeneric IntegrationKeyType = "generic"
 )
 
 var AllIntegrationKeyType = []IntegrationKeyType{
 	IntegrationKeyTypeGeneric,
-	IntegrationKeyTypeGrafana,
-	IntegrationKeyTypeSite24x7,
-	IntegrationKeyTypePrometheusAlertmanager,
-	IntegrationKeyTypeEmail,
-	IntegrationKeyTypeUniversal,
 }
 
 func (e IntegrationKeyType) IsValid() bool {
 	switch e {
-	case IntegrationKeyTypeGeneric, IntegrationKeyTypeGrafana, IntegrationKeyTypeSite24x7, IntegrationKeyTypePrometheusAlertmanager, IntegrationKeyTypeEmail, IntegrationKeyTypeUniversal:
+	case IntegrationKeyTypeGeneric:
 		return true
 	}
 	return false
@@ -1442,126 +1202,6 @@ func (e *NotificationStatus) UnmarshalJSON(b []byte) error {
 }
 
 func (e NotificationStatus) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	e.MarshalGQL(&buf)
-	return buf.Bytes(), nil
-}
-
-type SWOAction string
-
-const (
-	SWOActionReset   SWOAction = "reset"
-	SWOActionExecute SWOAction = "execute"
-)
-
-var AllSWOAction = []SWOAction{
-	SWOActionReset,
-	SWOActionExecute,
-}
-
-func (e SWOAction) IsValid() bool {
-	switch e {
-	case SWOActionReset, SWOActionExecute:
-		return true
-	}
-	return false
-}
-
-func (e SWOAction) String() string {
-	return string(e)
-}
-
-func (e *SWOAction) UnmarshalGQL(v any) error {
-	str, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("enums must be strings")
-	}
-
-	*e = SWOAction(str)
-	if !e.IsValid() {
-		return fmt.Errorf("%s is not a valid SWOAction", str)
-	}
-	return nil
-}
-
-func (e SWOAction) MarshalGQL(w io.Writer) {
-	fmt.Fprint(w, strconv.Quote(e.String()))
-}
-
-func (e *SWOAction) UnmarshalJSON(b []byte) error {
-	s, err := strconv.Unquote(string(b))
-	if err != nil {
-		return err
-	}
-	return e.UnmarshalGQL(s)
-}
-
-func (e SWOAction) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	e.MarshalGQL(&buf)
-	return buf.Bytes(), nil
-}
-
-type SWOState string
-
-const (
-	SWOStateUnknown   SWOState = "unknown"
-	SWOStateResetting SWOState = "resetting"
-	SWOStateIdle      SWOState = "idle"
-	SWOStateSyncing   SWOState = "syncing"
-	SWOStatePausing   SWOState = "pausing"
-	SWOStateExecuting SWOState = "executing"
-	SWOStateDone      SWOState = "done"
-)
-
-var AllSWOState = []SWOState{
-	SWOStateUnknown,
-	SWOStateResetting,
-	SWOStateIdle,
-	SWOStateSyncing,
-	SWOStatePausing,
-	SWOStateExecuting,
-	SWOStateDone,
-}
-
-func (e SWOState) IsValid() bool {
-	switch e {
-	case SWOStateUnknown, SWOStateResetting, SWOStateIdle, SWOStateSyncing, SWOStatePausing, SWOStateExecuting, SWOStateDone:
-		return true
-	}
-	return false
-}
-
-func (e SWOState) String() string {
-	return string(e)
-}
-
-func (e *SWOState) UnmarshalGQL(v any) error {
-	str, ok := v.(string)
-	if !ok {
-		return fmt.Errorf("enums must be strings")
-	}
-
-	*e = SWOState(str)
-	if !e.IsValid() {
-		return fmt.Errorf("%s is not a valid SWOState", str)
-	}
-	return nil
-}
-
-func (e SWOState) MarshalGQL(w io.Writer) {
-	fmt.Fprint(w, strconv.Quote(e.String()))
-}
-
-func (e *SWOState) UnmarshalJSON(b []byte) error {
-	s, err := strconv.Unquote(string(b))
-	if err != nil {
-		return err
-	}
-	return e.UnmarshalGQL(s)
-}
-
-func (e SWOState) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	e.MarshalGQL(&buf)
 	return buf.Bytes(), nil

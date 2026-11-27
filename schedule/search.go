@@ -2,14 +2,9 @@ package schedule
 
 import (
 	"context"
-	"database/sql"
-	"text/template"
 
-	"github.com/pkg/errors"
 	"github.com/target/goalert/permission"
 	"github.com/target/goalert/search"
-	"github.com/target/goalert/util"
-	"github.com/target/goalert/util/sqlutil"
 	"github.com/target/goalert/validation/validate"
 )
 
@@ -43,49 +38,7 @@ type SearchCursor struct {
 	IsFavorite bool   `json:"f"`
 }
 
-var searchTemplate = template.Must(template.New("search").Funcs(search.Helpers()).Parse(`
-	SELECT
-		sched.id,
-		sched.name,
-		sched.description,
-		sched.time_zone,
-		fav IS DISTINCT FROM NULL
-	FROM schedules sched
-	{{if not .FavoritesOnly }}
-		LEFT {{end}}JOIN user_favorites fav ON sched.id = fav.tgt_schedule_id
-			AND {{if .FavoritesUserID}}fav.user_id = :favUserID{{else}}false{{end}}
-	WHERE true
-	{{if .Omit}}
-		AND NOT sched.id = any(:omit)
-	{{end}}
-	{{if .Only}}
-		AND sched.id = any(:only)
-	{{end}}
-	{{if .Search}}
-		AND ({{orderedPrefixSearch "search" "sched.name"}} OR {{contains "search" "sched.description"}} OR {{contains "search" "sched.name"}})
-	{{end}}
-	{{if .After.Name}}
-		AND
-		{{if not .FavoritesFirst}}
-			lower(sched.name) > lower(:afterName)
-		{{else if .After.IsFavorite}}
-			((fav IS DISTINCT FROM NULL AND lower(sched.name) > lower(:afterName)) OR fav isnull)
-		{{else}}
-			(fav isnull AND lower(sched.name) > lower(:afterName))
-		{{end}}
-	{{end}}
-	ORDER BY {{ .OrderBy }}
-	LIMIT {{.Limit}}
-`))
-
 type renderData SearchOptions
-
-func (opts renderData) OrderBy() string {
-	if opts.FavoritesFirst {
-		return "fav isnull, lower(sched.name)"
-	}
-	return "lower(sched.name)"
-}
 
 func (opts renderData) Normalize() (*renderData, error) {
 	if opts.Limit == 0 {
@@ -110,16 +63,6 @@ func (opts renderData) Normalize() (*renderData, error) {
 	return &opts, err
 }
 
-func (opts renderData) QueryArgs() []sql.NamedArg {
-	return []sql.NamedArg{
-		sql.Named("search", opts.Search),
-		sql.Named("afterName", opts.After.Name),
-		sql.Named("omit", sqlutil.UUIDArray(opts.Omit)),
-		sql.Named("only", sqlutil.UUIDArray(opts.Only)),
-		sql.Named("favUserID", opts.FavoritesUserID),
-	}
-}
-
 func (store *Store) Search(ctx context.Context, opts *SearchOptions) ([]Schedule, error) {
 	if opts == nil {
 		opts = &SearchOptions{}
@@ -136,38 +79,5 @@ func (store *Store) Search(ctx context.Context, opts *SearchOptions) ([]Schedule
 	if err != nil {
 		return nil, err
 	}
-	if store.delta != nil {
-		return store.delta.search(ctx, (*SearchOptions)(data))
-	}
-	query, args, err := search.RenderQuery(ctx, searchTemplate, data)
-	if err != nil {
-		return nil, errors.Wrap(err, "render query")
-	}
-
-	rows, err := store.db.QueryContext(ctx, query, args...)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Schedule
-	var s Schedule
-	var tz string
-	for rows.Next() {
-		err = rows.Scan(&s.ID, &s.Name, &s.Description, &tz, &s.isUserFavorite)
-		if err != nil {
-			return nil, err
-		}
-		loc, err := util.LoadLocation(tz)
-		if err != nil {
-			return nil, err
-		}
-		s.TimeZone = loc
-		result = append(result, s)
-	}
-
-	return result, nil
+	return store.delta.search(ctx, (*SearchOptions)(data))
 }

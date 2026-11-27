@@ -101,9 +101,7 @@ function testSteps(screen: ScreenFormat): void {
       )
     })
 
-    it('should add users when slack is disabled', () => {
-      cy.updateConfig({ Slack: { Enable: false } })
-      cy.reload()
+    it('should add users', () => {
       const u1 = users[0]
       const u2 = users[1]
 
@@ -156,78 +154,6 @@ function testSteps(screen: ScreenFormat): void {
             `Go back to step #1 after ${delay.toString()} minutes`,
           )
         })
-    })
-
-    it('should add, click, and remove a slack channel', () => {
-      cy.updateConfig({ Slack: { Enable: true } })
-      cy.reload()
-
-      if (screen === 'mobile') {
-        cy.pageFab()
-      } else {
-        cy.get('button').contains('Create Step').click()
-      }
-      cy.dialogTitle('Create Step')
-
-      // add slack channels
-      cy.dialogForm({
-        'dest.type': 'Slack Channel',
-        slack_channel_id: 'general',
-      })
-      cy.dialogClick('Add Destination')
-      cy.get('div[role="dialog"] [data-testid=destination-chip]').should(
-        'contain',
-        '#general',
-      )
-
-      cy.dialogForm({ slack_channel_id: 'foobar' })
-      cy.dialogClick('Add Destination')
-      cy.get('div[role="dialog"] [data-testid=destination-chip]').should(
-        'contain',
-        '#foobar',
-      )
-
-      cy.dialogFinish('Submit')
-
-      // verify data integrity
-      cy.get('body').should('contain', 'Notify the following:')
-      cy.get('body').should('contain', 'Step #1:')
-      cy.get('[data-testid=destination-chip]').should('contain', '#general')
-      cy.get('[data-testid=destination-chip]').should('contain', '#foobar')
-
-      // verify clickability
-      cy.window().then((win) => {
-        cy.stub(win, 'open').as('slackRedirect')
-      })
-      cy.get('a[data-testid=destination-chip]').should(
-        'have.attr',
-        'target',
-        '_blank',
-      )
-
-      // open edit step dialog
-      cy.get('ul[data-cy=steps-list] :nth-child(2) li')
-        .find('button[data-cy=other-actions]')
-        .menu('Edit')
-
-      cy.dialogTitle('Edit Step')
-
-      // delete foobar channel
-      cy.get('[role=dialog] a[data-testid=destination-chip]')
-        .contains('a', '#foobar')
-        .find('[data-testid=CancelIcon]')
-        .click()
-      cy.get('div[role="dialog"] [data-testid=destination-chip]')
-        .contains('#foobar')
-        .should('not.exist')
-
-      cy.dialogFinish('Submit')
-
-      // verify data integrity
-      cy.get('body').should('contain', 'Notify the following:')
-      cy.get('body').should('contain', 'Step #1:')
-      cy.get('[data-testid=destination-chip]').should('contain', '#general')
-      cy.get('[data-testid=destination-chip]').should('not.contain', '#foobar')
     })
 
     it('should delete a step', () => {
