@@ -100,26 +100,6 @@ goalert add-user --storage-objects $GOALERT_STORAGE_OBJECTS --admin --user admin
 
 Upon logging in to GoAlert as an admin, you should see a link to the **Admin** page on the left nav-bar. The primary page in this section is Config and allows configuration of various providers and options.
 
-### GitHub Authentication
-
-GoAlert supports GitHub's OAuth as an authentication method with the optional ability to limit logins to specified users, organizations or teams.
-
-Follow [GitHub's documentation on creating an OAuth App](https://developer.github.com/apps/building-oauth-apps/creating-an-oauth-app/).
-
-Using following as examples for required fields:
-
-| Field                      | Example Value                                                    |
-| -------------------------- | ---------------------------------------------------------------- |
-| Application name           | `GoAlert`                                                        |
-| Homepage URL               | `<GOALERT_PUBLIC_URL>`                                           |
-| Authorization callback URL | `<GOALERT_PUBLIC_URL>/api/v2/identity/providers/github/callback` |
-
-Document **Client ID** and **Client Secret** after creation and input into appropriate fields in GoAlert's Admin page.
-
-Be sure to **Enable** GitHub authentication and **New Users** using the toggles and fill out **Allowed Users** or **Allowed Orgs** appropriately to restrict access.
-
-Note: If you are limiting logins to an org or team, users will need to manually click on "Grant" access for the required org on first login (before authorizing).
-
 ### OpenID Connect Authentication (OIDC)
 
 GoAlert supports [OpenID Connect](https://openid.net/connect/) as an authentication method.
@@ -152,25 +132,6 @@ Be sure to **Enable** OIDC authentication and **New Users** using the toggles.
 - Set `Issuer URL` to `https://accounts.google.com`
 
 **Note:** An application like [Dex](https://dexidp.io/) can be used to integrate with many other auth systems and provide an OIDC method for GoAlert.
-
-### Mailgun
-
-GoAlert supports creating alerts by email via Mailgun integration.
-
-From the Admin page in GoAlert, under the `Mailgun` section, set your **Email Domain** and **API Key**.
-The **API Key** is the HTTP webhook signing key which can be found in the Mailgun website under **Send** -> **Sending** -> **Webhooks** (at the top of the page).
-
-To configure Mailgun to forward to GoAlert:
-
-1. Go to **Receiving**
-1. Click **Create Route**
-1. Set **Expression Type** to `Match Recipient`
-1. Set **Recipient** to `.*@<Mailgun.Email Domain>`
-1. Check **Forward**
-1. In the forward box, enter `<GOALERT_PUBLIC_URL>/api/v2/mailgun/incoming`
-1. Click **Create Route**
-
-### Email/SMTP
 
 ### Twilio
 

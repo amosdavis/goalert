@@ -24,7 +24,7 @@ Once the server is up, you can access the GoAlert UI at [http://localhost:3030](
 
 > **Security Note**: The default credentials are intended for development purposes only. If your development environment is accessible over a network, it's recommended to change the password to prevent unauthorized access.
 
-In development mode, you'll see a `Dev` item in the navigation bar. This allows you to configure and access additional integrations such as Prometheus and email messages.
+In development mode, you'll see a `Dev` item in the navigation bar. This allows you to configure and access local development tools and email messages.
 
 ## VSCode Configuration
 
