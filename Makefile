@@ -102,19 +102,6 @@ node_modules: $(BIN_DIR)/tools/bun package.json bun.lock
 $(BIN_DIR)/tools/prometheus: prometheus.version
 	go tool gettool -t prometheus -v $(shell cat prometheus.version) -o $@
 
-.PHONY: grpc-certs
-grpc-certs: system.ca.pem system.ca.key plugin.ca.pem plugin.ca.key goalert-server.pem goalert-server.ca.pem goalert-server.key goalert-client.pem goalert-client.key goalert-client.ca.pem ## Generate gRPC certificates
-	@echo "gRPC certificates generated"
-
-system.ca.pem system.ca.key plugin.ca.pem plugin.ca.key:
-	$(GENCERT) ca
-
-goalert-server.pem goalert-server.ca.pem goalert-server.key: system.ca.pem system.ca.key plugin.ca.pem
-	$(GENCERT) server
-
-goalert-client.pem goalert-client.key goalert-client.ca.pem: system.ca.pem plugin.ca.key plugin.ca.pem
-	$(GENCERT) client
-
 bin/cyserver.cover: $(GO_DEPS)
 	go build -cover -coverpkg=./... -o $@ ./devtools/cyserver
 

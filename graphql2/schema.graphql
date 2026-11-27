@@ -1204,7 +1204,6 @@ input CreateUserContactMethodInput {
 
   """
   If true, this contact method will receive status updates.
-
   """
   enableStatusUpdates: Boolean
 
@@ -1230,7 +1229,6 @@ input UpdateUserContactMethodInput {
 
   """
   If true, this contact method will receive status updates.
-
   """
   enableStatusUpdates: Boolean
 

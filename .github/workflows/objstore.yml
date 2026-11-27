@@ -7,9 +7,37 @@ name: Delta backend
 on:
   push:
     branches: ['filestore-backend', 'master']
-    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'bigquerylog/**', 'managedlog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths:
+      [
+        'objstore/**',
+        'deltalog/**',
+        'deltatable/**',
+        'filestore/**',
+        'tablelog/**',
+        'iceberglog/**',
+        'bigquerylog/**',
+        'managedlog/**',
+        'storagebackend/**',
+        'go.mod',
+        'go.sum',
+        '.github/workflows/objstore.yml',
+      ]
   pull_request:
-    paths: ['objstore/**', 'deltalog/**', 'deltatable/**', 'filestore/**', 'tablelog/**', 'iceberglog/**', 'bigquerylog/**', 'managedlog/**', 'storagebackend/**', 'go.mod', 'go.sum', '.github/workflows/objstore.yml']
+    paths:
+      [
+        'objstore/**',
+        'deltalog/**',
+        'deltatable/**',
+        'filestore/**',
+        'tablelog/**',
+        'iceberglog/**',
+        'bigquerylog/**',
+        'managedlog/**',
+        'storagebackend/**',
+        'go.mod',
+        'go.sum',
+        '.github/workflows/objstore.yml',
+      ]
 
 jobs:
   conformance:

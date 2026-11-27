@@ -1,5 +1,4 @@
 type Mutation {
-
   """
   reEncryptKeyringsAndConfig is used to reencrypt all keyrings and the config in the database.
 
