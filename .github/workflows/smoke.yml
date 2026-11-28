@@ -5,7 +5,9 @@ name: Smoke
 # must keep passing (docs/filestore-failure-modes.md, F22).
 on:
   push:
-    branches: ['filestore-backend']
+    branches: ['filestore-backend', 'master']
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   smoke:

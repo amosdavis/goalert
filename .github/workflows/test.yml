@@ -1,0 +1,79 @@
+name: Tests
+
+on:
+  push:
+    branches: ['filestore-backend', 'master']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit tests & checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install tools and JS dependencies
+        run: make bin/tools/bun bin/tools/mailpit node_modules
+      - name: JS format, lint, typecheck and Jest
+        run: |
+          ./bin/tools/bun -b run fmt
+          ./bin/tools/bun -b run lint
+          ./bin/tools/bun -b run check
+          make jest
+      - name: Codecheck
+        run: ./devtools/ci/tasks/scripts/codecheck.sh
+      - name: Build production binary and self-test
+        run: |
+          make bin/goalert BUNDLE=1
+          ./bin/goalert self-test --offline
+      - name: Go unit tests
+        run: make test
+
+  playwright:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install tools, dependencies and Chromium
+        run: |
+          make bin/tools/bun bin/tools/mailpit bin/tools/prometheus node_modules
+          ./bin/tools/bun run playwright install --with-deps chromium
+      - name: Run Playwright tests
+        run: make playwright-run CI=1
+
+  cypress:
+    name: Cypress E2E (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [cy-wide-prod-run, cy-mobile-prod-run]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Xvfb and Chrome dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus-x11
+      - name: Run Cypress tests
+        run: xvfb-run --auto-servernum make ${{ matrix.target }} CI=1

@@ -38,6 +38,7 @@ on:
         'go.sum',
         '.github/workflows/objstore.yml',
       ]
+  workflow_dispatch:
 
 jobs:
   conformance:

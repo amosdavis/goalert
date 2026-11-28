@@ -37,6 +37,7 @@ on:
         'go.sum',
         '.github/workflows/filestore.yml',
       ]
+  workflow_dispatch:
 
 jobs:
   test:
