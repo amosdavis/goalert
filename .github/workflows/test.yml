@@ -2,9 +2,13 @@ name: Tests
 
 on:
   push:
-    branches: ['filestore-backend', 'master']
+    branches: ['master']
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   unit:
@@ -21,19 +25,18 @@ jobs:
           node-version: '20'
       - name: Install tools and JS dependencies
         run: make bin/tools/bun bin/tools/mailpit node_modules
-      - name: JS format, lint, typecheck and Jest
+      - name: JS format, lint and typecheck
         run: |
           ./bin/tools/bun -b run fmt
           ./bin/tools/bun -b run lint
           ./bin/tools/bun -b run check
-          make jest
       - name: Codecheck
         run: ./devtools/ci/tasks/scripts/codecheck.sh
       - name: Build production binary and self-test
         run: |
           make bin/goalert BUNDLE=1
           ./bin/goalert self-test --offline
-      - name: Go unit tests
+      - name: Jest and Go unit tests
         run: make test
 
   playwright:

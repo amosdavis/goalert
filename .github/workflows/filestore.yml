@@ -5,7 +5,7 @@ name: Filestore
 # supported OS (docs/filestore-failure-modes.md, F14).
 on:
   push:
-    branches: ['filestore-backend', 'master']
+    branches: ['master']
     paths:
       [
         'filestore/**',
@@ -38,6 +38,10 @@ on:
         '.github/workflows/filestore.yml',
       ]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

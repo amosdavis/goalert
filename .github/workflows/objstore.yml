@@ -6,7 +6,7 @@ name: Delta backend
 # of tables GoAlert wrote (F35).
 on:
   push:
-    branches: ['filestore-backend', 'master']
+    branches: ['master']
     paths:
       [
         'objstore/**',
@@ -39,6 +39,10 @@ on:
         '.github/workflows/objstore.yml',
       ]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   conformance:
